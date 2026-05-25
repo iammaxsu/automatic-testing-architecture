@@ -1,0 +1,4 @@
+# Shell 腳本一律 LF，避免 CRLF
+*.sh  text eol=lf
+*.bash text eol=lf
+*.zsh text eol=lf
