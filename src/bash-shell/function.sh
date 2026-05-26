@@ -409,6 +409,26 @@ netns_add() {
 
   local n=${#_ethArray[@]}
   echo "[DEBUG] root enp*: ${_ethArray[*]}"
+
+  # NET011: filter out NICs explicitly excluded via --skip / _net_test_skip_nics
+  if [[ -v _net_test_skip_nics ]] && (( ${#_net_test_skip_nics[@]} > 0 )); then
+    local _filtered=()
+    for _ifn in "${_ethArray[@]}"; do
+      local _excluded=0
+      for _excl in "${_net_test_skip_nics[@]}"; do
+        [[ "${_ifn}" == "${_excl}" ]] && { _excluded=1; break; }
+      done
+      if (( _excluded )); then
+        echo "[INFO] NIC '${_ifn}' excluded by --skip (NET011) — will not be tested."
+      else
+        _filtered+=("${_ifn}")
+      fi
+    done
+    _ethArray=("${_filtered[@]+"${_filtered[@]}"}")
+    n=${#_ethArray[@]}
+    echo "[DEBUG] After --skip filter: ${_ethArray[*]:-<none>}"
+  fi
+
   if (( n < 2 )); then
     echo "[FATAL] Need at least 2 enp* NICs in root; found $n"
     even_ethArray=(); odd_ethArray=(); skipped_ethArray=()
