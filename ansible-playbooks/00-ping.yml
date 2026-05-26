@@ -1,0 +1,34 @@
+---
+# Phase 1: 連線測試
+#
+# 目的:
+#   確認控制機能 SSH 到所有被測機,並且 Ansible 內建的 ping 模組可以回應。
+#   (注意:ansible 的 ping 不是 ICMP,是檢查 Python 環境是否可執行模組)
+#
+# 用法:
+#   ansible-playbook playbooks/00-ping.yml
+#
+# 預期結果:
+#   每台被測機顯示 SUCCESS,並印出 hostname / OS / kernel / 使用者
+
+- name: Phase 1 - Verify connectivity to test machines
+  hosts: test_machines
+  gather_facts: no       # 第一次測試先不收集 facts,加快速度也減少出錯點
+  tasks:
+
+    - name: Ping (Ansible module, not ICMP)
+      ansible.builtin.ping:
+
+    - name: Collect basic system info
+      ansible.builtin.shell: |
+        echo "Hostname: $(hostname)"
+        echo "OS:       $(. /etc/os-release && echo "$PRETTY_NAME")"
+        echo "Kernel:   $(uname -r)"
+        echo "User:     $(whoami)"
+        echo "Sudo:     $(sudo -n true 2>/dev/null && echo 'NOPASSWD OK' || echo 'NEEDS PASSWORD')"
+      register: info
+      changed_when: false   # shell 模組預設會被視為 changed,這裡只是讀取資訊不算變更
+
+    - name: Display info
+      ansible.builtin.debug:
+        msg: "{{ info.stdout_lines }}"

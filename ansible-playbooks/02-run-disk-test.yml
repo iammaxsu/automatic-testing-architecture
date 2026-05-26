@@ -1,0 +1,159 @@
+---
+# Phase 2.2: 在 DUT 上執行測試, 完成後抓 log 回控制機
+#
+# 動作:
+#   1. 確認 fio 已安裝 (沒有就用 apt 裝)
+#   2. 確認指定的測試 script 已部署
+#   3. 啟動測試, 同步等待完成 (預設最長 5 小時)
+#   4. 把 DUT 上的 *.log 與 logs/ 目錄打包
+#   5. fetch tarball 回控制機
+#   6. 在控制機自動解壓
+#   7. 清掉 DUT 上的暫存 tarball
+#
+# 設計說明:
+#   - 部署採平鋪布局, deploy_dir 與 logs 都直接在 /home/adlink/Downloads/
+#   - test_script 是變數, 未來改跑 net_test 只要 -e test_script=net_test.sh
+#   - tools 是清單, 對應 Test Requirement FUN001/FUN002 (auto-install)
+#
+# 用法:
+#   ansible-playbook playbooks/02-run-disk-test.yml                              # 跑 1 圈 disk_test
+#   ansible-playbook playbooks/02-run-disk-test.yml -e bLoops=10                 # 跑 10 圈
+#   ansible-playbook playbooks/02-run-disk-test.yml -e test_script=net_test.sh   # (未來) 改跑 net_test
+
+- name: Phase 2.2 - Run test script and fetch logs
+  hosts: test_machines
+  gather_facts: yes
+
+  vars:
+    deploy_dir: /home/adlink/Downloads
+    fetch_root: /home/maxsu/Downloads/test-automation_ansible
+
+    # 要跑的測試 script (檔名,在 deploy_dir 底下)
+    test_script: disk_test.sh
+
+    # 要確保安裝的工具 (Test Requirement FUN001/FUN002)
+    # 不同測試需要不同工具時, 用 -e 覆蓋, 例如:
+    #   -e '{"required_tools":["fio","iperf3","ethtool"]}'
+    required_tools:
+      - fio
+
+    # 試跑請先用預設 (bLoops=1), 確認流程通了再加大
+    bLoops: 1
+
+    # 整個測試的最長等待時間 (秒). 預設 5 hr.
+    # disk_test bLoops=1 約 1h45m; bLoops=10 約 17h, 記得拉高這個值.
+    test_timeout_seconds: 18000
+
+    # Ansible 多久去 DUT 查一次狀態 (秒)
+    poll_interval_seconds: 60
+
+    # 用 ansible_date_time 產生這次 run 的時間戳, 整個 playbook 共用
+    run_timestamp: "{{ ansible_date_time.iso8601_basic_short }}"
+
+  tasks:
+
+    # ---- Pre-flight checks ----
+
+    - name: Ensure required tools are installed (apt)
+      ansible.builtin.apt:
+        name: "{{ required_tools }}"
+        state: present
+        update_cache: yes
+        cache_valid_time: 3600
+      become: yes
+
+    - name: Verify test script is deployed
+      ansible.builtin.stat:
+        path: "{{ deploy_dir }}/{{ test_script }}"
+      register: ts_stat
+
+    - name: Fail if test script not found
+      ansible.builtin.fail:
+        msg: |
+          {{ test_script }} not found at {{ deploy_dir }}.
+          Please run: ansible-playbook playbooks/01-deploy.yml
+      when: not ts_stat.stat.exists
+
+    - name: Show run plan
+      ansible.builtin.debug:
+        msg:
+          - "DUT          : {{ inventory_hostname }} ({{ ansible_host }})"
+          - "Script       : {{ deploy_dir }}/{{ test_script }}"
+          - "Loops        : {{ bLoops }}"
+          - "Timeout      : {{ test_timeout_seconds }} sec ({{ (test_timeout_seconds | int / 3600) | round(1) }} hr)"
+          - "Poll every   : {{ poll_interval_seconds }} sec"
+          - "Run timestamp: {{ run_timestamp }}"
+
+    # ---- Run test (synchronous wait) ----
+
+    - name: "Run {{ test_script }} on DUT"
+      ansible.builtin.shell: |
+        cd {{ deploy_dir }} && ./{{ test_script }} 2>&1
+      environment:
+        # 跳過互動 prompt
+        YES_I_UNDERSTAND: "1"
+        DISABLE_LOOPS_PROMPT: "1"
+        # 圈數
+        _bLoops: "{{ bLoops }}"
+        # workaround: setup_session 目前未設這兩個, 由 Ansible 帶入
+        _date2: "{{ run_timestamp }}"
+        _disklog: "{{ deploy_dir }}/disk_test_{{ run_timestamp }}.log"
+      async: "{{ test_timeout_seconds }}"
+      poll: "{{ poll_interval_seconds }}"
+      register: ts_run
+      # 不要 fail-fast: 即使 rc != 0 也要把 log 抓回來分析
+      failed_when: false
+
+    - name: Show test result summary
+      ansible.builtin.debug:
+        msg:
+          - "Return code : {{ ts_run.rc }}"
+          - "Status      : {{ 'SUCCESS' if ts_run.rc == 0 else 'FAILED (logs still fetched)' }}"
+          - "Last lines  :"
+          - "{{ ts_run.stdout_lines[-10:] if ts_run.stdout_lines is defined else '(no stdout)' }}"
+
+    # ---- Package & fetch logs ----
+
+    - name: Package logs into tarball on DUT
+      ansible.builtin.archive:
+        path:
+          - "{{ deploy_dir }}/*.log"
+          - "{{ deploy_dir }}/logs"
+        dest: "/tmp/test_logs_{{ inventory_hostname }}_{{ run_timestamp }}.tar.gz"
+        format: gz
+      register: archive_result
+      # logs 目錄可能還沒建立 (例如第一次失敗), 不要 fail
+      failed_when: false
+
+    - name: Fetch tarball to control node
+      ansible.builtin.fetch:
+        src: "/tmp/test_logs_{{ inventory_hostname }}_{{ run_timestamp }}.tar.gz"
+        dest: "{{ fetch_root }}/{{ inventory_hostname }}/{{ run_timestamp }}/"
+        flat: yes
+      when: archive_result is succeeded
+
+    - name: Extract tarball on control node
+      ansible.builtin.unarchive:
+        src: "{{ fetch_root }}/{{ inventory_hostname }}/{{ run_timestamp }}/test_logs_{{ inventory_hostname }}_{{ run_timestamp }}.tar.gz"
+        dest: "{{ fetch_root }}/{{ inventory_hostname }}/{{ run_timestamp }}/"
+        remote_src: no
+      delegate_to: localhost
+      become: no
+      when: archive_result is succeeded
+
+    - name: Cleanup tarball on DUT
+      ansible.builtin.file:
+        path: "/tmp/test_logs_{{ inventory_hostname }}_{{ run_timestamp }}.tar.gz"
+        state: absent
+      when: archive_result is succeeded
+
+    # ---- Final report ----
+
+    - name: Final report
+      ansible.builtin.debug:
+        msg:
+          - "============================================================"
+          - "Test run finished for {{ inventory_hostname }}"
+          - "Logs saved to:"
+          - "  {{ fetch_root }}/{{ inventory_hostname }}/{{ run_timestamp }}/"
+          - "============================================================"

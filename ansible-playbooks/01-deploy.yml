@@ -1,0 +1,77 @@
+---
+# Phase 2.1: 部署測試 scripts 到 DUT (平鋪布局)
+#
+# 動作:
+#   1. 確認 DUT 上 /home/adlink/Downloads/ 存在
+#   2. 把控制機 ./scripts/ 下列出的所有 .sh 複製過去
+#      (舊檔自動備份成 <檔名>.<時間戳>~)
+#   3. 設成可執行
+#   4. 驗證部署結果
+#
+# 設計說明:
+#   - 部署位置採平鋪布局,所有測試 (disk_test / net_test / dev_detect / 未來新增)
+#     共用同一個 /home/adlink/Downloads/, 也共用同一個 logs/ 目錄。
+#   - 呼應 Test Requirement FWK004 的精神:
+#     config.sh / function.sh 是 stable public API layer, 公用層應該只有一份。
+#   - 未來新增測試只要在下方 scripts: list 加一行即可。
+#
+# 用法:
+#   ansible-playbook playbooks/01-deploy.yml
+
+- name: Phase 2.1 - Deploy test scripts to DUT (flat layout)
+  hosts: test_machines
+  gather_facts: yes
+
+  vars:
+    deploy_dir: /home/adlink/Downloads
+    scripts:
+      - config.sh
+      - function.sh
+      - disk_test.sh
+      # 未來新增測試, 在這加一行:
+      - net_test.sh
+      - dev_detect.sh
+      - slp_test.sh
+      - test_warning_daemon.sh
+
+  tasks:
+
+    - name: Ensure deploy directory exists
+      ansible.builtin.file:
+        path: "{{ deploy_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Copy scripts (with backup of any existing files)
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../scripts/{{ item }}"
+        dest: "{{ deploy_dir }}/{{ item }}"
+        mode: '0755'
+        backup: yes
+      loop: "{{ scripts }}"
+      register: copy_result
+
+    - name: Report which files were backed up
+      ansible.builtin.debug:
+        msg: "Backed up old version → {{ item.backup_file }}"
+      loop: "{{ copy_result.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.backup_file is defined and item.backup_file | length > 0
+
+    - name: Verify scripts are present and executable
+      ansible.builtin.shell: |
+        cd {{ deploy_dir }}
+        for f in {{ scripts | join(' ') }}; do
+          if [[ -x "$f" ]]; then
+            printf '  %-15s OK (%s bytes)\n' "$f" "$(stat -c %s "$f")"
+          else
+            printf '  %-15s MISSING or NOT EXECUTABLE\n' "$f"
+          fi
+        done
+      changed_when: false
+      register: verify
+
+    - name: Show verification result
+      ansible.builtin.debug:
+        msg: "{{ verify.stdout_lines }}"
