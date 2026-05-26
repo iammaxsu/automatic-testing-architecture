@@ -2,7 +2,11 @@
 # net_test.sh — IPv4/IPv6 connectivity + throughput, parallel pair execution
 #
 # Usage:
-#   ./net_test.sh [loops]
+#   ./net_test.sh [loops] [--skip <nic>[,<nic>...]] [--skip <nic>] ...
+#
+#   --skip / --exclude   Comma-separated or repeated flag.  Named NICs are
+#                        excluded from namespace creation and testing.
+#                        Example: ./net_test.sh 3 --skip enp3s0,enp4s0
 #
 # Parallel design:
 #   - All pairs start simultaneously (background &)
@@ -13,6 +17,8 @@
 #   - Summary is assembled after all pairs complete (wait)
 #
 # Changelog:
+#   v00.00.05  NET011: --skip / --exclude CLI flag to exclude specific NICs
+#   v00.00.04  result.json emission (LOG015); per-pair JSON tmp files
 #   v00.00.03  Parallel pair execution; per-pair log; PID-tracked iperf3 cleanup
 #   v00.00.02  Odd NIC skip + N/A summary row (skipped_ethArray)
 #   v00.00.01  Initial version
@@ -26,7 +32,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
 fi
 
 export _net_test_version
-: "${_net_test_version:="00.00.04"}"
+: "${_net_test_version:="00.00.05"}"
 
 echo "[INFO] running net_test.sh v${_net_test_version}."
 
@@ -61,6 +67,36 @@ check_api_versions "net_test.sh" "${_requires_config_api}" "${_requires_function
 
 # ---------- Parse CLI ----------
 parse_common_cli "$@"
+
+# ---------- Parse --skip / --exclude (NET011) ----------
+# Supports: --skip enp3s0,enp4s0   or   --skip enp3s0 --skip enp4s0
+# NICs in this list are excluded from namespace creation and testing.
+declare -ga _net_test_skip_nics=()
+_rem2=(); _ri=0
+while [[ ${_ri} -lt ${#REM_ARGS[@]} ]]; do
+  _ra="${REM_ARGS[${_ri}]}"
+  case "${_ra}" in
+    --skip=*|--exclude=*)
+      IFS=',' read -ra _s <<< "${_ra#*=}"
+      for _snic in "${_s[@]}"; do [[ -n "${_snic}" ]] && _net_test_skip_nics+=("${_snic}"); done
+      ;;
+    --skip|--exclude)
+      (( _ri++ )) || true
+      if [[ ${_ri} -lt ${#REM_ARGS[@]} ]]; then
+        IFS=',' read -ra _s <<< "${REM_ARGS[${_ri}]}"
+        for _snic in "${_s[@]}"; do [[ -n "${_snic}" ]] && _net_test_skip_nics+=("${_snic}"); done
+      fi
+      ;;
+    *) _rem2+=("${_ra}") ;;
+  esac
+  (( _ri++ )) || true
+done
+REM_ARGS=("${_rem2[@]+"${_rem2[@]}"}")
+if (( ${#_net_test_skip_nics[@]} > 0 )); then
+  echo "[INFO] --skip list: ${_net_test_skip_nics[*]}"
+fi
+export _net_test_skip_nics
+
 set -- "${REM_ARGS[@]}"
 
 # ---------- Cleanup on exit ----------
