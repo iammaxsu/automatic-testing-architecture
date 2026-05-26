@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Project Status</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1a1a; --muted: #6b6b6b;
+    --card: #fafaf7; --border: #e5e3dc; --accent: #3b8bd4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#1a1a1a; --fg:#e5e3dc; --muted:#9c9a92;
+            --card:#242422; --border:#3a3a37; --accent:#5da5e8; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:24px; font:14px/1.6 -apple-system,BlinkMacSystemFont,
+         "Segoe UI",sans-serif; background:var(--bg); color:var(--fg); }
+  h1 { font-size:22px; font-weight:500; margin:0 0 4px; }
+  h2 { font-size:16px; font-weight:500; margin:24px 0 12px;
+       padding-bottom:6px; border-bottom:1px solid var(--border); }
+  .timestamp { color:var(--muted); font-size:12px; margin-bottom:24px; }
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+          gap:12px; margin-bottom:24px; }
+  .kpi { background:var(--card); border:1px solid var(--border);
+         border-radius:8px; padding:14px; }
+  .kpi-label { font-size:11px; color:var(--muted); text-transform:uppercase;
+               letter-spacing:0.5px; }
+  .kpi-value { font-size:28px; font-weight:500; margin-top:4px; }
+  .kpi-value.warn { color:#E24B4A; }
+  .charts { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
+            gap:16px; }
+  .chart-card { background:var(--card); border:1px solid var(--border);
+                border-radius:8px; padding:16px; }
+  .chart-card h3 { font-size:13px; font-weight:500; margin:0 0 12px;
+                   color:var(--muted); text-transform:uppercase;
+                   letter-spacing:0.5px; }
+  .chart-wrap { position:relative; height:240px; }
+  table { width:100%; border-collapse:collapse; margin-top:8px; }
+  th, td { text-align:left; padding:8px 12px; border-bottom:1px solid var(--border);
+           font-size:13px; }
+  th { font-weight:500; color:var(--muted); font-size:11px;
+       text-transform:uppercase; letter-spacing:0.5px; }
+  tr:last-child td { border-bottom:none; }
+  a { color:var(--accent); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  .table-card { background:var(--card); border:1px solid var(--border);
+                border-radius:8px; padding:8px 0; margin-bottom:16px; }
+  .table-card h2 { margin:8px 16px 4px; border:none; padding:0; }
+  .empty { color:var(--muted); font-style:italic; padding:12px 16px; }
+  code { background:var(--border); padding:1px 6px; border-radius:3px;
+         font-size:12px; }
+</style>
+</head>
+<body>
+
+<h1>Project Status</h1>
+<div class="timestamp">Generated <span id="gen"></span> ·
+  regenerate with <code>python scripts/make_dashboard.py &gt; STATUS.html</code>
+</div>
+
+<div class="kpis">
+  <div class="kpi"><div class="kpi-label">Requirements</div><div class="kpi-value" id="kpi-reqs">–</div></div>
+  <div class="kpi"><div class="kpi-label">Bugs (total)</div><div class="kpi-value" id="kpi-bugs">–</div></div>
+  <div class="kpi"><div class="kpi-label">Open bugs</div><div class="kpi-value warn" id="kpi-open">–</div></div>
+  <div class="kpi"><div class="kpi-label">Must-priority TODO</div><div class="kpi-value warn" id="kpi-todo">–</div></div>
+</div>
+
+<h2>Distribution</h2>
+<div class="charts">
+  <div class="chart-card">
+    <h3>Requirements by status</h3>
+    <div class="chart-wrap"><canvas id="c-req"></canvas></div>
+  </div>
+  <div class="chart-card">
+    <h3>Bugs by status</h3>
+    <div class="chart-wrap"><canvas id="c-bug"></canvas></div>
+  </div>
+  <div class="chart-card">
+    <h3>Requirements by section</h3>
+    <div class="chart-wrap"><canvas id="c-sec"></canvas></div>
+  </div>
+</div>
+
+<div class="table-card">
+  <h2>Open bugs (oldest first)</h2>
+  <div id="t-open"></div>
+</div>
+
+<div class="table-card">
+  <h2>Must-priority requirements not yet implemented</h2>
+  <div id="t-todo"></div>
+</div>
+
+<script>
+const D = {"generated": "2026-05-26 02:09", "totals": {"reqs": 106, "bugs": 24, "open_bugs": 13, "must_todo": 94}, "req_status": {"labels": ["proposed"], "values": [106], "colors": ["#F2A623"]}, "bug_status": {"labels": ["open", "closed", "invalid"], "values": [13, 9, 2], "colors": ["#E24B4A", "#1D9E75", "#888780"]}, "section": {"labels": ["CMP", "DET", "DOC", "DSK", "FUN", "FWK", "LOG", "NET", "SET", "SLP"], "verified": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "in_progress": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "todo": [6, 11, 4, 8, 6, 27, 22, 13, 4, 5]}, "open_bugs": [{"id": "BUG0003", "title": "Safe to power off message misleading", "created": "2026-04-30", "os": ["Ubuntu 24.04 LTS"], "path": "bugs/open/BUG0003-safe-to-power-off-message-misleading.md"}, {"id": "BUG0004", "title": "fio log filenames missing timestamp and result", "created": "2026-05-05", "os": ["Ubuntu 24.04 LTS"], "path": "bugs/open/BUG0004-fio-log-filenames-missing-timestamp-and-result.md"}, {"id": "BUG0005", "title": "_date2 not initialised by setup_session", "created": "2026-05-05", "os": ["Ubuntu 24.04 LTS"], "path": "bugs/open/BUG0005-date2-not-initialised-by-setup-session.md"}, {"id": "BUG0006", "title": "disk_test.sh does not call run_time at start", "created": "2026-05-05", "os": ["Ubuntu 24.04 LTS"], "path": "bugs/open/BUG0006-disk-test-sh-does-not-call-run-time-at-start.md"}, {"id": "BUG0007", "title": "wall broadcast progress message uses 1/1 ETA 0s", "created": "2026-05-05", "os": ["Ubuntu 24.04 LTS"], "path": "bugs/open/BUG0007-wall-broadcast-progress-message-uses-1-1-eta-0s.md"}, {"id": "BUG0008", "title": "Ansible fetches entire logs dir instead of current session only", "created": "2026-05-05", "os": ["Ubuntu 24.04 LTS"], "path": "bugs/open/BUG0008-ansible-fetches-entire-logs-dir-instead-of-current.md"}, {"id": "BUG0012", "title": "dev_detect first-run snapshot vs golden template not visually distinguishable", "created": "2026-05-05", "os": ["Ubuntu 26.04 LTS"], "path": "bugs/open/BUG0012-dev-detect-first-run-snapshot-vs-golden-template-n.md"}, {"id": "BUG0013", "title": "Log entries do not include log level prefix", "created": "2026-05-05", "os": ["Ubuntu 26.04 LTS"], "path": "bugs/open/BUG0013-log-entries-do-not-include-log-level-prefix.md"}, {"id": "BUG0015", "title": "net_test.sh consumes the SSH lifeline NIC", "created": "2026-05-05", "os": ["Ubuntu 26.04 LTS"], "path": "bugs/open/BUG0015-net-test-sh-consumes-the-ssh-lifeline-nic.md"}, {"id": "BUG0016", "title": "DIMM8 row formatting differs from DIMM1-7 in detect_ram output", "created": "2026-05-05", "os": ["Ubuntu 26.04 LTS"], "path": "bugs/open/BUG0016-dimm8-row-formatting-differs-from-dimm1-7-in-detec.md"}, {"id": "BUG0020", "title": "sleep_test not yet integrated or verified", "created": "2026-05-08", "os": ["Ubuntu 26.04 LTS"], "path": "bugs/open/BUG0020-sleep-test-not-yet-integrated-or-verified.md"}, {"id": "BUG0022", "title": "The notification is misleading", "created": "2026-05-14", "os": ["Ubuntu 26.04 LTS"], "path": "bugs/open/BUG0022-the-notification-is-misleading.md"}, {"id": "BUG0023", "title": "Two log_dir echo statements joined on one line in function.sh", "created": "2026-05-14", "os": ["Ubuntu 26.04 LTS"], "path": "bugs/open/BUG0023-two-log-dir-echo-statements-joined-on-one-line-in-.md"}], "must_todo": [{"id": "CMP001", "title": "Primary Supported OS Declaration", "status": "proposed", "path": "requirements/CMP001.md"}, {"id": "CMP003", "title": "Distribution-Aware Package Installation", "status": "proposed", "path": "requirements/CMP003.md"}, {"id": "CMP004", "title": "Required Tool Declaration and Auto-Install", "status": "proposed", "path": "requirements/CMP004.md"}, {"id": "CMP005", "title": "Graceful Handling of Unavailable Tools", "status": "proposed", "path": "requirements/CMP005.md"}, {"id": "CMP006", "title": "Bug OS Column Scope Convention", "status": "proposed", "path": "requirements/CMP006.md"}, {"id": "DET001", "title": "CPU Model and Core Count", "status": "proposed", "path": "requirements/DET001.md"}, {"id": "DET002", "title": "RAM Capacity and DIMM Population", "status": "proposed", "path": "requirements/DET002.md"}, {"id": "DET003", "title": "Network Interface Model and Count", "status": "proposed", "path": "requirements/DET003.md"}, {"id": "DET004", "title": "USB Device Model and Speed", "status": "proposed", "path": "requirements/DET004.md"}, {"id": "DET005", "title": "Storage Device Model and Capacity", "status": "proposed", "path": "requirements/DET005.md"}, {"id": "DET006", "title": "PCIe Link Speed and Width", "status": "proposed", "path": "requirements/DET006.md"}, {"id": "DET007", "title": "Concise Summary Log", "status": "proposed", "path": "requirements/DET007.md"}, {"id": "DET008", "title": "Full lshw Reference Log", "status": "proposed", "path": "requirements/DET008.md"}, {"id": "DET009", "title": "Golden Reference Comparison", "status": "proposed", "path": "requirements/DET009.md"}, {"id": "DET010", "title": "Configurable Golden Reference Path", "status": "proposed", "path": "requirements/DET010.md"}, {"id": "DET011", "title": "Diff Output in Test Log", "status": "proposed", "path": "requirements/DET011.md"}, {"id": "DOC003", "title": "Bug Status Vocabulary", "status": "proposed", "path": "requirements/DOC003.md"}, {"id": "DOC004", "title": "Test Verdict Vocabulary", "status": "proposed", "path": "requirements/DOC004.md"}, {"id": "DSK001", "title": "Storage Device Enumeration", "status": "proposed", "path": "requirements/DSK001.md"}, {"id": "DSK002", "title": "OS Partition Exclusion from Destructive Tests", "status": "proposed", "path": "requirements/DSK002.md"}, {"id": "DSK003", "title": "Explicit Confirmation Before Destructive Tests", "status": "proposed", "path": "requirements/DSK003.md"}, {"id": "DSK004", "title": "Separate fio Profiles for SATA and NVMe", "status": "proposed", "path": "requirements/DSK004.md"}, {"id": "DSK005", "title": "PASS/FAIL Verdict per fio Pattern", "status": "proposed", "path": "requirements/DSK005.md"}, {"id": "DSK006", "title": "Disk Test Summary Table Format", "status": "proposed", "path": "requirements/DSK006.md"}, {"id": "DSK008", "title": "Invalid Block Device Filtering", "status": "proposed", "path": "requirements/DSK008.md"}, {"id": "FUN001", "title": "Auto-Detect and Install iperf3", "status": "proposed", "path": "requirements/FUN001.md"}, {"id": "FUN002", "title": "Auto-Detect and Install fio", "status": "proposed", "path": "requirements/FUN002.md"}, {"id": "FUN003", "title": "Total Elapsed Wall-Clock Time", "status": "proposed", "path": "requirements/FUN003.md"}, {"id": "FUN004", "title": "Idempotent Tool Installation", "status": "proposed", "path": "requirements/FUN004.md"}, {"id": "FUN005", "title": "Shared log() Interface", "status": "proposed", "path": "requirements/FUN005.md"}, {"id": "FUN006", "title": "Exactly-Once Counter Semantics", "status": "proposed", "path": "requirements/FUN006.md"}, {"id": "FWK001", "title": "Snake Case Naming", "status": "proposed", "path": "requirements/FWK001.md"}, {"id": "FWK002", "title": "Private Variable Naming", "status": "proposed", "path": "requirements/FWK002.md"}, {"id": "FWK003", "title": "Private Function Naming", "status": "proposed", "path": "requirements/FWK003.md"}, {"id": "FWK004", "title": "Config and Function as Public API", "status": "proposed", "path": "requirements/FWK004.md"}, {"id": "FWK005", "title": "Semantic Version Strings", "status": "proposed", "path": "requirements/FWK005.md"}, {"id": "FWK006", "title": "Config API Version Declaration", "status": "proposed", "path": "requirements/FWK006.md"}, {"id": "FWK007", "title": "Function API Version Declaration", "status": "proposed", "path": "requirements/FWK007.md"}, {"id": "FWK008", "title": "Function–Config Version Compatibility Check", "status": "proposed", "path": "requirements/FWK008.md"}, {"id": "FWK009", "title": "Test Script Version Verification at Startup", "status": "proposed", "path": "requirements/FWK009.md"}, {"id": "FWK010", "title": "Config Sourced Before Function", "status": "proposed", "path": "requirements/FWK010.md"}, {"id": "FWK011", "title": "Strict Error Handling", "status": "proposed", "path": "requirements/FWK011.md"}, {"id": "FWK012", "title": "Session ID for Test Run Identity", "status": "proposed", "path": "requirements/FWK012.md"}, {"id": "FWK013", "title": "Resume After Power Cycle", "status": "proposed", "path": "requirements/FWK013.md"}, {"id": "FWK014", "title": "4-Bit Sleep State Encoding", "status": "proposed", "path": "requirements/FWK014.md"}, {"id": "FWK015", "title": "Loop Count Argument", "status": "proposed", "path": "requirements/FWK015.md"}, {"id": "FWK016", "title": "Headless / Non-Interactive Execution", "status": "proposed", "path": "requirements/FWK016.md"}, {"id": "FWK018", "title": "Detached Execution via Session Manager", "status": "proposed", "path": "requirements/FWK018.md"}, {"id": "FWK020", "title": "DUT-Side Test Completion Detection", "status": "proposed", "path": "requirements/FWK020.md"}, {"id": "FWK021", "title": "Flat Deployment Directory on DUT", "status": "proposed", "path": "requirements/FWK021.md"}, {"id": "FWK022", "title": "Result Packaging and Retrieval", "status": "proposed", "path": "requirements/FWK022.md"}, {"id": "FWK024", "title": "Non-Interactive Flags via Environment Variables", "status": "proposed", "path": "requirements/FWK024.md"}, {"id": "FWK025", "title": "Script Self-Elevation to Root", "status": "proposed", "path": "requirements/FWK025.md"}, {"id": "FWK026", "title": "Output File Ownership Restoration", "status": "proposed", "path": "requirements/FWK026.md"}, {"id": "FWK027", "title": "No Silent State Mutation in Helper Functions", "status": "proposed", "path": "requirements/FWK027.md"}, {"id": "LOG001", "title": "Logs Directory Creation", "status": "proposed", "path": "requirements/LOG001.md"}, {"id": "LOG002", "title": "All Test Output in logs/", "status": "proposed", "path": "requirements/LOG002.md"}, {"id": "LOG003", "title": "Log Filename Includes Test Name", "status": "proposed", "path": "requirements/LOG003.md"}, {"id": "LOG004", "title": "Log Filename Includes Loop Number", "status": "proposed", "path": "requirements/LOG004.md"}, {"id": "LOG005", "title": "Log Filename Includes ISO 8601 Timestamp", "status": "proposed", "path": "requirements/LOG005.md"}, {"id": "LOG006", "title": "Log Filename Includes Test Result", "status": "proposed", "path": "requirements/LOG006.md"}, {"id": "LOG007", "title": "Log File Extension", "status": "proposed", "path": "requirements/LOG007.md"}, {"id": "LOG008", "title": "Log Filename Order", "status": "proposed", "path": "requirements/LOG008.md"}, {"id": "LOG009", "title": "Log Directory Verification at Startup", "status": "proposed", "path": "requirements/LOG009.md"}, {"id": "LOG010", "title": "Elapsed Time Reporting", "status": "proposed", "path": "requirements/LOG010.md"}, {"id": "LOG011", "title": "Per-fio-Invocation Log File", "status": "proposed", "path": "requirements/LOG011.md"}, {"id": "LOG012", "title": "fio Log Filename Convention", "status": "proposed", "path": "requirements/LOG012.md"}, {"id": "LOG013", "title": "Disk Test Average Throughput Summary", "status": "proposed", "path": "requirements/LOG013.md"}, {"id": "LOG014", "title": "Log Entry Timestamp and Level Prefix", "status": "proposed", "path": "requirements/LOG014.md"}, {"id": "LOG015", "title": "Machine-Readable result.json", "status": "proposed", "path": "requirements/LOG015.md"}, {"id": "LOG017", "title": "Three-Artefact Output Model", "status": "proposed", "path": "requirements/LOG017.md"}, {"id": "LOG018", "title": "HTML Report Generated from result.json", "status": "proposed", "path": "requirements/LOG018.md"}, {"id": "LOG020", "title": "Minimum result.json Fields", "status": "proposed", "path": "requirements/LOG020.md"}, {"id": "LOG021", "title": "Output File Ownership", "status": "proposed", "path": "requirements/LOG021.md"}, {"id": "LOG022", "title": "ISO 8601 Timestamp Consistency", "status": "proposed", "path": "requirements/LOG022.md"}, {"id": "NET001", "title": "Enumerate enp and eno Interfaces", "status": "proposed", "path": "requirements/NET001.md"}, {"id": "NET002", "title": "Namespace-Based Loopback Testing", "status": "proposed", "path": "requirements/NET002.md"}, {"id": "NET003", "title": "Clean Namespace State Before Testing", "status": "proposed", "path": "requirements/NET003.md"}, {"id": "NET004", "title": "Test at All Advertised Link Speeds", "status": "proposed", "path": "requirements/NET004.md"}, {"id": "NET005", "title": "ICMP Connectivity Verification", "status": "proposed", "path": "requirements/NET005.md"}, {"id": "NET006", "title": "iperf3 Throughput in Four Combinations", "status": "proposed", "path": "requirements/NET006.md"}, {"id": "NET007", "title": "Configurable iperf3 Duration", "status": "proposed", "path": "requirements/NET007.md"}, {"id": "NET008", "title": "Verdict Assignment per Test Item", "status": "proposed", "path": "requirements/NET008.md"}, {"id": "NET011", "title": "NIC Include/Exclude Lists", "status": "proposed", "path": "requirements/NET011.md"}, {"id": "NET013", "title": "iperf3 Log Filename Convention", "status": "proposed", "path": "requirements/NET013.md"}, {"id": "SET001", "title": "Tunable Parameters in config Only", "status": "proposed", "path": "requirements/SET001.md"}, {"id": "SET002", "title": "Utility Functions in function Only", "status": "proposed", "path": "requirements/SET002.md"}, {"id": "SET003", "title": "config Contains No Executable Logic", "status": "proposed", "path": "requirements/SET003.md"}, {"id": "SET004", "title": "Environment Variable Overrides for Config Defaults", "status": "proposed", "path": "requirements/SET004.md"}, {"id": "SLP001", "title": "ACPI Sleep State Detection", "status": "proposed", "path": "requirements/SLP001.md"}, {"id": "SLP002", "title": "Configurable Pre-Sleep Delay", "status": "proposed", "path": "requirements/SLP002.md"}, {"id": "SLP003", "title": "Configurable Wake Timer", "status": "proposed", "path": "requirements/SLP003.md"}, {"id": "SLP004", "title": "Post-Wake Service Verification", "status": "proposed", "path": "requirements/SLP004.md"}, {"id": "SLP005", "title": "Atomic Sleep State Bit-Field Update", "status": "proposed", "path": "requirements/SLP005.md"}]};
+const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+const gridColor = dark ? '#3a3a37' : '#e5e3dc';
+const textColor = dark ? '#9c9a92' : '#6b6b6b';
+Chart.defaults.color = textColor;
+Chart.defaults.borderColor = gridColor;
+
+document.getElementById('gen').textContent = D.generated;
+document.getElementById('kpi-reqs').textContent = D.totals.reqs;
+document.getElementById('kpi-bugs').textContent = D.totals.bugs;
+document.getElementById('kpi-open').textContent = D.totals.open_bugs;
+document.getElementById('kpi-todo').textContent = D.totals.must_todo;
+
+function pie(canvasId, data) {
+  new Chart(document.getElementById(canvasId), {
+    type: 'doughnut',
+    data: {
+      labels: data.labels,
+      datasets: [{
+        data: data.values,
+        backgroundColor: data.colors,
+        borderColor: dark ? '#1a1a1a' : '#fff',
+        borderWidth: 2,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: 'right', labels: { boxWidth: 12, font: { size: 12 } } } },
+      cutout: '60%'
+    }
+  });
+}
+
+pie('c-req', D.req_status);
+pie('c-bug', D.bug_status);
+
+new Chart(document.getElementById('c-sec'), {
+  type: 'bar',
+  data: {
+    labels: D.section.labels,
+    datasets: [
+      { label: 'Verified', data: D.section.verified, backgroundColor: '#1D9E75' },
+      { label: 'Implemented / in progress', data: D.section.in_progress, backgroundColor: '#3B8BD4' },
+      { label: 'Proposed', data: D.section.todo, backgroundColor: '#F2A623' },
+    ]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    scales: {
+      x: { stacked: true, grid: { display: false } },
+      y: { stacked: true, beginAtZero: true, ticks: { stepSize: 1 } }
+    },
+    plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 12 } } } }
+  }
+});
+
+function table(elId, rows, columns) {
+  const el = document.getElementById(elId);
+  if (rows.length === 0) { el.innerHTML = '<div class="empty">None.</div>'; return; }
+  const thead = '<tr>' + columns.map(c => `<th>${c.label}</th>`).join('') + '</tr>';
+  const tbody = rows.map(r => '<tr>' +
+    columns.map(c => `<td>${c.render(r)}</td>`).join('') +
+  '</tr>').join('');
+  el.innerHTML = `<table><thead>${thead}</thead><tbody>${tbody}</tbody></table>`;
+}
+
+table('t-open', D.open_bugs, [
+  { label: 'ID',      render: r => `<a href="${r.path}">${r.id}</a>` },
+  { label: 'Created', render: r => r.created },
+  { label: 'OS',      render: r => (r.os || []).join(', ') },
+  { label: 'Title',   render: r => r.title },
+]);
+
+table('t-todo', D.must_todo, [
+  { label: 'ID',     render: r => `<a href="${r.path}">${r.id}</a>` },
+  { label: 'Status', render: r => r.status },
+  { label: 'Title',  render: r => r.title },
+]);
+</script>
+</body>
+</html>
+
