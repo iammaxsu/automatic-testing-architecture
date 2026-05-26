@@ -17,6 +17,7 @@
 #   - Summary is assembled after all pairs complete (wait)
 #
 # Changelog:
+#   v00.00.06  NET009: TCP >= 95% link speed verdict; show all NICs (excluded as SKIPPED)
 #   v00.00.05  NET011: --skip / --exclude CLI flag to exclude specific NICs
 #   v00.00.04  result.json emission (LOG015); per-pair JSON tmp files
 #   v00.00.03  Parallel pair execution; per-pair log; PID-tracked iperf3 cleanup
@@ -32,7 +33,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
 fi
 
 export _net_test_version
-: "${_net_test_version:="00.00.05"}"
+: "${_net_test_version:="00.00.06"}"
 
 echo "[INFO] running net_test.sh v${_net_test_version}."
 
@@ -62,7 +63,7 @@ find_and_source "function.sh"
 
 # ---- API version check ----
 : "${_requires_config_api:=00.00.01}"
-: "${_requires_function_api:=00.00.02}"
+: "${_requires_function_api:=00.00.03}"
 check_api_versions "net_test.sh" "${_requires_config_api}" "${_requires_function_api}"
 
 # ---------- Parse CLI ----------
@@ -389,17 +390,27 @@ _run_pair() {
       >> "${pair_sum}"
 
     # Append structured speed entry to pair_json (for result.json).
-    # Numeric throughputs in canonical Mbits/sec; verdict driven by ping
-    # outcome until NET009 throughput thresholds are defined.
+    # Numeric throughputs in canonical Mbits/sec.
+    # NET009: TCP throughput verdict — both fwd and rev must reach >= 95% of link speed.
     local n_tcp_fwd n_tcp_rev n_udp_fwd n_udp_rev speed_verdict
     n_tcp_fwd="$(_extract_mbps_num "${tcp_fwd}")"
     n_tcp_rev="$(_extract_mbps_num "${tcp_rev}")"
     n_udp_fwd="$(_extract_mbps_num "${udp_fwd}")"
     n_udp_rev="$(_extract_mbps_num "${udp_rev}")"
     if [[ "${v4_res}" != "PASS" || "${v6_res}" != "PASS" ]]; then
-      speed_verdict="FAIL"     # ping fail = real failure (0% loss is the implicit threshold)
+      speed_verdict="FAIL"     # ping fail = real failure
+    elif [[ "${n_tcp_fwd}" == "0" || "${n_tcp_rev}" == "0" ]]; then
+      speed_verdict="UNKNOWN"  # iperf3 produced no result; cannot evaluate
     else
-      speed_verdict="UNKNOWN"  # pings ok, throughput threshold not yet defined (NET009)
+      # Pass threshold: both TCP directions >= 95% of nominal link speed (NET009)
+      local _thr_mbps
+      _thr_mbps=$(awk -v s="${_netspd}" 'BEGIN{printf "%g", s*0.95}')
+      if awk -v f="${n_tcp_fwd}" -v r="${n_tcp_rev}" -v t="${_thr_mbps}" \
+            'BEGIN{exit (f>=t && r>=t) ? 0 : 1}'; then
+        speed_verdict="PASS"
+      else
+        speed_verdict="FAIL"   # throughput below 95% of link speed
+      fi
     fi
     local _pair_json_new
     _pair_json_new=$(jq \
@@ -484,11 +495,19 @@ for (( loop_n=1; loop_n<=_loops_this_run; loop_n++ )); do
     fi
   done
 
-  # N/A rows for skipped NICs
+  # N/A rows for odd-count NICs (no pair)
   if (( ${#skipped_ethArray[@]} > 0 )); then
     for _sk in "${skipped_ethArray[@]}"; do
       printf "%-23s | %10s | %8s | %8s | %18s | %18s | %18s | %18s\n" \
         "${_sk}(no pair)" "N/A" "N/A" "N/A" "N/A" "N/A" "N/A" "N/A" >> "${_netsum}"
+    done
+  fi
+
+  # SKIPPED rows for NICs excluded via --skip (NET011)
+  if (( ${#excluded_ethArray[@]} > 0 )); then
+    for _ex in "${excluded_ethArray[@]}"; do
+      printf "%-23s | %10s | %8s | %8s | %18s | %18s | %18s | %18s\n" \
+        "${_ex}(--skip)" "SKIPPED" "-" "-" "-" "-" "-" "-" >> "${_netsum}"
     done
   fi
 
@@ -500,6 +519,22 @@ elp_time | tee -a "${_netlog}"
 echo "[INFO] Main log : ${_netlog}"
 echo "[INFO] Summary  : ${_netsum}"
 echo "[INFO] Pair logs: ${log_root}/net_test_pair*_${_run_ts}.log"
+
+# Append SKIPPED entries for NICs excluded via --skip (NET011).
+# Each excluded NIC gets one entry with verdict=SKIPPED so it appears in the
+# HTML report and result.json, making it visible to reviewers.
+if (( ${#excluded_ethArray[@]} > 0 )); then
+  for _ex in "${excluded_ethArray[@]}"; do
+    _jq_pairs=$(jq \
+      --arg name "${_ex}" \
+      '. + [{ name: $name, skip_reason: "--skip flag (NET011)",
+              speeds: [{ speed_mbps: 0, ipv4_ping: "SKIPPED", ipv6_ping: "SKIPPED",
+                throughput: { tcp_fwd_mbps: 0, tcp_rev_mbps: 0,
+                              udp_fwd_mbps: 0, udp_rev_mbps: 0 },
+                verdict: "SKIPPED" }] }]' \
+      <<<"${_jq_pairs}")
+  done
+fi
 
 # ---------- Emit result.json (LOG015 / LOG017 / LOG020) ----------
 _resultjson="${log_root}/net_test_${_run_ts}.result.json"

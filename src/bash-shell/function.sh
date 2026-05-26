@@ -8,7 +8,7 @@
 set -Eeuo pipefail
 
 export _function_api_version
-: "${_function_api_version:="00.00.02"}"
+: "${_function_api_version:="00.00.03"}"
 
 # ---------- API version utilities ----------
 _version_ge() {
@@ -350,8 +350,8 @@ prepare_net_tools() {
 }
 
 # ---------- Netns (enp* only) ----------
-unset _ethArray even_ethArray odd_ethArray skipped_ethArray
-declare -ga _ethArray even_ethArray odd_ethArray skipped_ethArray
+unset _ethArray even_ethArray odd_ethArray skipped_ethArray excluded_ethArray
+declare -ga _ethArray even_ethArray odd_ethArray skipped_ethArray excluded_ethArray
 
 __sanitize_if() {
   # strip CR/LF and anything after '@' (e.g., vlan/master decorations)
@@ -401,6 +401,7 @@ netns_add() {
   netns_del || true
 
   _ethArray=()
+  excluded_ethArray=()
   # Use ip -o to get single-line per link; sanitize names
   while IFS= read -r name; do
     name="$(__sanitize_if "$name")"
@@ -420,6 +421,7 @@ netns_add() {
       done
       if (( _excluded )); then
         echo "[INFO] NIC '${_ifn}' excluded by --skip (NET011) — will not be tested."
+        excluded_ethArray+=("${_ifn}")
       else
         _filtered+=("${_ifn}")
       fi
