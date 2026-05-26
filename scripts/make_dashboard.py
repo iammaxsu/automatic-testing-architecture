@@ -30,6 +30,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 REQ_DIR = REPO_ROOT / "requirements"
 BUG_DIR = REPO_ROOT / "bugs"
 
+# Base URL for linking to source files on GitHub.
+# Set to None to use relative paths (works locally but not on GitHub Pages).
+GITHUB_BLOB_BASE = "https://github.com/iammaxsu/automatic-testing-architecture/blob/main"
+
 REQ_STATUSES = ["proposed", "implementing", "implemented", "verified", "withdrawn"]
 BUG_STATUSES = ["open", "in-progress", "resolved", "closed", "invalid", "wont-fix"]
 STATUS_COLORS = {
@@ -116,16 +120,21 @@ def main():
         section_data["todo"].append(
             sum(1 for r in sec_reqs if r.get("status") == "proposed"))
 
+    def file_url(rel_path):
+        if GITHUB_BLOB_BASE:
+            return f"{GITHUB_BLOB_BASE}/{rel_path}"
+        return rel_path
+
     open_bugs = [
         {"id": b["id"], "title": b["_title"], "created": str(b.get("created", "")),
-         "os": b.get("os") or [], "path": b["_path"]}
+         "os": b.get("os") or [], "path": file_url(b["_path"])}
         for b in bugs if b.get("status") in ("open", "in-progress")
     ]
     open_bugs.sort(key=lambda b: b["created"])
 
     must_todo = [
         {"id": r["id"], "title": r["_title"], "status": r.get("status", "?"),
-         "path": r["_path"]}
+         "path": file_url(r["_path"])}
         for r in reqs
         if r.get("priority") == "Must"
         and r.get("status") in ("proposed", "implementing")
