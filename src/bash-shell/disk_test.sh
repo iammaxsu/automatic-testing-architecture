@@ -5,7 +5,7 @@
 set -Eeuo pipefail
 
 export _disk_test_version
-: "${_disk_test_version:="00.00.02"}"
+: "${_disk_test_version:="00.00.03"}"
 
 # ---------- Locate & source companions (REQUIRED) ----------
 _entry="$(readlink -f "${BASH_SOURCE[0]:-$0}")"     # The script with full path, e.g. /home/adlink/Downloads/test.sh.
@@ -34,12 +34,20 @@ find_and_source "config.sh"
 find_and_source "function.sh"
 
 # ---- API version check ----
-: "${_requires_config_api:=00.00.01}"
+: "${_requires_config_api:=00.00.02}"
 : "${_requires_function_api:=00.00.02}"
 check_api_versions "disk_test.sh" "${_requires_config_api}" "${_requires_function_api}"
 
 # ---------- Parse CLI parameters ----------
 parse_common_cli "$@"
+
+# Parse --sweep from leftover args (parse_common_cli puts unknowns in REM_ARGS)
+_sweep=0
+if [[ ${#REM_ARGS[@]} -gt 0 ]]; then
+  for _rem_a in "${REM_ARGS[@]}"; do
+    [[ "${_rem_a}" == "--sweep" ]] && _sweep=1
+  done
+fi
 
 # ---------- Init logs & session ----------
 log_dir "" 1
@@ -82,7 +90,7 @@ if [[ ! -f "${_disklog}" ]]; then
 fi
 
 # fio 包裝
-run_fio() { 
+run_fio() {
   local _dev="$1" _out="$2"
   shift 2
   sudo fio \
@@ -91,9 +99,106 @@ run_fio() {
     --group_reporting \
     --direct="${_fio_direct:-1}" \
     --size="${_fio_size:-1g}" \
-    --ioengine="${_fio_ioengine}" \
+    --ioengine="${_fio_ioengine:-libaio}" \
+    --randrepeat="${_fio_randrepeat:-0}" \
+    --end_fsync="${_fio_end_fsync:-1}" \
     --output="${log_root}/${_out}" \
     "$@"
+}
+
+# ---------- Sweep mode helper ----------
+# Runs a BS × QD × SEQ/RND × read/write matrix for one block device.
+# Output: <sweep_dir>/<short>_sweep.csv  and  <sweep_dir>/<short>_sweep.txt
+# fio JSON logs per test: <sweep_dir>/<short>_<testname>.json
+_sweep_dev() {
+  local dev="$1" sweep_dir="$2"
+  local short="${dev#/dev/}"
+  local csv_path="${sweep_dir}/${short}_sweep.csv"
+  local txt_path="${sweep_dir}/${short}_sweep.txt"
+
+  echo "Device,Pattern,RW,BlockSize,QueueDepth,Threads,IOPS,Throughput_MiB_s,Throughput_MB_s,AvgLat_ms,LogFile" \
+    > "${csv_path}"
+
+  {
+    printf "Disk Sweep Summary  device=%s  threads=%s\n" "${dev}" "${_SWEEP_THREADS}"
+    echo "=================================================="
+    echo "Columns: IOPS  |  Throughput (MiB/s)  |  Throughput (MB/s)  |  AvgLat (ms)"
+    echo "Tip: SEQ -> Throughput (MiB/s); RND 4K -> IOPS + AvgLat"
+    echo ""
+  } > "${txt_path}"
+
+  local pat rw fio_rw jkey bs qd test_name log_file
+  local iops bw_kib lat_ns mibs mbs lat_ms
+
+  # Loop order (pat -> rw -> bs -> qd) gives naturally sorted output.
+  for pat in SEQ RND; do
+    for rw in read write; do
+      [[ "${pat}" == "SEQ" ]] && fio_rw="${rw}" || fio_rw="rand${rw}"
+      [[ "${rw}"  == "read" ]] && jkey="read"   || jkey="write"
+
+      for bs in "${_SWEEP_BLOCK_SIZES[@]}"; do
+        for qd in "${_SWEEP_QUEUE_DEPTHS[@]}"; do
+          test_name="${pat}_${rw}_b${bs}_q${qd}_t${_SWEEP_THREADS}"
+          log_file="${sweep_dir}/${short}_${test_name}.json"
+
+          log "[SWEEP] ${dev}  ${test_name}"
+
+          sudo fio \
+            --name="${test_name}" \
+            --filename="${dev}" \
+            --direct=1 \
+            --ioengine="${_fio_ioengine:-libaio}" \
+            --rw="${fio_rw}" \
+            --bs="${bs}" \
+            --iodepth="${qd}" \
+            --numjobs="${_SWEEP_THREADS}" \
+            --size="${_fio_size:-1g}" \
+            --ramp_time="${_sweep_warmup:-1}" \
+            --runtime="${_sweep_duration:-5}" \
+            --time_based \
+            --randrepeat=0 \
+            --end_fsync=1 \
+            --group_reporting \
+            --output-format=json \
+            --output="${log_file}" 2>/dev/null || true
+
+          iops="" bw_kib="" lat_ns=""
+          if [[ -f "${log_file}" ]]; then
+            iops=$(   jq -r ".jobs[0].${jkey}.iops"         "${log_file}" 2>/dev/null || echo "")
+            bw_kib=$( jq -r ".jobs[0].${jkey}.bw"           "${log_file}" 2>/dev/null || echo "")
+            lat_ns=$( jq -r ".jobs[0].${jkey}.lat_ns.mean"  "${log_file}" 2>/dev/null || echo "")
+          fi
+
+          if [[ -n "${iops}" && "${iops}" != "null" ]]; then
+            iops=$(  awk -v v="${iops}"   'BEGIN{printf "%.2f", v}')
+            mibs=$(  awk -v v="${bw_kib}" 'BEGIN{printf "%.3f", v/1024}')
+            mbs=$(   awk -v v="${bw_kib}" 'BEGIN{printf "%.3f", v*1024/1000000}')
+            lat_ms=$(awk -v v="${lat_ns}" 'BEGIN{printf "%.3f", v/1000000}')
+
+            echo "${dev},${pat},${rw},${bs},${qd},${_SWEEP_THREADS},${iops},${mibs},${mbs},${lat_ms},${log_file}" \
+              >> "${csv_path}"
+            printf "%-3s %-5s  bs=%-6s q=%-4s  IOPS=%12s  Thpt=%10s MiB/s  %10s MB/s  AvgLat=%9s ms\n" \
+              "${pat}" "${rw}" "${bs}" "${qd}" "${iops}" "${mibs}" "${mbs}" "${lat_ms}" \
+              >> "${txt_path}"
+          else
+            echo "${dev},${pat},${rw},${bs},${qd},${_SWEEP_THREADS},,,,,[no parse] ${log_file}" \
+              >> "${csv_path}"
+            printf "%-3s %-5s  bs=%-6s q=%-4s  [no data]\n" \
+              "${pat}" "${rw}" "${bs}" "${qd}" \
+              >> "${txt_path}"
+          fi
+        done
+      done
+      echo "" >> "${txt_path}"
+    done
+  done
+
+  log "Sweep CSV: ${csv_path}"
+  log "Sweep TXT: ${txt_path}"
+  echo ""
+  echo "Sweep results:"
+  echo "  CSV: ${csv_path}"
+  echo "  TXT: ${txt_path}"
 }
 
 log "==== disk_test.sh ===="
@@ -202,6 +307,21 @@ if [[ "${YES_I_UNDERSTAND:-0}" != "1" ]]; then
     log "Cancelled."
     exit 0
   fi
+fi
+
+# ---------- Sweep mode ----------
+if [[ "${_sweep}" == "1" ]]; then
+  _sweep_run_dir="${log_root}/sweep_${_run_ts}"
+  mkdir -p "${_sweep_run_dir}"
+  log "Sweep mode: ${#_SWEEP_BLOCK_SIZES[@]} block sizes × ${#_SWEEP_QUEUE_DEPTHS[@]} queue depths × 4 patterns"
+  log "Output dir: ${_sweep_run_dir}"
+
+  for dev in "${SAFE[@]}"; do
+    _sweep_dev "${dev}" "${_sweep_run_dir}"
+  done
+
+  test_progress_clear "sweep completed. Safe to power off."
+  exit 0
 fi
 
 for (( loop_n=1; loop_n<=_loops_this_run; loop_n++ )); do
