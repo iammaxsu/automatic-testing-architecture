@@ -11,7 +11,7 @@ set -Eeuo pipefail
 
 # ---------- config API version ----------
 export _config_api_version
-: "${_config_api_version:="00.00.01"}"
+: "${_config_api_version:="00.00.02"}"
 
 # ---------- Timestamp format ----------
 : "${_human_timestamp_format:=%Y-%m-%d %H-%M-%S}"
@@ -107,7 +107,9 @@ setup_session() {
 : "${_fio_runtime:=5}"      # runtime in seconds: 5|10|15|30|60
 : "${_fio_ramp:=0}"
 : "${_fio_name:=test}"
-: "${_fio_ioengine:=psync}"      # sync|psync|libaio|mmap|pvsync|pvsync2
+: "${_fio_ioengine:=libaio}"     # sync|psync|libaio|mmap|pvsync|pvsync2
+: "${_fio_randrepeat:=0}"        # 0 = varied random patterns per run (KDiskMark default)
+: "${_fio_end_fsync:=1}"         # 1 = fsync after write stage (KDiskMark default)
 
 # ===== Parameter list for SATA =====
 # Format: "BASE  RW  BS   IODEPTH  NUMJOBS"
@@ -160,3 +162,12 @@ FIO_SUMMARY_NVME=(
   "RND4KQ1T1      Read"
   "RND4KQ1T1      Write"
 )
+
+# ===== Sweep mode parameters (used when disk_test.sh --sweep is given) =====
+# Block sizes and queue depths mirror the DiskSpd matrix reference script.
+_SWEEP_BLOCK_SIZES=(4k 8k 16k 32k 64k 128k 256k 512k 1m 2m 4m 8m)
+_SWEEP_QUEUE_DEPTHS=(1 2 4 8 16 32 64 128 256 512)
+_SWEEP_THREADS=1
+: "${_sweep_duration:=5}"    # seconds of measured I/O per test (--runtime)
+: "${_sweep_warmup:=1}"      # ramp_time seconds before measurement starts
+export _SWEEP_THREADS _sweep_duration _sweep_warmup
