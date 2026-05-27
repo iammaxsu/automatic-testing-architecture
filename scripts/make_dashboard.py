@@ -125,31 +125,37 @@ def main():
             return f"{GITHUB_BLOB_BASE}/{rel_path}"
         return rel_path
 
-    open_bugs = [
-        {"id": b["id"], "title": b["_title"], "created": str(b.get("created", "")),
-         "os": b.get("os") or [], "path": file_url(b["_path"])}
-        for b in bugs if b.get("status") in ("open", "in-progress")
-    ]
-    open_bugs.sort(key=lambda b: b["created"])
+    open_bugs_count = sum(1 for b in bugs if b.get("status") in ("open", "in-progress"))
+    must_todo_count = sum(
+        1 for r in reqs
+        if r.get("priority") == "Must" and r.get("status") in ("proposed", "implementing")
+    )
 
-    must_todo = [
-        {"id": r["id"], "title": r["_title"], "status": r.get("status", "?"),
+    all_reqs = [
+        {"id": r["id"], "title": r["_title"],
+         "status": r.get("status", "?"), "priority": r.get("priority", "?"),
          "path": file_url(r["_path"])}
         for r in reqs
-        if r.get("priority") == "Must"
-        and r.get("status") in ("proposed", "implementing")
     ]
-    must_todo.sort(key=lambda r: r["id"])
+    all_reqs.sort(key=lambda r: r["id"])
+
+    all_bugs = [
+        {"id": b["id"], "title": b["_title"], "status": b.get("status", "?"),
+         "created": str(b.get("created", "")), "os": b.get("os") or [],
+         "path": file_url(b["_path"])}
+        for b in bugs
+    ]
+    all_bugs.sort(key=lambda b: b["id"])
 
     data = {
         "generated": now,
         "totals": {"reqs": len(reqs), "bugs": len(bugs),
-                   "open_bugs": len(open_bugs), "must_todo": len(must_todo)},
+                   "open_bugs": open_bugs_count, "must_todo": must_todo_count},
         "req_status": req_status_data,
         "bug_status": bug_status_data,
         "section": section_data,
-        "open_bugs": open_bugs,
-        "must_todo": must_todo,
+        "all_reqs": all_reqs,
+        "all_bugs": all_bugs,
     }
 
     print(HTML_TEMPLATE.replace("__DATA__", json.dumps(data, ensure_ascii=False)))
@@ -205,9 +211,31 @@ HTML_TEMPLATE = r"""<!doctype html>
   .table-card { background:var(--card); border:1px solid var(--border);
                 border-radius:8px; padding:8px 0; margin-bottom:16px; }
   .table-card h2 { margin:8px 16px 4px; border:none; padding:0; }
+  .table-card .filter-bar { display:flex; flex-wrap:wrap; gap:12px; align-items:center;
+                             padding:6px 16px 8px; font-size:12px; color:var(--muted); }
+  .table-card .filter-bar label { display:flex; align-items:center; gap:6px; }
+  .table-card .filter-bar select {
+    font-size:12px; padding:3px 6px; border:1px solid var(--border);
+    border-radius:4px; background:var(--bg); color:var(--fg); cursor:pointer; }
+  .table-card .filter-bar .count { margin-left:auto; font-size:11px; color:var(--muted); }
   .empty { color:var(--muted); font-style:italic; padding:12px 16px; }
   code { background:var(--border); padding:1px 6px; border-radius:3px;
          font-size:12px; }
+  .badge { display:inline-block; padding:1px 7px; border-radius:3px;
+           font-size:11px; font-weight:500; }
+  .s-proposed    { background:#FEF3C7; color:#92400E; }
+  .s-implementing{ background:#DBEAFE; color:#1E40AF; }
+  .s-implemented { background:#D1FAE5; color:#065F46; }
+  .s-verified    { background:#ECFDF5; color:#047857; }
+  .s-withdrawn   { background:#F3F4F6; color:#6B7280; }
+  .s-open        { background:#FEE2E2; color:#991B1B; }
+  .s-in-progress { background:#FEF3C7; color:#92400E; }
+  .s-resolved    { background:#D1FAE5; color:#065F46; }
+  .s-closed      { background:#ECFDF5; color:#047857; }
+  .s-invalid     { background:#F3F4F6; color:#6B7280; }
+  .s-wont-fix    { background:#F3F4F6; color:#4B5563; }
+  .p-must        { background:#FEE2E2; color:#991B1B; font-size:10px; }
+  .p-should      { background:#DBEAFE; color:#1E40AF; font-size:10px; }
 </style>
 </head>
 <body>
@@ -241,13 +269,47 @@ HTML_TEMPLATE = r"""<!doctype html>
 </div>
 
 <div class="table-card">
-  <h2>Open bugs (oldest first)</h2>
-  <div id="t-open"></div>
+  <h2>Requirements</h2>
+  <div class="filter-bar">
+    <label>Status
+      <select id="req-status" onchange="renderReqs()">
+        <option value="">All</option>
+        <option value="proposed">proposed</option>
+        <option value="implementing">implementing</option>
+        <option value="implemented">implemented</option>
+        <option value="verified">verified</option>
+        <option value="withdrawn">withdrawn</option>
+      </select>
+    </label>
+    <label>Priority
+      <select id="req-priority" onchange="renderReqs()">
+        <option value="">All</option>
+        <option value="Must">Must</option>
+        <option value="Should">Should</option>
+      </select>
+    </label>
+    <span class="count" id="req-count"></span>
+  </div>
+  <div id="t-reqs"></div>
 </div>
 
 <div class="table-card">
-  <h2>Must-priority requirements not yet implemented</h2>
-  <div id="t-todo"></div>
+  <h2>Bugs</h2>
+  <div class="filter-bar">
+    <label>Status
+      <select id="bug-status" onchange="renderBugs()">
+        <option value="">All</option>
+        <option value="open">open</option>
+        <option value="in-progress">in-progress</option>
+        <option value="resolved">resolved</option>
+        <option value="closed">closed</option>
+        <option value="invalid">invalid</option>
+        <option value="wont-fix">wont-fix</option>
+      </select>
+    </label>
+    <span class="count" id="bug-count"></span>
+  </div>
+  <div id="t-bugs"></div>
 </div>
 
 <script>
@@ -317,18 +379,41 @@ function table(elId, rows, columns) {
   el.innerHTML = `<table><thead>${thead}</thead><tbody>${tbody}</tbody></table>`;
 }
 
-table('t-open', D.open_bugs, [
-  { label: 'ID',      render: r => `<a href="${r.path}">${r.id}</a>` },
-  { label: 'Created', render: r => r.created },
-  { label: 'OS',      render: r => (r.os || []).join(', ') },
-  { label: 'Title',   render: r => r.title },
-]);
+function badge(val, prefix) {
+  const cls = prefix + val.replace(/[^a-z0-9]/gi, '-').toLowerCase();
+  return `<span class="badge ${cls}">${val}</span>`;
+}
 
-table('t-todo', D.must_todo, [
-  { label: 'ID',     render: r => `<a href="${r.path}">${r.id}</a>` },
-  { label: 'Status', render: r => r.status },
-  { label: 'Title',  render: r => r.title },
-]);
+function renderReqs() {
+  const sf = document.getElementById('req-status').value;
+  const pf = document.getElementById('req-priority').value;
+  const rows = D.all_reqs.filter(r =>
+    (!sf || r.status === sf) && (!pf || r.priority === pf)
+  );
+  document.getElementById('req-count').textContent = rows.length + ' / ' + D.all_reqs.length;
+  table('t-reqs', rows, [
+    { label: 'ID',       render: r => `<a href="${r.path}">${r.id}</a>` },
+    { label: 'Priority', render: r => badge(r.priority || '?', 'p-') },
+    { label: 'Status',   render: r => badge(r.status   || '?', 's-') },
+    { label: 'Title',    render: r => r.title },
+  ]);
+}
+
+function renderBugs() {
+  const sf = document.getElementById('bug-status').value;
+  const rows = D.all_bugs.filter(b => !sf || b.status === sf);
+  document.getElementById('bug-count').textContent = rows.length + ' / ' + D.all_bugs.length;
+  table('t-bugs', rows, [
+    { label: 'ID',      render: r => `<a href="${r.path}">${r.id}</a>` },
+    { label: 'Created', render: r => r.created },
+    { label: 'OS',      render: r => (r.os || []).join(', ') },
+    { label: 'Status',  render: r => badge(r.status || '?', 's-') },
+    { label: 'Title',   render: r => r.title },
+  ]);
+}
+
+renderReqs();
+renderBugs();
 </script>
 </body>
 </html>
