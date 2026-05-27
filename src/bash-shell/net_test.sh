@@ -17,6 +17,7 @@
 #   - Summary is assembled after all pairs complete (wait)
 #
 # Changelog:
+#   v00.00.07  Fix ethtool pipeline crash when NIC has no link (grep exits 1 → set -e)
 #   v00.00.06  NET009: TCP >= 95% link speed verdict; show all NICs (excluded as SKIPPED)
 #   v00.00.05  NET011: --skip / --exclude CLI flag to exclude specific NICs
 #   v00.00.04  result.json emission (LOG015); per-pair JSON tmp files
@@ -33,7 +34,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
 fi
 
 export _net_test_version
-: "${_net_test_version:="00.00.06"}"
+: "${_net_test_version:="00.00.07"}"
 
 echo "[INFO] running net_test.sh v${_net_test_version}."
 
@@ -284,10 +285,12 @@ _run_pair() {
 
   _main_log "[Pair ${pair_idx}] START  ${pair}"
 
-  # Gather supported full-duplex speeds
+  # Gather supported full-duplex speeds.
+  # || true prevents set -e from aborting the subshell when grep finds no '/Full'
+  # lines (NIC has no link / ethtool cannot read speed table).
   local _speed_list
-  _speed_list="$(echo "${_pwd}" | sudo -S ip netns exec "ns_${ev}" ethtool "${ev}" \
-    | tr ' ' '\n' | grep '/Full' | sed 's/[^0-9]//g' | sort -n | uniq)"
+  _speed_list="$(echo "${_pwd}" | sudo -S ip netns exec "ns_${ev}" ethtool "${ev}" 2>/dev/null \
+    | tr ' ' '\n' | grep '/Full' | sed 's/[^0-9]//g' | sort -n | uniq)" || true
   [[ -z "${_speed_list}" ]] && _speed_list="10 100 1000 2500"
 
   : > "${pair_sum}"

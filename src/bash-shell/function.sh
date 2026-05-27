@@ -8,7 +8,7 @@
 set -Eeuo pipefail
 
 export _function_api_version
-: "${_function_api_version:="00.00.03"}"
+: "${_function_api_version:="00.00.04"}"
 
 # ---------- API version utilities ----------
 _version_ge() {
@@ -1652,29 +1652,35 @@ generate_net_report() {
   pairs_count="$(jq '.details.pairs | length'                  "${resultjson}")"
   tests_count="$(jq '[.details.pairs[].speeds[]] | length'     "${resultjson}")"
 
-  if (( tests_count == 0 )); then
-    echo "[WARN] generate_net_report: result.json has zero speed entries in ${resultjson}" >&2
+  if (( pairs_count == 0 )); then
+    echo "[WARN] generate_net_report: result.json has no pairs in ${resultjson}" >&2
     return 1
   fi
 
   # ---- Build JS rows array via jq ----
-  # One row per (pair, speed). Throughput stored as numeric Mbits/sec.
+  # One row per (pair, speed). Pairs whose speeds[] is empty (namespace creation
+  # failed, no link, crash before first speed) appear as a single NOT_TESTED row
+  # so they are always visible in the report — never silently hidden.
   local rows_js
   rows_js="$(jq -c '
     [ .details.pairs[]
       | .name as $pair
-      | .speeds[]
-      | {
-          pair:    $pair,
-          spd:     .speed_mbps,
-          v4:      .ipv4_ping,
-          v6:      .ipv6_ping,
-          tf:      .throughput.tcp_fwd_mbps,
-          tr:      .throughput.tcp_rev_mbps,
-          uf:      .throughput.udp_fwd_mbps,
-          ur:      .throughput.udp_rev_mbps,
-          verdict: .verdict
-        }
+      | if (.speeds | length) == 0 then
+          { pair: $pair, spd: null, v4: null, v6: null,
+            tf: null, tr: null, uf: null, ur: null,
+            verdict: "NOT_TESTED" }
+        else
+          .speeds[]
+          | { pair:    $pair,
+              spd:     .speed_mbps,
+              v4:      .ipv4_ping,
+              v6:      .ipv6_ping,
+              tf:      .throughput.tcp_fwd_mbps,
+              tr:      .throughput.tcp_rev_mbps,
+              uf:      .throughput.udp_fwd_mbps,
+              ur:      .throughput.udp_rev_mbps,
+              verdict: .verdict }
+        end
     ]' "${resultjson}")"
 
   # ---- HTML ----
@@ -1690,7 +1696,8 @@ h1{font-size:18px;font-weight:500;margin-bottom:4px}.meta{font-size:12px;color:#
 .card{background:#fff;border:0.5px solid #ddd;border-radius:8px;padding:.75rem 1rem}
 .card .lbl{font-size:11px;color:#888;margin-bottom:4px}.card .val{font-size:22px;font-weight:500;color:#185FA5}
 .v-pass{color:#1D9E75!important}.v-fail{color:#E24B4A!important}.v-unknown{color:#888!important}
-.v-error{color:#E24B4A!important}.v-skipped{color:#aaa!important}
+.v-error{color:#E24B4A!important}.v-skipped{color:#aaa!important}.v-not-tested{color:#aaa!important}
+tr.nt td{background:#f9f9f9;color:#999}
 .sec{background:#fff;border:0.5px solid #ddd;border-radius:8px;padding:1rem 1.25rem;margin-bottom:1rem}
 .sec h2{font-size:12px;font-weight:500;color:#666;text-transform:uppercase;letter-spacing:.04em;margin-bottom:.6rem}
 table{width:100%;border-collapse:collapse;font-size:12px}
@@ -1703,8 +1710,8 @@ td{padding:5px 8px;border-bottom:.5px solid #f0f0f0}tr:hover td{background:#fafa
 <h1>net_test report</h1>
 <p class="meta">Host: ${host} &nbsp;|&nbsp; Kernel: ${kernel} &nbsp;|&nbsp; Session: ${sid}</p>
 <div class="cards">
-<div class="card"><div class="lbl">Pairs tested</div><div class="val">${pairs_count}</div></div>
-<div class="card"><div class="lbl">Tests run</div><div class="val">${tests_count}</div></div>
+<div class="card"><div class="lbl">Pairs (total)</div><div class="val">${pairs_count}</div></div>
+<div class="card"><div class="lbl">Speed tests run</div><div class="val">${tests_count}</div></div>
 <div class="card"><div class="lbl">Total test time</div><div class="val" style="font-size:15px;padding-top:4px">${total_time_str}</div></div>
 <div class="card"><div class="lbl">Verdict</div><div class="val v-$(echo "${overall_verdict}" | tr '[:upper:]' '[:lower:]')" style="font-size:15px;padding-top:4px">${overall_verdict}</div></div>
 </div>
@@ -1720,9 +1727,12 @@ const fmtMbps=v=>(v==null||isNaN(v))?'—':(+v).toFixed(0);
 const badge=v=>v&&v!=='N/A'?'<span class="b '+(v==='PASS'||v==='FAIL'?v:'na')+'">'+v+'</span>':'—';
 ROWS.forEach(r=>{
   const tr=document.createElement('tr');
+  const vLow=(r.verdict||'UNKNOWN').toLowerCase().replace(/_/g,'-');
   if(r.verdict==='FAIL')tr.className='fr';
-  const vClass='v-'+(r.verdict||'UNKNOWN').toLowerCase();
-  tr.innerHTML='<td>'+r.pair+'</td><td>'+r.spd+'</td>'+
+  else if(r.verdict==='NOT_TESTED')tr.className='nt';
+  const vClass='v-'+vLow;
+  const spdCell=r.spd!=null?r.spd:'—';
+  tr.innerHTML='<td>'+r.pair+'</td><td>'+spdCell+'</td>'+
     '<td>'+badge(r.v4)+'</td><td>'+badge(r.v6)+'</td>'+
     '<td style="font-size:11px">'+fmtMbps(r.tf)+'</td>'+
     '<td style="font-size:11px">'+fmtMbps(r.tr)+'</td>'+
