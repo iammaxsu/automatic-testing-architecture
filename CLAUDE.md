@@ -158,6 +158,7 @@ Requirements use a 3-letter prefix + 3-digit number:
 | DET    | device detection                  |
 | SLP    | sleep / suspend tests             |
 | CMP    | OS compatibility                  |
+| PWR    | power cycle / reliability tests   |
 
 Bugs use `BUG{NNNN}` — flat namespace, no domain prefix.
 
