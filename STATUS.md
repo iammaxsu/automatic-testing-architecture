@@ -1,28 +1,32 @@
 # Project Status
 
-_Generated 2026-05-28 02:16 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-05-28 04:01 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
-**Total:** 106
+**Total:** 108
 
 ### By priority
 
 | Priority | Count |
 | --- | --- |
-| Must | 94 |
-| Should | 10 |
+| Must | 95 |
+| Should | 11 |
 | — | 2 |
 
 ### By status
 
 | Status | Count |
 | --- | --- |
-| proposed | 106 |
+| proposed | 103 |
+| implementing | 3 |
+| implemented | 2 |
 
 ```mermaid
 pie showData title Requirements by status
-    "proposed" : 106
+    "proposed" : 103
+    "implementing" : 3
+    "implemented" : 2
 ```
 
 ### By section
@@ -32,7 +36,7 @@ pie showData title Requirements by status
 | CMP | 6 | 0 | 6 |
 | DET | 11 | 0 | 11 |
 | DOC | 4 | 0 | 4 |
-| DSK | 8 | 0 | 8 |
+| DSK | 10 | 0 | 8 |
 | FUN | 6 | 0 | 6 |
 | FWK | 27 | 0 | 27 |
 | LOG | 22 | 0 | 22 |
@@ -65,7 +69,7 @@ pie showData title Requirements by status
 | [DSK001](requirements/DSK001.md) | proposed | Storage Device Enumeration |
 | [DSK002](requirements/DSK002.md) | proposed | OS Partition Exclusion from Destructive Tests |
 | [DSK003](requirements/DSK003.md) | proposed | Explicit Confirmation Before Destructive Tests |
-| [DSK004](requirements/DSK004.md) | proposed | Separate fio Profiles for SATA and NVMe |
+| [DSK004](requirements/DSK004.md) | implementing | Separate fio Profiles for SATA and NVMe |
 | [DSK005](requirements/DSK005.md) | proposed | PASS/FAIL Verdict per fio Pattern |
 | [DSK006](requirements/DSK006.md) | proposed | Disk Test Summary Table Format |
 | [DSK008](requirements/DSK008.md) | proposed | Invalid Block Device Filtering |
@@ -127,7 +131,7 @@ pie showData title Requirements by status
 | [NET006](requirements/NET006.md) | proposed | iperf3 Throughput in Four Combinations |
 | [NET007](requirements/NET007.md) | proposed | Configurable iperf3 Duration |
 | [NET008](requirements/NET008.md) | proposed | Verdict Assignment per Test Item |
-| [NET011](requirements/NET011.md) | proposed | NIC Include/Exclude Lists |
+| [NET011](requirements/NET011.md) | implementing | NIC Include/Exclude Lists |
 | [NET013](requirements/NET013.md) | proposed | iperf3 Log Filename Convention |
 | [SET001](requirements/SET001.md) | proposed | Tunable Parameters in config Only |
 | [SET002](requirements/SET002.md) | proposed | Utility Functions in function Only |
@@ -220,5 +224,7 @@ pie showData title Bugs by status
 
 _(may indicate untested code paths — worth a review)_
 
-_(none)_
+| ID | Status | Title |
+| --- | --- | --- |
+| [DSK009](requirements/DSK009.md) | implemented | fio Engine and Write-Consistency Flags Aligned with KDiskMark v3.2.0 |
 
