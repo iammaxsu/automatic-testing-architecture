@@ -279,11 +279,15 @@ def main() -> int:
     log.info("  JSON    : %s",     json_path)
     log.info("  Report  : %s",     html_path)
 
+    if args.dry_run:
+        log.info("  *** DRY-RUN mode — GPIO will NOT be touched ***")
+
     # Relay
     relay = RelayController(
         pin=args.pin,
         active_low=config.RELAY_ACTIVE_LOW,
         mode=config.GPIO_MODE,
+        dry_run=args.dry_run,
     )
 
     # Liveness checker (None if disabled or no host)
