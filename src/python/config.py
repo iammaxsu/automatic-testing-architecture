@@ -25,12 +25,13 @@ DUT_PORT              = 22  # TCP port to probe (22 = SSH)
 PING_COUNT            = 2   # ping -c N
 PING_TIMEOUT_SEC      = 2   # ping -W N
 TCP_TIMEOUT_SEC       = 3   # TCP connect timeout
-BOOT_TIMEOUT_SEC      = 120 # Max seconds to wait for DUT to come online after power-on
+BOOT_TIMEOUT_SEC      = 180 # Max seconds to wait for DUT to come online after power-on
 DEAD_TIMEOUT_SEC      = 30  # Max seconds to wait for DUT to go offline after power-off
 HEALTH_CHECK_INTERVAL = 30  # Seconds between liveness probes during ON_TIME
 
 # ---------- Safety ----------
 MAX_CONSECUTIVE_FAILS = 3   # Abort test after N consecutive failures (0 = never)
+WARMUP_CYCLES         = 1   # Initialization cycles before the counted test begins (0 = skip)
 
 # ---------- Output ----------
 LOG_DIR    = "./logs"       # Where to write result.json and .log

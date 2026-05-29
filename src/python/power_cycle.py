@@ -16,6 +16,8 @@
 #   --report  DIR             report directory (default same as --out)
 #   --no-check                skip network liveness checks
 #   --dry-run                 run logic without touching GPIO (for testing)
+#   --warmup  N               initialization cycles before the counted test begins (default: 1)
+#   --boot-timeout SECONDS    max wait for DUT to come online (default: 180)
 #
 # Verdicts per cycle:
 #   PASS            — boot OK, ran full ON_TIME, shut down cleanly
@@ -83,6 +85,11 @@ def parse_args() -> argparse.Namespace:
                    help="Disable network liveness checks")
     p.add_argument("--dry-run",  action="store_true",
                    help="Simulate relay without touching GPIO")
+    p.add_argument("--warmup",  default=config.WARMUP_CYCLES, type=int,
+                   help="Initialization cycles before counted test (default: %(default)s)")
+    p.add_argument("--boot-timeout", default=config.BOOT_TIMEOUT_SEC, type=int,
+                   dest="boot_timeout",
+                   help="Max seconds waiting for DUT to boot (default: %(default)s)")
     return p.parse_args()
 
 
@@ -92,7 +99,9 @@ def run_one_cycle(
     n: int,
     args: argparse.Namespace,
     relay: RelayController,
-    checker,          # LivenessChecker | None
+    checker,                  # LivenessChecker | None
+    total: int = 0,           # total cycles in this phase (for log label)
+    is_warmup: bool = False,
 ) -> dict:
     """Execute one power cycle and return a cycle-record dict."""
     rec = {
@@ -108,7 +117,11 @@ def run_one_cycle(
         "notes":            "",
     }
 
-    log.info("─── Cycle %d / %d ───────────────────────────────", n, args.cycles)
+    _total = total or args.cycles
+    if is_warmup:
+        log.info("[WARMUP %d/%d] ──────────────────────────────────────", n, _total)
+    else:
+        log.info("─── Cycle %d / %d ───────────────────────────────", n, _total)
 
     # ── 1. Power ON ──────────────────────────────────────────────────────
     try:
@@ -124,7 +137,7 @@ def run_one_cycle(
 
     # ── 2. Wait for DUT to boot ───────────────────────────────────────────
     if checker:
-        ok, boot_t = checker.wait_until_alive(config.BOOT_TIMEOUT_SEC)
+        ok, boot_t = checker.wait_until_alive(args.boot_timeout)
         rec["t_alive"] = function.now_iso()
         rec["boot_time_sec"] = round(boot_t, 2)
 
@@ -275,6 +288,8 @@ def main() -> int:
     log.info("  Cycles  : %d",     args.cycles)
     log.info("  On/Off  : %ds / %ds", args.on_time, args.off_time)
     log.info("  GPIO pin: %d",     args.pin)
+    log.info("  Warmup  : %d cycle(s)", args.warmup)
+    log.info("  Boot TO : %ds",    args.boot_timeout)
     log.info("  Log     : %s",     log_path)
     log.info("  JSON    : %s",     json_path)
     log.info("  Report  : %s",     html_path)
@@ -316,13 +331,30 @@ def main() -> int:
             "cycles_target":    args.cycles,
             "on_time_sec":      args.on_time,
             "off_time_sec":     args.off_time,
-            "boot_timeout_sec": config.BOOT_TIMEOUT_SEC,
+            "boot_timeout_sec": args.boot_timeout,
             "dead_timeout_sec": config.DEAD_TIMEOUT_SEC,
+            "warmup_cycles":    args.warmup,
         },
         "cycles":          [],
         "summary":         {},
         "overall_verdict": "RUNNING",
     }
+
+    # ── Initial state normalization ───────────────────────────────────────────
+    # If DUT is already alive when the test starts (e.g. left on after setup_dut),
+    # force it off first so every test begins from a known OFF state.
+    if checker and checker.is_alive():
+        log.info("DUT is alive at test start — forcing off to establish known state ...")
+        _force_off(args, relay)
+
+    # ── Warmup cycles ─────────────────────────────────────────────────────────
+    if args.warmup > 0:
+        log.info("=== Warmup: %d cycle(s) before counted test ===", args.warmup)
+        for w in range(1, args.warmup + 1):
+            rec = run_one_cycle(w, args, relay, checker,
+                                total=args.warmup, is_warmup=True)
+            log.info("[WARMUP %d/%d] verdict: %s (not counted)", w, args.warmup, rec["verdict"])
+        log.info("=== Warmup complete — starting %d counted cycle(s) ===", args.cycles)
 
     consecutive_fails = 0
 

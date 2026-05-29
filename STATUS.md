@@ -1,16 +1,16 @@
 # Project Status
 
-_Generated 2026-05-29 06:33 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-05-29 08:31 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
-**Total:** 118
+**Total:** 119
 
 ### By priority
 
 | Priority | Count |
 | --- | --- |
-| Must | 104 |
+| Must | 105 |
 | Should | 12 |
 | — | 2 |
 
@@ -20,13 +20,13 @@ _Generated 2026-05-29 06:33 · regenerate with `python scripts/stats.py > STATUS
 | --- | --- |
 | proposed | 103 |
 | implementing | 3 |
-| implemented | 12 |
+| implemented | 13 |
 
 ```mermaid
 pie showData title Requirements by status
     "proposed" : 103
     "implementing" : 3
-    "implemented" : 12
+    "implemented" : 13
 ```
 
 ### By section
@@ -41,7 +41,7 @@ pie showData title Requirements by status
 | FWK | 27 | 0 | 27 |
 | LOG | 22 | 0 | 22 |
 | NET | 13 | 0 | 13 |
-| PWR | 7 | 0 | 0 |
+| PWR | 8 | 0 | 0 |
 | SET | 5 | 0 | 4 |
 | SLP | 5 | 0 | 5 |
 
@@ -236,5 +236,6 @@ _(may indicate untested code paths — worth a review)_
 | [PWR004](requirements/PWR004.md) | implemented | Per-Cycle Verdict Taxonomy |
 | [PWR005](requirements/PWR005.md) | implemented | Structured result.json Output (LOG015 Compliance) |
 | [PWR007](requirements/PWR007.md) | implemented | Safety Controls: Consecutive Fail Abort and Graceful Stop |
+| [PWR008](requirements/PWR008.md) | implemented | Power Cycle Test Warmup and Initial-State Normalization |
 | [SET005](requirements/SET005.md) | implemented | Windows DUT Pre-test Bootstrap Script |
 
