@@ -26,10 +26,13 @@ except ImportError:
 class RelayController:
     """Controls a single relay connected to one RPi GPIO pin."""
 
-    def __init__(self, pin: int, active_low: bool = True, mode: str = "BOARD"):
+    def __init__(self, pin: int, active_low: bool = True, mode: str = "BOARD",
+                 dry_run: bool = False):
         self.pin = pin
         self.active_low = active_low
-        self._dry_run = not _GPIO_AVAILABLE
+        # dry_run=True: caller explicitly requested simulation.
+        # Also activate dry-run when RPi.GPIO is not importable (non-RPi machine).
+        self._dry_run = dry_run or not _GPIO_AVAILABLE
 
         if not self._dry_run:
             _mode = GPIO.BOARD if mode.upper() == "BOARD" else GPIO.BCM
@@ -70,14 +73,16 @@ class RelayController:
           - When DUT is OFF → turns DUT on.
           - When DUT is ON  → sends soft-shutdown request to OS.
         """
-        log.info("ATX press  duration=%.1f s", duration)
+        _tag = "[DRY-RUN] " if self._dry_run else ""
+        log.info("%sATX press  duration=%.1f s", _tag, duration)
         self._close()
         time.sleep(duration)
         self._open()
 
     def atx_force_off(self, duration: float = 5.0) -> None:
         """ATX long press: hold power button ≥4 s to force power off."""
-        log.info("ATX force-off  duration=%.1f s", duration)
+        _tag = "[DRY-RUN] " if self._dry_run else ""
+        log.info("%sATX force-off  duration=%.1f s", _tag, duration)
         self._close()
         time.sleep(duration)
         self._open()
@@ -88,12 +93,14 @@ class RelayController:
 
     def at_power_on(self) -> None:
         """AT PSU: close relay to connect power (maintained state)."""
-        log.info("AT power ON  (relay CLOSE)")
+        _tag = "[DRY-RUN] " if self._dry_run else ""
+        log.info("%sAT power ON  (relay CLOSE)", _tag)
         self._close()
 
     def at_power_off(self) -> None:
         """AT PSU: open relay to cut power (maintained state)."""
-        log.info("AT power OFF (relay OPEN)")
+        _tag = "[DRY-RUN] " if self._dry_run else ""
+        log.info("%sAT power OFF (relay OPEN)", _tag)
         self._open()
 
     # ------------------------------------------------------------------
