@@ -1,4 +1,4 @@
-# function.ps1 — Windows PowerShell shared utilities for automatic-testing-architecture
+# function.ps1  -  Windows PowerShell shared utilities for automatic-testing-architecture
 #
 # Dot-source this file at the top of every Windows test/setup script:
 #
@@ -9,17 +9,17 @@
 #   }
 #
 # Scripts in group 4 (test result logging) require the caller to define:
-#   $_log_path      — directory for per-run logs and golden files
-#   $_counter_file  — path to the run counter file
-#   $_summary_file  — path to the appended summary log
+#   $_log_path       -  directory for per-run logs and golden files
+#   $_counter_file   -  path to the run counter file
+#   $_summary_file   -  path to the appended summary log
 
 Set-StrictMode -Version Latest
 
-# ── Version ───────────────────────────────────────────────────────────────────
+# -- Version -------------------------------------------------------------------
 
 $_function_ps1_api = '00.00.01'
 
-# ── 1. Console output helpers ─────────────────────────────────────────────────
+# -- 1. Console output helpers -------------------------------------------------
 
 function Write-Step { param([string]$Msg)
     Write-Host "`n=== $Msg ===" -ForegroundColor Cyan }
@@ -33,7 +33,7 @@ function Write-Skip { param([string]$Msg)
 function Write-Warn { param([string]$Msg)
     Write-Host "  [WARN] $Msg" -ForegroundColor Yellow }
 
-# ── 2. Path resolution ────────────────────────────────────────────────────────
+# -- 2. Path resolution --------------------------------------------------------
 
 function Resolve-FirstExisting {
     param([Parameter(Mandatory)][string[]]$Paths)
@@ -41,7 +41,7 @@ function Resolve-FirstExisting {
     return $null
 }
 
-# ── 3. PnP / hardware query helpers ──────────────────────────────────────────
+# -- 3. PnP / hardware query helpers ------------------------------------------
 
 function Get-PnpProp {
     param(
@@ -164,11 +164,11 @@ function Convert-LinkSpeedToGb {
     return $null
 }
 
-# ── 4. Test result logging ────────────────────────────────────────────────────
+# -- 4. Test result logging ----------------------------------------------------
 # Requires the calling script to define before dot-sourcing:
-#   $_log_path      — directory for per-run logs and golden files
-#   $_counter_file  — path to the run counter file
-#   $_summary_file  — path to the appended summary log
+#   $_log_path       -  directory for per-run logs and golden files
+#   $_counter_file   -  path to the run counter file
+#   $_summary_file   -  path to the appended summary log
 #
 # Get-Date2 and Get-NextCount also read $script:_date2 / $script:_newcount if
 # the caller already initialised them (e.g. from a shared config.ps1).
