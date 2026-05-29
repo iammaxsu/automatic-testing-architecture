@@ -74,19 +74,23 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# ── helpers ───────────────────────────────────────────────────────────────────
+# ── Version & shared library ──────────────────────────────────────────────────
 
-function Write-Step { param([string]$Msg)
-    Write-Host "`n=== $Msg ===" -ForegroundColor Cyan }
+$_script_ver                = '00.00.02'
+$_requires_function_ps1_api = '00.00.01'
 
-function Write-OK { param([string]$Msg)
-    Write-Host "  [OK]   $Msg" -ForegroundColor Green }
+$_fn = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Definition) 'function.ps1'
+if (-not (Test-Path $_fn)) {
+    Write-Error "function.ps1 not found at $_fn — cannot continue"
+    exit 1
+}
+. $_fn
+if ($script:_function_ps1_api -lt $_requires_function_ps1_api) {
+    Write-Error "function.ps1 API '$($script:_function_ps1_api)' is too old; need '$_requires_function_ps1_api'"
+    exit 1
+}
 
-function Write-Skip { param([string]$Msg)
-    Write-Host "  [SKIP] $Msg" -ForegroundColor DarkGray }
-
-function Write-Warn { param([string]$Msg)
-    Write-Host "  [WARN] $Msg" -ForegroundColor Yellow }
+Write-Host "setup_dut.ps1 v$_script_ver  (function.ps1 API $($script:_function_ps1_api))"
 
 
 # ── 1. PowerShell execution policy ───────────────────────────────────────────
@@ -124,7 +128,6 @@ $sshConfigPath = "C:\ProgramData\ssh\sshd_config"
 if (-not (Test-Path $sshConfigPath)) {
     Write-Warn "sshd_config not found at $sshConfigPath — skipping"
 } else {
-    # Backup original (overwrite previous backup so only one .bak is kept)
     Copy-Item -Path $sshConfigPath -Destination "$sshConfigPath.bak" -Force
 
     $content    = Get-Content $sshConfigPath
@@ -148,29 +151,21 @@ if (-not (Test-Path $sshConfigPath)) {
 
 Write-Step "4 / 9  Firewall rules"
 
-# SSH — TCP 22
 if (-not (Get-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -ErrorAction SilentlyContinue)) {
     New-NetFirewallRule -Name        "OpenSSH-Server-In-TCP" `
                         -DisplayName "OpenSSH Server (sshd)" `
-                        -Direction   Inbound `
-                        -Protocol    TCP `
-                        -LocalPort   22 `
-                        -Action      Allow `
-                        -Enabled     True | Out-Null
+                        -Direction   Inbound -Protocol TCP `
+                        -LocalPort   22 -Action Allow -Enabled True | Out-Null
     Write-OK "Firewall rule created: SSH TCP 22"
 } else {
     Write-Skip "Firewall rule already exists: SSH TCP 22"
 }
 
-# ICMPv4 ping — required for liveness check (power_cycle.py pings DUT)
 if (-not (Get-NetFirewallRule -Name "Allow-ICMPv4-In" -ErrorAction SilentlyContinue)) {
     New-NetFirewallRule -Name        "Allow-ICMPv4-In" `
                         -DisplayName "Allow ICMPv4 echo (ping) Inbound" `
-                        -Protocol    ICMPv4 `
-                        -IcmpType    8 `
-                        -Direction   Inbound `
-                        -Action      Allow `
-                        -Enabled     True | Out-Null
+                        -Protocol    ICMPv4 -IcmpType 8 `
+                        -Direction   Inbound -Action Allow -Enabled True | Out-Null
     Write-OK "Firewall rule created: ICMPv4 ping"
 } else {
     Write-Skip "Firewall rule already exists: ICMPv4 ping"
@@ -183,18 +178,13 @@ Write-Step "5 / 9  Security policy (LimitBlankPasswordUse)"
 
 $tmpSec = "$env:TEMP\secpol_dut.inf"
 secedit /export /cfg $tmpSec | Out-Null
-
 $secContent = Get-Content $tmpSec
-
-# Match both "=4,1" and "= 4, 1" style formatting
 $secContent = $secContent -replace `
     '(MACHINE\\System\\CurrentControlSet\\Control\\Lsa\\LimitBlankPasswordUse\s*=\s*4\s*,\s*)1',
     '${1}0'
-
 $secContent | Set-Content $tmpSec -Encoding Unicode
 secedit /configure /db secedit.sdb /cfg $tmpSec /areas SECURITYPOLICY | Out-Null
 Remove-Item $tmpSec -Force
-
 Write-OK "LimitBlankPasswordUse set to 0 (blank-password SSH logins allowed)"
 
 
@@ -202,24 +192,16 @@ Write-OK "LimitBlankPasswordUse set to 0 (blank-password SSH logins allowed)"
 
 Write-Step "6 / 9  Power scheme"
 
-# All timeouts to 0 (never)
 foreach ($type in @("monitor", "disk", "standby", "hibernate")) {
     foreach ($mode in @("ac", "dc")) {
         powercfg /change "$type-timeout-$mode" 0
     }
 }
-
-# Disable lock-on-resume
-powercfg /SETDCVALUEINDEX SCHEME_CURRENT SUB_NONE CONSOLELOCK 0
-powercfg /SETACVALUEINDEX SCHEME_CURRENT SUB_NONE CONSOLELOCK 0
-
-# Power button action = Shut down (3), not Sleep (1)
-# This ensures ATX soft-off works correctly with the relay
+powercfg /SETDCVALUEINDEX SCHEME_CURRENT SUB_NONE    CONSOLELOCK   0
+powercfg /SETACVALUEINDEX SCHEME_CURRENT SUB_NONE    CONSOLELOCK   0
 powercfg /SETDCVALUEINDEX SCHEME_CURRENT SUB_BUTTONS PBUTTONACTION 3
 powercfg /SETACVALUEINDEX SCHEME_CURRENT SUB_BUTTONS PBUTTONACTION 3
-
 powercfg /S SCHEME_CURRENT
-
 Write-OK "All power timeouts = 0; power button = Shut down; no screen lock on resume"
 
 
@@ -228,12 +210,9 @@ Write-OK "All power timeouts = 0; power button = Shut down; no screen lock on re
 Write-Step "7 / 9  Windows Update (disable automatic reboot)"
 
 $wuPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"
-if (-not (Test-Path $wuPath)) {
-    New-Item -Path $wuPath -Force | Out-Null
-}
+if (-not (Test-Path $wuPath)) { New-Item -Path $wuPath -Force | Out-Null }
 Set-ItemProperty -Path $wuPath -Name "NoAutoRebootWithLoggedOnUsers" -Value 1 -Type DWord
 Set-ItemProperty -Path $wuPath -Name "AUOptions"                     -Value 2 -Type DWord
-
 Write-OK "Windows Update will not auto-reboot during tests"
 
 
@@ -268,7 +247,6 @@ if ($DevDetectScript -ne "") {
             -Execute  "powershell.exe" `
             -Argument "-ExecutionPolicy Bypass -NonInteractive -WindowStyle Hidden -File `"$DevDetectScript`""
 
-        # Startup trigger with configurable delay (allows drivers to finish loading)
         $taskTrigger       = New-ScheduledTaskTrigger -AtStartup
         $taskTrigger.Delay = "PT${DevDetectStartupDelaySec}S"
 
@@ -277,7 +255,6 @@ if ($DevDetectScript -ne "") {
             -MultipleInstances   IgnoreNew `
             -StartWhenAvailable
 
-        # Run as SYSTEM: no user logon needed, has full hardware access
         $taskPrincipal = New-ScheduledTaskPrincipal `
             -UserId    "SYSTEM" `
             -LogonType ServiceAccount `
