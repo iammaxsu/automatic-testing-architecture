@@ -38,7 +38,7 @@
     password (ensure LimitBlankPasswordUse is disabled — this script does that).
 
 .PARAMETER DevDetectScript
-    Full path on this machine to dev_detect1.ps1.
+    Full path on this machine to dev_detect.ps1.
     When specified, a Task Scheduler task named "DUT-DevDetect" is registered
     to run the script automatically at every startup.
     The task runs as SYSTEM — no user login is required.
@@ -92,7 +92,7 @@ $ErrorActionPreference = "Stop"
 
 # ── Version & shared library ──────────────────────────────────────────────────
 
-$_script_ver                = '00.00.03'
+$_script_ver                = '00.00.04'
 $_requires_function_ps1_api = '00.00.01'
 
 $_fn = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Definition) 'function.ps1'
@@ -250,14 +250,14 @@ if ($TestUser -ne "") {
 }
 
 
-# ── 9. Task Scheduler: run dev_detect1.ps1 at every startup ──────────────────
+# ── 9. Task Scheduler: run dev_detect.ps1 at every startup ───────────────────
 
 Write-Step "9 / 10 Task Scheduler — device detection at startup"
 
 if ($DevDetectScript -ne "") {
     if (-not (Test-Path $DevDetectScript)) {
         Write-Warn "Script not found: $DevDetectScript"
-        Write-Warn "Copy dev_detect1.ps1 to the DUT first, then re-run with -DevDetectScript <path>"
+        Write-Warn "Copy dev_detect.ps1 to the DUT first, then re-run with -DevDetectScript pointing to it"
     } else {
         $taskAction = New-ScheduledTaskAction `
             -Execute  "powershell.exe" `
@@ -278,7 +278,7 @@ if ($DevDetectScript -ne "") {
 
         Register-ScheduledTask `
             -TaskName    "DUT-DevDetect" `
-            -Description "Runs dev_detect1.ps1 at startup for power-cycle / reboot hardware verification" `
+            -Description "Runs dev_detect.ps1 at startup for power-cycle / reboot hardware verification" `
             -Action      $taskAction `
             -Trigger     $taskTrigger `
             -Settings    $taskSettings `
@@ -290,7 +290,7 @@ if ($DevDetectScript -ne "") {
     }
 } else {
     Write-Skip "Task Scheduler not configured (no -DevDetectScript supplied)"
-    Write-Host "         Pass -DevDetectScript <path> to register the startup task."
+    Write-Host "         Pass -DevDetectScript with the full path to dev_detect.ps1 to register the startup task."
 }
 
 
