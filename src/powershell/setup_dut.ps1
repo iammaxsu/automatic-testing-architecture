@@ -16,7 +16,8 @@
       6. Sets power scheme: no sleep / no hibernate, power button = Shut down
       7. Disables Windows Update automatic reboot
       8. (Optional) Configures auto-logon for the test user account
-      9. (Optional) Registers Task Scheduler task to run dev_detect1.ps1 at startup
+      9. (Optional) Registers Task Scheduler task to run dev_detect.ps1 at startup
+     10. (Optional) Configures PowerShell as the default SSH shell for Ansible
 
     This script is intentionally idempotent: running it multiple times is safe.
 
@@ -44,8 +45,14 @@
     Leave empty (default) to skip Task Scheduler setup.
 
 .PARAMETER DevDetectStartupDelaySec
-    Seconds to wait after boot before running dev_detect1.ps1 (default: 30).
+    Seconds to wait after boot before running dev_detect.ps1 (default: 30).
     Increase if your hardware takes longer to fully enumerate devices.
+
+.PARAMETER AnsibleSSH
+    When specified, configures PowerShell as the default shell for SSH connections
+    by writing to HKLM:\SOFTWARE\OpenSSH (DefaultShell + DefaultShellCommandOption).
+    Required for Ansible to manage this DUT via SSH using PowerShell modules.
+    In Ansible inventory set: ansible_connection=ssh ansible_shell_type=powershell
 
 .EXAMPLE
     # Minimal: SSH + firewall + power settings only
@@ -61,14 +68,23 @@
 
 .EXAMPLE
     # Full setup including device-detection task at startup
-    .\setup_dut.ps1 -TestUser "testuser" -DevDetectScript "C:\TestAutomation\dev_detect1.ps1"
+    .\setup_dut.ps1 -TestUser "testuser" -DevDetectScript "C:\TestAutomation\dev_detect.ps1"
+
+.EXAMPLE
+    # Enable Ansible management over SSH (lab environment)
+    .\setup_dut.ps1 -AnsibleSSH
+
+.EXAMPLE
+    # Complete lab setup: auto-logon + device detection + Ansible SSH
+    .\setup_dut.ps1 -TestUser "testuser" -DevDetectScript "C:\TestAutomation\dev_detect.ps1" -AnsibleSSH
 #>
 
 param(
     [string]$TestUser                 = "",
     [string]$TestPassword             = "",
     [string]$DevDetectScript          = "",
-    [int]   $DevDetectStartupDelaySec = 30
+    [int]   $DevDetectStartupDelaySec = 30,
+    [switch]$AnsibleSSH
 )
 
 Set-StrictMode -Version Latest
@@ -76,7 +92,7 @@ $ErrorActionPreference = "Stop"
 
 # ── Version & shared library ──────────────────────────────────────────────────
 
-$_script_ver                = '00.00.02'
+$_script_ver                = '00.00.03'
 $_requires_function_ps1_api = '00.00.01'
 
 $_fn = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Definition) 'function.ps1'
@@ -95,14 +111,14 @@ Write-Host "setup_dut.ps1 v$_script_ver  (function.ps1 API $($script:_function_p
 
 # ── 1. PowerShell execution policy ───────────────────────────────────────────
 
-Write-Step "1 / 9  PowerShell execution policy"
+Write-Step "1 / 10 PowerShell execution policy"
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope LocalMachine -Force
 Write-OK "Execution policy = RemoteSigned (machine-wide)"
 
 
 # ── 2. OpenSSH Server ────────────────────────────────────────────────────────
 
-Write-Step "2 / 9  OpenSSH Server"
+Write-Step "2 / 10 OpenSSH Server"
 
 $sshCap = Get-WindowsCapability -Online -Name OpenSSH.Server*
 if ($sshCap.State -eq "NotPresent") {
@@ -121,7 +137,7 @@ Write-OK "sshd running, startup = Automatic"
 
 # ── 3. SSH configuration: allow empty passwords ───────────────────────────────
 
-Write-Step "3 / 9  SSH configuration (PermitEmptyPasswords)"
+Write-Step "3 / 10 SSH configuration (PermitEmptyPasswords)"
 
 $sshConfigPath = "C:\ProgramData\ssh\sshd_config"
 
@@ -149,7 +165,7 @@ if (-not (Test-Path $sshConfigPath)) {
 
 # ── 4. Firewall: SSH (TCP 22) and ICMPv4 ping ─────────────────────────────────
 
-Write-Step "4 / 9  Firewall rules"
+Write-Step "4 / 10 Firewall rules"
 
 if (-not (Get-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -ErrorAction SilentlyContinue)) {
     New-NetFirewallRule -Name        "OpenSSH-Server-In-TCP" `
@@ -174,7 +190,7 @@ if (-not (Get-NetFirewallRule -Name "Allow-ICMPv4-In" -ErrorAction SilentlyConti
 
 # ── 5. Security policy: allow blank-password accounts over network ────────────
 
-Write-Step "5 / 9  Security policy (LimitBlankPasswordUse)"
+Write-Step "5 / 10 Security policy (LimitBlankPasswordUse)"
 
 $tmpSec = "$env:TEMP\secpol_dut.inf"
 secedit /export /cfg $tmpSec | Out-Null
@@ -190,7 +206,7 @@ Write-OK "LimitBlankPasswordUse set to 0 (blank-password SSH logins allowed)"
 
 # ── 6. Power scheme ───────────────────────────────────────────────────────────
 
-Write-Step "6 / 9  Power scheme"
+Write-Step "6 / 10 Power scheme"
 
 foreach ($type in @("monitor", "disk", "standby", "hibernate")) {
     foreach ($mode in @("ac", "dc")) {
@@ -207,7 +223,7 @@ Write-OK "All power timeouts = 0; power button = Shut down; no screen lock on re
 
 # ── 7. Windows Update: disable automatic reboot ───────────────────────────────
 
-Write-Step "7 / 9  Windows Update (disable automatic reboot)"
+Write-Step "7 / 10 Windows Update (disable automatic reboot)"
 
 $wuPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"
 if (-not (Test-Path $wuPath)) { New-Item -Path $wuPath -Force | Out-Null }
@@ -218,7 +234,7 @@ Write-OK "Windows Update will not auto-reboot during tests"
 
 # ── 8. Auto-logon (optional) ──────────────────────────────────────────────────
 
-Write-Step "8 / 9  Auto-logon"
+Write-Step "8 / 10 Auto-logon"
 
 if ($TestUser -ne "") {
     $regPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
@@ -236,7 +252,7 @@ if ($TestUser -ne "") {
 
 # ── 9. Task Scheduler: run dev_detect1.ps1 at every startup ──────────────────
 
-Write-Step "9 / 9  Task Scheduler — device detection at startup"
+Write-Step "9 / 10 Task Scheduler — device detection at startup"
 
 if ($DevDetectScript -ne "") {
     if (-not (Test-Path $DevDetectScript)) {
@@ -278,6 +294,31 @@ if ($DevDetectScript -ne "") {
 }
 
 
+# ── 10. Ansible SSH: PowerShell as default SSH shell ─────────────────────────
+
+Write-Step "10 / 10  Ansible SSH — PowerShell default shell"
+
+if ($AnsibleSSH) {
+    $regPath = "HKLM:\SOFTWARE\OpenSSH"
+    if (-not (Test-Path $regPath)) {
+        New-Item -Path $regPath -Force | Out-Null
+    }
+    # DefaultShell: PowerShell 5.1 (built-in on all Windows 10/11/IoT)
+    Set-ItemProperty -Path $regPath -Name "DefaultShell" `
+        -Value "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" `
+        -Type String -Force
+    # DefaultShellCommandOption: -Command passes a command string to PowerShell
+    Set-ItemProperty -Path $regPath -Name "DefaultShellCommandOption" `
+        -Value "-Command" `
+        -Type String -Force
+    Restart-Service sshd
+    Write-OK "DefaultShell = PowerShell 5.1; sshd restarted"
+    Write-Host "         Ansible inventory: ansible_connection=ssh ansible_shell_type=powershell"
+} else {
+    Write-Skip "Ansible SSH not configured (add -AnsibleSSH to enable)"
+}
+
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 
 Write-Host ""
@@ -299,6 +340,11 @@ if ($DevDetectScript -ne "" -and (Test-Path $DevDetectScript)) {
     Write-Host "  Task Scheduler    : DUT-DevDetect (startup + ${DevDetectStartupDelaySec}s, as SYSTEM)"
 } else {
     Write-Host "  Task Scheduler    : not configured"
+}
+if ($AnsibleSSH) {
+    Write-Host "  Ansible SSH       : DefaultShell = PowerShell 5.1"
+} else {
+    Write-Host "  Ansible SSH       : not configured"
 }
 Write-Host ""
 Write-Host "  >>> Reboot required for all changes to take effect. <<<" -ForegroundColor Yellow
