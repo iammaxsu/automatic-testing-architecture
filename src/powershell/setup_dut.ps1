@@ -21,7 +21,7 @@
 
     This script is intentionally idempotent: running it multiple times is safe.
 
-    IMPORTANT — chicken-and-egg note:
+    IMPORTANT  -  chicken-and-egg note:
     This script must be run once manually (via physical console, RDP, or a
     shared USB drive) before automated testing can begin.  After it runs and
     the machine reboots, the RPi controller can reach the DUT over SSH for
@@ -35,13 +35,13 @@
 
 .PARAMETER TestPassword
     Password for TestUser.  May be an empty string "" if the account has no
-    password (ensure LimitBlankPasswordUse is disabled — this script does that).
+    password (ensure LimitBlankPasswordUse is disabled  -  this script does that).
 
 .PARAMETER DevDetectScript
     Full path on this machine to dev_detect.ps1.
     When specified, a Task Scheduler task named "DUT-DevDetect" is registered
     to run the script automatically at every startup.
-    The task runs as SYSTEM — no user login is required.
+    The task runs as SYSTEM  -  no user login is required.
     Leave empty (default) to skip Task Scheduler setup.
 
 .PARAMETER DevDetectStartupDelaySec
@@ -90,14 +90,14 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# ── Version & shared library ──────────────────────────────────────────────────
+# -- Version & shared library --------------------------------------------------
 
-$_script_ver                = '00.00.04'
+$_script_ver                = '00.00.05'
 $_requires_function_ps1_api = '00.00.01'
 
 $_fn = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Definition) 'function.ps1'
 if (-not (Test-Path $_fn)) {
-    Write-Error "function.ps1 not found at $_fn — cannot continue"
+    Write-Error "function.ps1 not found at $_fn  -  cannot continue"
     exit 1
 }
 . $_fn
@@ -109,14 +109,14 @@ if ($script:_function_ps1_api -lt $_requires_function_ps1_api) {
 Write-Host "setup_dut.ps1 v$_script_ver  (function.ps1 API $($script:_function_ps1_api))"
 
 
-# ── 1. PowerShell execution policy ───────────────────────────────────────────
+# -- 1. PowerShell execution policy -------------------------------------------
 
 Write-Step "1 / 10 PowerShell execution policy"
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope LocalMachine -Force
 Write-OK "Execution policy = RemoteSigned (machine-wide)"
 
 
-# ── 2. OpenSSH Server ────────────────────────────────────────────────────────
+# -- 2. OpenSSH Server --------------------------------------------------------
 
 Write-Step "2 / 10 OpenSSH Server"
 
@@ -135,14 +135,14 @@ Set-Service -Name sshd -StartupType Automatic
 Write-OK "sshd running, startup = Automatic"
 
 
-# ── 3. SSH configuration: allow empty passwords ───────────────────────────────
+# -- 3. SSH configuration: allow empty passwords -------------------------------
 
 Write-Step "3 / 10 SSH configuration (PermitEmptyPasswords)"
 
 $sshConfigPath = "C:\ProgramData\ssh\sshd_config"
 
 if (-not (Test-Path $sshConfigPath)) {
-    Write-Warn "sshd_config not found at $sshConfigPath — skipping"
+    Write-Warn "sshd_config not found at $sshConfigPath  -  skipping"
 } else {
     Copy-Item -Path $sshConfigPath -Destination "$sshConfigPath.bak" -Force
 
@@ -163,7 +163,7 @@ if (-not (Test-Path $sshConfigPath)) {
 }
 
 
-# ── 4. Firewall: SSH (TCP 22) and ICMPv4 ping ─────────────────────────────────
+# -- 4. Firewall: SSH (TCP 22) and ICMPv4 ping ---------------------------------
 
 Write-Step "4 / 10 Firewall rules"
 
@@ -188,7 +188,7 @@ if (-not (Get-NetFirewallRule -Name "Allow-ICMPv4-In" -ErrorAction SilentlyConti
 }
 
 
-# ── 5. Security policy: allow blank-password accounts over network ────────────
+# -- 5. Security policy: allow blank-password accounts over network ------------
 
 Write-Step "5 / 10 Security policy (LimitBlankPasswordUse)"
 
@@ -204,7 +204,7 @@ Remove-Item $tmpSec -Force
 Write-OK "LimitBlankPasswordUse set to 0 (blank-password SSH logins allowed)"
 
 
-# ── 6. Power scheme ───────────────────────────────────────────────────────────
+# -- 6. Power scheme -----------------------------------------------------------
 
 Write-Step "6 / 10 Power scheme"
 
@@ -221,7 +221,7 @@ powercfg /S SCHEME_CURRENT
 Write-OK "All power timeouts = 0; power button = Shut down; no screen lock on resume"
 
 
-# ── 7. Windows Update: disable automatic reboot ───────────────────────────────
+# -- 7. Windows Update: disable automatic reboot -------------------------------
 
 Write-Step "7 / 10 Windows Update (disable automatic reboot)"
 
@@ -232,7 +232,7 @@ Set-ItemProperty -Path $wuPath -Name "AUOptions"                     -Value 2 -T
 Write-OK "Windows Update will not auto-reboot during tests"
 
 
-# ── 8. Auto-logon (optional) ──────────────────────────────────────────────────
+# -- 8. Auto-logon (optional) --------------------------------------------------
 
 Write-Step "8 / 10 Auto-logon"
 
@@ -246,13 +246,13 @@ if ($TestUser -ne "") {
 } else {
     Write-Skip "Auto-logon not configured (no -TestUser supplied)"
     Write-Host "         SSH liveness works without auto-logon (sshd is a Windows service)."
-    Write-Host "         Pass -TestUser <name> if test scripts need an active user session."
+    Write-Host "         Pass -TestUser USERNAME if test scripts need an active user session."
 }
 
 
-# ── 9. Task Scheduler: run dev_detect.ps1 at every startup ───────────────────
+# -- 9. Task Scheduler: run dev_detect.ps1 at every startup -------------------
 
-Write-Step "9 / 10 Task Scheduler — device detection at startup"
+Write-Step "9 / 10 Task Scheduler  -  device detection at startup"
 
 if ($DevDetectScript -ne "") {
     if (-not (Test-Path $DevDetectScript)) {
@@ -294,9 +294,9 @@ if ($DevDetectScript -ne "") {
 }
 
 
-# ── 10. Ansible SSH: PowerShell as default SSH shell ─────────────────────────
+# -- 10. Ansible SSH: PowerShell as default SSH shell -------------------------
 
-Write-Step "10 / 10  Ansible SSH — PowerShell default shell"
+Write-Step "10 / 10  Ansible SSH  -  PowerShell default shell"
 
 if ($AnsibleSSH) {
     $regPath = "HKLM:\SOFTWARE\OpenSSH"
@@ -319,7 +319,7 @@ if ($AnsibleSSH) {
 }
 
 
-# ── Summary ───────────────────────────────────────────────────────────────────
+# -- Summary -------------------------------------------------------------------
 
 Write-Host ""
 Write-Host ("=" * 56) -ForegroundColor Cyan

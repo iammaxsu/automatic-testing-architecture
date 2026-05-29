@@ -9,29 +9,29 @@
   - Runs five hardware checks and compares against golden reference files.
   - First run initialises each golden file from the current machine values.
   - Subsequent runs compare current values to goldens; deviations = FAIL.
-  - Per-run log : logs\<count>_<date2>_<PASS|FAIL>.log
+  - Per-run log : logs\COUNT_DATE_PASS-or-FAIL.log
   - Summary log : logs\summary.log
 
   Designed to run at startup via Task Scheduler (as SYSTEM, no user logon
-  needed).  Register via: setup_dut.ps1 -DevDetectScript <path>
+  needed).  Register via: setup_dut.ps1 -DevDetectScript PATH_TO_SCRIPT
 
 .EXAMPLE
-  powershell -ExecutionPolicy Bypass -File .\dev_detect1.ps1
+  powershell -ExecutionPolicy Bypass -File .\dev_detect.ps1
 #>
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# ── Version & shared library ──────────────────────────────────────────────────
+# -- Version & shared library --------------------------------------------------
 
-$_script_ver                = '00.00.02'
+$_script_ver                = '00.00.03'
 $_requires_function_ps1_api = '00.00.01'
 
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 
 $_fn = Join-Path $_script_root 'function.ps1'
 if (-not (Test-Path $_fn)) {
-    Write-Error "function.ps1 not found at $_fn — cannot continue"
+    Write-Error "function.ps1 not found at $_fn  -  cannot continue"
     exit 1
 }
 . $_fn
@@ -40,7 +40,7 @@ if ($script:_function_ps1_api -lt $_requires_function_ps1_api) {
     exit 1
 }
 
-# ── Paths (required by group-4 functions in function.ps1) ─────────────────────
+# -- Paths (required by group-4 functions in function.ps1) ---------------------
 
 $_log_path     = Join-Path $_script_root 'logs'
 $_summary_file = Join-Path $_log_path 'summary.log'
@@ -54,7 +54,7 @@ if (-not (Test-Path $_log_path)) {
 $_cfg = Resolve-FirstExisting -Paths @( (Join-Path $_script_root 'config.ps1') )
 if ($_cfg) { . $_cfg }
 
-# ── CPU check ─────────────────────────────────────────────────────────────────
+# -- CPU check -----------------------------------------------------------------
 
 function Get-Cpu-Text {
     (Get-CimInstance Win32_Processor | Select-Object Name | Out-String).TrimEnd()
@@ -79,7 +79,7 @@ function Invoke-CpuCheck {
     }
 }
 
-# ── Memory check ──────────────────────────────────────────────────────────────
+# -- Memory check --------------------------------------------------------------
 
 function Get-Memory-Text {
     $totalBytes = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory
@@ -108,7 +108,7 @@ function Invoke-MemoryCheck {
     }
 }
 
-# ── USB check (PassMark loopback plug count + version hint) ───────────────────
+# -- USB check (PassMark loopback plug count + version hint) -------------------
 
 $_usb_target_name = 'PassMark USB3.0 Loopback plug'
 
@@ -144,7 +144,7 @@ function Invoke-UsbCheck {
     }
 }
 
-# ── NIC check (model counts + best-effort PCIe link info) ─────────────────────
+# -- NIC check (model counts + best-effort PCIe link info) ---------------------
 
 function Get-Nic-Objects {
     try {
@@ -233,7 +233,7 @@ function Invoke-NicCheck {
     }
 }
 
-# ── Storage check (model+bus counts + best-effort link info) ──────────────────
+# -- Storage check (model+bus counts + best-effort link info) ------------------
 
 function Get-Storage-Objects {
     try { return Get-PhysicalDisk } catch { return Get-CimInstance Win32_DiskDrive }
@@ -306,7 +306,7 @@ function Invoke-StorageCheck {
     }
 }
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# -- Main ----------------------------------------------------------------------
 
 $_date2 = Get-Date2
 $_count = Get-NextCount
