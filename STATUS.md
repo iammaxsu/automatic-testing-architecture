@@ -1,16 +1,16 @@
 # Project Status
 
-_Generated 2026-05-28 04:38 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-05-29 03:45 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
-**Total:** 115
+**Total:** 118
 
 ### By priority
 
 | Priority | Count |
 | --- | --- |
-| Must | 101 |
+| Must | 104 |
 | Should | 12 |
 | — | 2 |
 
@@ -20,13 +20,13 @@ _Generated 2026-05-28 04:38 · regenerate with `python scripts/stats.py > STATUS
 | --- | --- |
 | proposed | 103 |
 | implementing | 3 |
-| implemented | 9 |
+| implemented | 12 |
 
 ```mermaid
 pie showData title Requirements by status
     "proposed" : 103
     "implementing" : 3
-    "implemented" : 9
+    "implemented" : 12
 ```
 
 ### By section
@@ -34,15 +34,15 @@ pie showData title Requirements by status
 | Section | Total | Verified | Not done |
 | --- | --- | --- | --- |
 | CMP | 6 | 0 | 6 |
-| DET | 11 | 0 | 11 |
+| DET | 12 | 0 | 11 |
 | DOC | 4 | 0 | 4 |
 | DSK | 10 | 0 | 8 |
-| FUN | 6 | 0 | 6 |
+| FUN | 7 | 0 | 6 |
 | FWK | 27 | 0 | 27 |
 | LOG | 22 | 0 | 22 |
 | NET | 13 | 0 | 13 |
 | PWR | 7 | 0 | 0 |
-| SET | 4 | 0 | 4 |
+| SET | 5 | 0 | 4 |
 | SLP | 5 | 0 | 5 |
 
 ### Must-priority requirements not yet implemented
@@ -227,11 +227,14 @@ _(may indicate untested code paths — worth a review)_
 
 | ID | Status | Title |
 | --- | --- | --- |
+| [DET012](requirements/DET012.md) | implemented | Windows Hardware Baseline Verification |
 | [DSK009](requirements/DSK009.md) | implemented | fio Engine and Write-Consistency Flags Aligned with KDiskMark v3.2.0 |
+| [FUN007](requirements/FUN007.md) | implemented | Windows PowerShell Shared Function Library |
 | [PWR001](requirements/PWR001.md) | implemented | AT and ATX PSU Type Selection |
 | [PWR002](requirements/PWR002.md) | implemented | GPIO Relay Abstraction |
 | [PWR003](requirements/PWR003.md) | implemented | Network-Based DUT Liveness Detection |
 | [PWR004](requirements/PWR004.md) | implemented | Per-Cycle Verdict Taxonomy |
 | [PWR005](requirements/PWR005.md) | implemented | Structured result.json Output (LOG015 Compliance) |
 | [PWR007](requirements/PWR007.md) | implemented | Safety Controls: Consecutive Fail Abort and Graceful Stop |
+| [SET005](requirements/SET005.md) | implemented | Windows DUT Pre-test Bootstrap Script |
 
