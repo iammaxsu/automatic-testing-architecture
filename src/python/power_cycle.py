@@ -17,7 +17,8 @@
 #   --no-check                skip network liveness checks
 #   --dry-run                 run logic without touching GPIO (for testing)
 #   --warmup  N               initialization cycles before the counted test begins (default: 1)
-#   --boot-timeout SECONDS    max wait for DUT to come online (default: 180)
+#   --boot-timeout SECONDS    max wait for DUT to come online (default: 120)
+#   --ssh-user USERNAME       SSH login for graceful OS shutdown (default: none, use ATX press)
 #
 # Verdicts per cycle:
 #   PASS            — boot OK, ran full ON_TIME, shut down cleanly
@@ -149,7 +150,7 @@ def run_one_cycle(
 
         if not ok:
             rec["verdict"] = NO_BOOT
-            rec["notes"]   = f"DUT did not come online within {config.BOOT_TIMEOUT_SEC}s"
+            rec["notes"]   = f"DUT did not come online within {args.boot_timeout}s"
             log.warning("Cycle %d: NO_BOOT", n)
             # Ensure DUT is actually off before next cycle
             _force_off(args, relay)

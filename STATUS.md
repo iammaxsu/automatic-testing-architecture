@@ -1,16 +1,16 @@
 # Project Status
 
-_Generated 2026-06-01 06:18 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-06-01 08:39 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
-**Total:** 120
+**Total:** 121
 
 ### By priority
 
 | Priority | Count |
 | --- | --- |
-| Must | 106 |
+| Must | 107 |
 | Should | 12 |
 | — | 2 |
 
@@ -20,13 +20,13 @@ _Generated 2026-06-01 06:18 · regenerate with `python scripts/stats.py > STATUS
 | --- | --- |
 | proposed | 103 |
 | implementing | 3 |
-| implemented | 14 |
+| implemented | 15 |
 
 ```mermaid
 pie showData title Requirements by status
     "proposed" : 103
     "implementing" : 3
-    "implemented" : 14
+    "implemented" : 15
 ```
 
 ### By section
@@ -41,7 +41,7 @@ pie showData title Requirements by status
 | FWK | 27 | 0 | 27 |
 | LOG | 22 | 0 | 22 |
 | NET | 13 | 0 | 13 |
-| PWR | 9 | 0 | 0 |
+| PWR | 10 | 0 | 0 |
 | SET | 5 | 0 | 4 |
 | SLP | 5 | 0 | 5 |
 
@@ -238,5 +238,6 @@ _(may indicate untested code paths — worth a review)_
 | [PWR007](requirements/PWR007.md) | implemented | Safety Controls: Consecutive Fail Abort and Graceful Stop |
 | [PWR008](requirements/PWR008.md) | implemented | Power Cycle Test Warmup and Initial-State Normalization |
 | [PWR009](requirements/PWR009.md) | implemented | Multi-Strategy DUT Shutdown |
+| [PWR010](requirements/PWR010.md) | implemented | Cycle Phase Timing Model and Parameter Defaults |
 | [SET005](requirements/SET005.md) | implemented | Windows DUT Pre-test Bootstrap Script |
 
