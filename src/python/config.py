@@ -29,6 +29,9 @@ BOOT_TIMEOUT_SEC      = 180 # Max seconds to wait for DUT to come online after p
 DEAD_TIMEOUT_SEC      = 30  # Max seconds to wait for DUT to go offline after power-off
 HEALTH_CHECK_INTERVAL = 30  # Seconds between liveness probes during ON_TIME
 
+# ---------- Shutdown ----------
+SHUTDOWN_SSH_USER = ""      # SSH username for graceful shutdown; empty = skip SSH method
+
 # ---------- Safety ----------
 MAX_CONSECUTIVE_FAILS = 3   # Abort test after N consecutive failures (0 = never)
 WARMUP_CYCLES         = 1   # Initialization cycles before the counted test begins (0 = skip)

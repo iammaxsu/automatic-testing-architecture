@@ -39,6 +39,7 @@ import function
 from liveness import LivenessChecker
 from relay import RelayController
 from report import generate_report
+from shutdown import ShutdownCoordinator
 
 log = logging.getLogger("power_cycle")
 
@@ -90,6 +91,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--boot-timeout", default=config.BOOT_TIMEOUT_SEC, type=int,
                    dest="boot_timeout",
                    help="Max seconds waiting for DUT to boot (default: %(default)s)")
+    p.add_argument("--ssh-user", default=config.SHUTDOWN_SSH_USER,
+                   dest="ssh_user",
+                   help="SSH username for graceful shutdown (empty = skip SSH method)")
     return p.parse_args()
 
 
@@ -99,8 +103,9 @@ def run_one_cycle(
     n: int,
     args: argparse.Namespace,
     relay: RelayController,
-    checker,                  # LivenessChecker | None
-    total: int = 0,           # total cycles in this phase (for log label)
+    checker,                        # LivenessChecker | None
+    shutdown_coord: ShutdownCoordinator = None,
+    total: int = 0,                 # total cycles in this phase (for log label)
     is_warmup: bool = False,
 ) -> dict:
     """Execute one power cycle and return a cycle-record dict."""
@@ -113,6 +118,7 @@ def run_one_cycle(
         "t_power_off":      None,
         "t_dead":           None,
         "shutdown_time_sec": None,
+        "shutdown_method":  None,
         "verdict":          RELAY_ERROR,
         "notes":            "",
     }
@@ -177,42 +183,21 @@ def run_one_cycle(
         _force_off(args, relay)
         return rec
 
-    # ── 4. Power OFF ─────────────────────────────────────────────────────
-    try:
-        rec["t_power_off"] = function.now_iso()
-        if args.type == "ATX":
-            relay.atx_press(config.ATX_SHORT_PRESS_SEC)  # soft shutdown request
-        else:
-            relay.at_power_off()
-    except Exception as exc:
-        rec["notes"] = f"relay error on power-off: {exc}"
-        log.error("Relay error during power-off: %s", exc)
+    # ── 4. Shutdown (SSH -> ATX soft -> force-off -> time-based) ─────────
+    rec["t_power_off"] = function.now_iso()
+    sd = shutdown_coord.request()
+    rec["shutdown_method"]   = sd["method"]
+    rec["t_dead"]            = function.now_iso()
+    rec["shutdown_time_sec"] = sd["elapsed_sec"]
+
+    if not sd["success"]:
+        rec["verdict"] = HANG_SHUTDOWN
+        rec["notes"]   = (
+            f"Shutdown via {sd['method']} timed out "
+            f"(force_used={sd['force_used']})"
+        )
+        log.warning("Cycle %d: HANG_SHUTDOWN (method=%s)", n, sd["method"])
         return rec
-
-    # ── 5. Confirm DUT is offline ─────────────────────────────────────────
-    if checker:
-        dead, shut_t = checker.wait_until_dead(config.DEAD_TIMEOUT_SEC)
-        rec["t_dead"]           = function.now_iso()
-        rec["shutdown_time_sec"] = round(shut_t, 2)
-
-        if not dead:
-            # Soft shutdown didn't work → force off
-            log.warning("Cycle %d: soft shutdown timed out — forcing off", n)
-            try:
-                if args.type == "ATX":
-                    relay.atx_force_off(config.ATX_LONG_PRESS_SEC)
-                else:
-                    relay.at_power_off()
-            except Exception:
-                pass
-            rec["verdict"] = HANG_SHUTDOWN
-            rec["notes"]   = (f"DUT still responding {config.DEAD_TIMEOUT_SEC}s after "
-                              "power-off; force-off applied")
-            log.warning("Cycle %d: HANG_SHUTDOWN", n)
-            return rec
-    else:
-        time.sleep(5)   # Brief settling time
-        rec["t_dead"] = function.now_iso()
 
     # ── 6. OFF_TIME wait ─────────────────────────────────────────────────
     log.info("Cycle %d: PASS — waiting %ds before next cycle …", n, args.off_time)
@@ -290,6 +275,7 @@ def main() -> int:
     log.info("  GPIO pin: %d",     args.pin)
     log.info("  Warmup  : %d cycle(s)", args.warmup)
     log.info("  Boot TO : %ds",    args.boot_timeout)
+    log.info("  SSH user: %s",     args.ssh_user or "(none — ATX relay only)")
     log.info("  Log     : %s",     log_path)
     log.info("  JSON    : %s",     json_path)
     log.info("  Report  : %s",     html_path)
@@ -318,6 +304,18 @@ def main() -> int:
     elif not args.host:
         log.warning("DUT_HOST is not set — liveness checks disabled")
 
+    # Shutdown coordinator (constructed once; reused every cycle)
+    shutdown_coord = ShutdownCoordinator(
+        relay=relay,
+        checker=checker,
+        psu_type=args.type,
+        ssh_user=args.ssh_user,
+        ssh_host=args.host,
+        ssh_port=args.port,
+        dead_timeout_sec=config.DEAD_TIMEOUT_SEC,
+        time_based_delay_sec=args.off_time,
+    )
+
     # Build initial result structure
     result = {
         "schema_version": "1.0",
@@ -334,6 +332,7 @@ def main() -> int:
             "boot_timeout_sec": args.boot_timeout,
             "dead_timeout_sec": config.DEAD_TIMEOUT_SEC,
             "warmup_cycles":    args.warmup,
+            "ssh_user":         args.ssh_user or None,
         },
         "cycles":          [],
         "summary":         {},
@@ -351,7 +350,7 @@ def main() -> int:
     if args.warmup > 0:
         log.info("=== Warmup: %d cycle(s) before counted test ===", args.warmup)
         for w in range(1, args.warmup + 1):
-            rec = run_one_cycle(w, args, relay, checker,
+            rec = run_one_cycle(w, args, relay, checker, shutdown_coord,
                                 total=args.warmup, is_warmup=True)
             log.info("[WARMUP %d/%d] verdict: %s (not counted)", w, args.warmup, rec["verdict"])
         log.info("=== Warmup complete — starting %d counted cycle(s) ===", args.cycles)
@@ -364,7 +363,7 @@ def main() -> int:
                 log.info("Stop requested — exiting loop after cycle %d", n - 1)
                 break
 
-            rec = run_one_cycle(n, args, relay, checker)
+            rec = run_one_cycle(n, args, relay, checker, shutdown_coord)
             result["cycles"].append(rec)
 
             # Track consecutive failures
