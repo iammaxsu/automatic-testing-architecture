@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-06-01 08:39 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-06-01 09:10 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -18,15 +18,15 @@ _Generated 2026-06-01 08:39 · regenerate with `python scripts/stats.py > STATUS
 
 | Status | Count |
 | --- | --- |
-| proposed | 103 |
+| proposed | 102 |
 | implementing | 3 |
-| implemented | 15 |
+| implemented | 16 |
 
 ```mermaid
 pie showData title Requirements by status
-    "proposed" : 103
+    "proposed" : 102
     "implementing" : 3
-    "implemented" : 15
+    "implemented" : 16
 ```
 
 ### By section
@@ -38,7 +38,7 @@ pie showData title Requirements by status
 | DOC | 4 | 0 | 4 |
 | DSK | 10 | 0 | 8 |
 | FUN | 7 | 0 | 6 |
-| FWK | 27 | 0 | 27 |
+| FWK | 27 | 0 | 26 |
 | LOG | 22 | 0 | 22 |
 | NET | 13 | 0 | 13 |
 | PWR | 10 | 0 | 0 |
@@ -81,7 +81,6 @@ pie showData title Requirements by status
 | [FUN005](requirements/FUN005.md) | proposed | Shared log() Interface |
 | [FUN006](requirements/FUN006.md) | proposed | Exactly-Once Counter Semantics |
 | [FWK001](requirements/FWK001.md) | proposed | Snake Case Naming |
-| [FWK002](requirements/FWK002.md) | proposed | Private Variable Naming |
 | [FWK003](requirements/FWK003.md) | proposed | Private Function Naming |
 | [FWK004](requirements/FWK004.md) | proposed | Config and Function as Public API |
 | [FWK005](requirements/FWK005.md) | proposed | Semantic Version Strings |
@@ -230,6 +229,7 @@ _(may indicate untested code paths — worth a review)_
 | [DET012](requirements/DET012.md) | implemented | Windows Hardware Baseline Verification |
 | [DSK009](requirements/DSK009.md) | implemented | fio Engine and Write-Consistency Flags Aligned with KDiskMark v3.2.0 |
 | [FUN007](requirements/FUN007.md) | implemented | Windows PowerShell Shared Function Library |
+| [FWK002](requirements/FWK002.md) | implemented | Cross-Language Naming Conventions |
 | [PWR001](requirements/PWR001.md) | implemented | AT and ATX PSU Type Selection |
 | [PWR002](requirements/PWR002.md) | implemented | GPIO Relay Abstraction |
 | [PWR003](requirements/PWR003.md) | implemented | Network-Based DUT Liveness Detection |

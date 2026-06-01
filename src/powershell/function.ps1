@@ -59,7 +59,7 @@ function Get-ParentInstanceId {
     return (Get-PnpProp -InstanceId $InstanceId -KeyName 'DEVPKEY_Device_Parent')
 }
 
-function Ascend-ToPci {
+function Resolve-PciAncestor {
     param([Parameter(Mandatory)][string]$InstanceId)
     $iid = $InstanceId
     for ($i = 0; $i -lt 10 -and $null -ne $iid -and $iid -ne ''; $i++) {
@@ -69,7 +69,7 @@ function Ascend-ToPci {
     return $null
 }
 
-function Parse-PcieGen {
+function ConvertTo-PcieGen {
     param([double]$SpeedGTs)
     if    ($SpeedGTs -lt  3) { return 'Gen1' }
     elseif ($SpeedGTs -lt  6) { return 'Gen2' }
@@ -79,7 +79,7 @@ function Parse-PcieGen {
     else                      { return 'Gen-Unknown' }
 }
 
-function Approx-PcieGBsPerDir {
+function Get-PcieLinkBandwidth {
     param([double]$SpeedGTs, [int]$Width)
     if ($Width -lt 1) { $Width = 1 }
     $eff  = if ($SpeedGTs -lt 8.1) { 0.8 } else { (128.0 / 130.0) }
@@ -90,7 +90,7 @@ function Approx-PcieGBsPerDir {
 function Get-PcieLinkInfo {
     param([Parameter(Mandatory)][string]$InstanceIdOrChild)
     $pci = if ($InstanceIdOrChild -like 'PCI\*') { $InstanceIdOrChild }
-            else { Ascend-ToPci -InstanceId $InstanceIdOrChild }
+            else { Resolve-PciAncestor -InstanceId $InstanceIdOrChild }
     if (-not $pci) { return $null }
 
     $spd = Get-PnpProp -InstanceId $pci -KeyName 'DEVPKEY_PciDevice_CurrentLinkSpeed'
@@ -106,8 +106,8 @@ function Get-PcieLinkInfo {
     if    ($wid -is [int])                                { $width = $wid }
     elseif ($wid -is [string] -and $wid -match '\d+') { $width = [int]$matches[0] }
 
-    $gen = Parse-PcieGen -SpeedGTs $speedGTs
-    $gbs = Approx-PcieGBsPerDir -SpeedGTs $speedGTs -Width $width
+    $gen = ConvertTo-PcieGen -SpeedGTs $speedGTs
+    $gbs = Get-PcieLinkBandwidth -SpeedGTs $speedGTs -Width $width
 
     [pscustomobject]@{
         InstanceId = $pci
@@ -133,7 +133,7 @@ function Get-UsbVersionHint {
     return 'Unknown'
 }
 
-function TryGet-SataLinkRate {
+function Get-SataLinkRate {
     param([Parameter(Mandatory)][string]$InstanceId)
     foreach ($k in @('DEVPKEY_Storage_Port_AchievedLinkRate','DEVPKEY_Storage_Port_MaxLinkRate','DEVPKEY_Storage_AchievedLinkRate')) {
         $v = Get-PnpProp -InstanceId $InstanceId -KeyName $k
@@ -191,22 +191,22 @@ function Get-NextCount {
     return $count
 }
 
-function Ensure-Golden {
+function Initialize-Golden {
     param(
         [Parameter(Mandatory)][string]$GoldenFileName,
         [Parameter(Mandatory)][string]$CurrentScalar
     )
-    $_golden_path = Join-Path $_log_path $GoldenFileName
-    $_need_init = $true
-    if (Test-Path $_golden_path) {
-        $_raw = Get-Content $_golden_path -Raw -ErrorAction SilentlyContinue
-        if ($null -ne $_raw -and ($_raw -match '\S')) { $_need_init = $false }
+    $goldenPath = Join-Path $_log_path $GoldenFileName
+    $needInit = $true
+    if (Test-Path $goldenPath) {
+        $raw = Get-Content $goldenPath -Raw -ErrorAction SilentlyContinue
+        if ($null -ne $raw -and ($raw -match '\S')) { $needInit = $false }
     }
-    if ($_need_init) {
-        $CurrentScalar | Set-Content -Path $_golden_path -Encoding UTF8
-        Write-Host "  Initialized golden: $_golden_path"
+    if ($needInit) {
+        $CurrentScalar | Set-Content -Path $goldenPath -Encoding UTF8
+        Write-Host "  Initialized golden: $goldenPath"
     }
-    return ((Get-Content $_golden_path -Raw) -replace "`r", "").Trim()
+    return ((Get-Content $goldenPath -Raw) -replace "`r", "").Trim()
 }
 
 function Write-CombinedPerRunLog {
@@ -216,7 +216,7 @@ function Write-CombinedPerRunLog {
         [Parameter(Mandatory)][string]$OverallTag,
         [Parameter(Mandatory)][object]$Results
     )
-    $_file_path = Join-Path $_log_path ('{0}_{1}_{2}.log' -f $Count, $Date2, $OverallTag)
+    $filePath = Join-Path $_log_path ('{0}_{1}_{2}.log' -f $Count, $Date2, $OverallTag)
     $lines  = @()
     $lines += 'COUNT: {0}'   -f $Count
     $lines += 'DATE2: {0}'   -f $Date2
@@ -231,11 +231,11 @@ function Write-CombinedPerRunLog {
         $lines += $r.content_text.Split("`n")
         $lines += ''
     }
-    $lines -join "`r`n" | Set-Content -Path $_file_path -Encoding UTF8
-    return $_file_path
+    $lines -join "`r`n" | Set-Content -Path $filePath -Encoding UTF8
+    return $filePath
 }
 
-function Append-CombinedSummary {
+function Add-CombinedSummary {
     param(
         [Parameter(Mandatory)][int]   $Count,
         [Parameter(Mandatory)][string]$Date2,

@@ -14,8 +14,8 @@ $_script_root   = Split-Path -Parent $MyInvocation.MyCommand.Definition     # th
 $_logs_name     = 'logs'                         # folder name is 'logs'
 $_log_path      = Join-Path $_script_root $_logs_name
 $_counter = "counter.log"
-$date1 = Get-Date -Format 'yyyy/MM/dd HH:mm:ss'
-$date2 = Get-Date -Format 'yyyyMMddHHmmss'
+$_date1 = Get-Date -Format 'yyyy/MM/dd HH:mm:ss'
+$_date2 = Get-Date -Format 'yyyyMMddHHmmss'
 $_golden = "dev_golden.log"
 $_devGold = Get-Content "$_log_path\$_golden" -ErrorAction SilentlyContinue
 
@@ -26,6 +26,6 @@ $_devGold = Get-Content "$_log_path\$_golden" -ErrorAction SilentlyContinue
 `$_log_path=""$($_log_path)""
 `$_counter=""$($_counter)""
 `$_date1=""$($date1)""
-`$_date2=""$($date2)""
+`$_date2=""$($_date2)""
 `$_golden=""$($_golden)""
 "@ | Set-Content "$_log_path\config_vars.txt"

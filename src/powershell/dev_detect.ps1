@@ -56,10 +56,10 @@ if ($_cfg) { . $_cfg }
 
 # -- CPU check -----------------------------------------------------------------
 
-function Get-Cpu-Text {
+function Get-CpuText {
     (Get-CimInstance Win32_Processor | Select-Object Name | Out-String).TrimEnd()
 }
-function Get-Cpu-Scalar {
+function Get-CpuScalar {
     $names = Get-CimInstance Win32_Processor | Select-Object -ExpandProperty Name
     $arr = @()
     foreach ($n in $names) { if ($null -ne $n -and $n.Trim() -ne '') { $arr += $n.Trim() } }
@@ -67,21 +67,21 @@ function Get-Cpu-Scalar {
     return ($arr -join '; ')
 }
 function Invoke-CpuCheck {
-    $_current_text   = Get-Cpu-Text
-    $_current_scalar = Get-Cpu-Scalar
-    $_golden_scalar  = Ensure-Golden -GoldenFileName 'golden_cpu.log' -CurrentScalar $_current_scalar
+    $currentText   = Get-CpuText
+    $currentScalar = Get-CpuScalar
+    $goldenScalar  = Initialize-Golden -GoldenFileName 'golden_cpu.log' -CurrentScalar $currentScalar
     [pscustomobject]@{
         name           = 'cpu_model'
-        result_tag     = if ($_current_scalar -eq $_golden_scalar) { 'PASS' } else { 'FAIL' }
-        content_text   = $_current_text
-        golden_scalar  = $_golden_scalar
-        current_scalar = $_current_scalar
+        result_tag     = if ($currentScalar -eq $goldenScalar) { 'PASS' } else { 'FAIL' }
+        content_text   = $currentText
+        golden_scalar  = $goldenScalar
+        current_scalar = $currentScalar
     }
 }
 
 # -- Memory check --------------------------------------------------------------
 
-function Get-Memory-Text {
+function Get-MemoryText {
     $totalBytes = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory
     $totalGB    = [math]::Round($totalBytes / 1GB)
     $perDimms   = Get-CimInstance Win32_PhysicalMemory |
@@ -90,21 +90,21 @@ function Get-Memory-Text {
                         Speed
     return ("TotalPhysicalMemoryGB: {0}`r`n{1}" -f $totalGB, ($perDimms | Format-Table -AutoSize | Out-String).TrimEnd())
 }
-function Get-Memory-Scalar {
+function Get-MemoryScalar {
     $totalBytes = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory
     if ($null -eq $totalBytes) { return '' }
     return ([math]::Round($totalBytes / 1GB)).ToString()
 }
 function Invoke-MemoryCheck {
-    $_current_text   = Get-Memory-Text
-    $_current_scalar = Get-Memory-Scalar
-    $_golden_scalar  = Ensure-Golden -GoldenFileName 'golden_mem_total.log' -CurrentScalar $_current_scalar
+    $currentText   = Get-MemoryText
+    $currentScalar = Get-MemoryScalar
+    $goldenScalar  = Initialize-Golden -GoldenFileName 'golden_mem_total.log' -CurrentScalar $currentScalar
     [pscustomobject]@{
         name           = 'memory_total_gb'
-        result_tag     = if ($_current_scalar -eq $_golden_scalar) { 'PASS' } else { 'FAIL' }
-        content_text   = $_current_text
-        golden_scalar  = $_golden_scalar
-        current_scalar = $_current_scalar
+        result_tag     = if ($currentScalar -eq $goldenScalar) { 'PASS' } else { 'FAIL' }
+        content_text   = $currentText
+        golden_scalar  = $goldenScalar
+        current_scalar = $currentScalar
     }
 }
 
@@ -115,7 +115,7 @@ $_usb_target_name = 'PassMark USB3.0 Loopback plug'
 function Get-UsbMatches {
     Get-PnpDevice -PresentOnly | Where-Object { $_.FriendlyName -eq $_usb_target_name }
 }
-function Get-Usb-Text {
+function Get-UsbText {
     $devs  = @( Get-UsbMatches )
     $rows  = foreach ($m in $devs) {
         [pscustomobject]@{
@@ -128,25 +128,25 @@ function Get-Usb-Text {
     }
     "Target: {0}`r`nCount: {1}`r`n{2}" -f $_usb_target_name, $devs.Count, ($rows | Format-Table -AutoSize | Out-String).TrimEnd()
 }
-function Get-Usb-Scalar {
+function Get-UsbScalar {
     (@( Get-UsbMatches )).Count.ToString()
 }
 function Invoke-UsbCheck {
-    $_current_text   = Get-Usb-Text
-    $_current_scalar = Get-Usb-Scalar
-    $_golden_scalar  = Ensure-Golden -GoldenFileName 'golden_usb_passmark_count.log' -CurrentScalar $_current_scalar
+    $currentText   = Get-UsbText
+    $currentScalar = Get-UsbScalar
+    $goldenScalar  = Initialize-Golden -GoldenFileName 'golden_usb_passmark_count.log' -CurrentScalar $currentScalar
     [pscustomobject]@{
         name           = 'usb_passmark_count'
-        result_tag     = if ($_current_scalar -eq $_golden_scalar) { 'PASS' } else { 'FAIL' }
-        content_text   = $_current_text
-        golden_scalar  = $_golden_scalar
-        current_scalar = $_current_scalar
+        result_tag     = if ($currentScalar -eq $goldenScalar) { 'PASS' } else { 'FAIL' }
+        content_text   = $currentText
+        golden_scalar  = $goldenScalar
+        current_scalar = $currentScalar
     }
 }
 
 # -- NIC check (model counts + best-effort PCIe link info) ---------------------
 
-function Get-Nic-Objects {
+function Get-NicObjects {
     try {
         return Get-NetAdapter | Where-Object { $_.HardwareInterface -eq $true }
     } catch {
@@ -162,8 +162,8 @@ function Get-Nic-Objects {
         return $cand
     }
 }
-function Get-Nic-Text {
-    $objs = @( Get-Nic-Objects )
+function Get-NicText {
+    $objs = @( Get-NicObjects )
     $rows = foreach ($o in $objs) {
         $desc = if ($o.PSObject.Properties.Name -contains 'InterfaceDescription') { $o.InterfaceDescription }
                 elseif ($o.PSObject.Properties.Name -contains 'Name') { $o.Name }
@@ -210,8 +210,8 @@ function Get-Nic-Text {
                     Format-Table -AutoSize | Out-String).TrimEnd()
     "NICs (all physical):`r`n{0}`r`n`r`nCounts by model:`r`n{1}" -f $detail, $counts
 }
-function Get-Nic-Scalar {
-    $objs   = @( Get-Nic-Objects )
+function Get-NicScalar {
+    $objs   = @( Get-NicObjects )
     $pairs  = @()
     $groups = $objs | Group-Object InterfaceDescription
     foreach ($g in $groups) {
@@ -221,25 +221,25 @@ function Get-Nic-Scalar {
     ($pairs | Sort-Object) -join ' ; '
 }
 function Invoke-NicCheck {
-    $_current_text   = Get-Nic-Text
-    $_current_scalar = Get-Nic-Scalar
-    $_golden_scalar  = Ensure-Golden -GoldenFileName 'golden_nic_model_count.log' -CurrentScalar $_current_scalar
+    $currentText   = Get-NicText
+    $currentScalar = Get-NicScalar
+    $goldenScalar  = Initialize-Golden -GoldenFileName 'golden_nic_model_count.log' -CurrentScalar $currentScalar
     [pscustomobject]@{
         name           = 'nic_model_counts'
-        result_tag     = if ($_current_scalar -eq $_golden_scalar) { 'PASS' } else { 'FAIL' }
-        content_text   = $_current_text
-        golden_scalar  = $_golden_scalar
-        current_scalar = $_current_scalar
+        result_tag     = if ($currentScalar -eq $goldenScalar) { 'PASS' } else { 'FAIL' }
+        content_text   = $currentText
+        golden_scalar  = $goldenScalar
+        current_scalar = $currentScalar
     }
 }
 
 # -- Storage check (model+bus counts + best-effort link info) ------------------
 
-function Get-Storage-Objects {
+function Get-StorageObjects {
     try { return Get-PhysicalDisk } catch { return Get-CimInstance Win32_DiskDrive }
 }
-function Get-Storage-Text {
-    $objs = @( Get-Storage-Objects )
+function Get-StorageText {
+    $objs = @( Get-StorageObjects )
     $rows = foreach ($d in $objs) {
         $model = if ($d.PSObject.Properties.Name -contains 'FriendlyName' -and $d.FriendlyName) { $d.FriendlyName.ToString().Trim() }
                  elseif ($d.PSObject.Properties.Name -contains 'Model' -and $d.Model)           { $d.Model.ToString().Trim() }
@@ -259,7 +259,7 @@ function Get-Storage-Text {
         if ($iid) {
             if    ($bus -match 'NVMe|RAID|PCI') { $pcieInfo = Get-PcieLinkInfo -InstanceIdOrChild $iid }
             elseif ($bus -match 'USB')           { $usbHint  = Get-UsbVersionHint -InstanceId $iid }
-            elseif ($bus -match 'SATA|ATA')      { $sataRate = TryGet-SataLinkRate -InstanceId $iid }
+            elseif ($bus -match 'SATA|ATA')      { $sataRate = Get-SataLinkRate -InstanceId $iid }
         }
         [pscustomobject]@{
             Model         = $model; Bus = $bus; SizeGB = $szGB
@@ -278,8 +278,8 @@ function Get-Storage-Text {
                 Format-Table -AutoSize | Out-String).TrimEnd()
     "Storage devices:`r`n{0}`r`n`r`nCounts by model+bus:`r`n{1}" -f $detail, $counts
 }
-function Get-Storage-Scalar {
-    $objs  = @( Get-Storage-Objects )
+function Get-StorageScalar {
+    $objs  = @( Get-StorageObjects )
     $pairs = @()
     foreach ($d in $objs) {
         $model = if ($d.PSObject.Properties.Name -contains 'FriendlyName' -and $d.FriendlyName) { $d.FriendlyName.ToString().Trim() }
@@ -294,15 +294,15 @@ function Get-Storage-Scalar {
     ($groups | ForEach-Object { '{0}|{1}' -f $_.Name, $_.Count } | Sort-Object) -join ' ; '
 }
 function Invoke-StorageCheck {
-    $_current_text   = Get-Storage-Text
-    $_current_scalar = Get-Storage-Scalar
-    $_golden_scalar  = Ensure-Golden -GoldenFileName 'golden_storage_model_bus_count.log' -CurrentScalar $_current_scalar
+    $currentText   = Get-StorageText
+    $currentScalar = Get-StorageScalar
+    $goldenScalar  = Initialize-Golden -GoldenFileName 'golden_storage_model_bus_count.log' -CurrentScalar $currentScalar
     [pscustomobject]@{
         name           = 'storage_model_bus_counts'
-        result_tag     = if ($_current_scalar -eq $_golden_scalar) { 'PASS' } else { 'FAIL' }
-        content_text   = $_current_text
-        golden_scalar  = $_golden_scalar
-        current_scalar = $_current_scalar
+        result_tag     = if ($currentScalar -eq $goldenScalar) { 'PASS' } else { 'FAIL' }
+        content_text   = $currentText
+        golden_scalar  = $goldenScalar
+        current_scalar = $currentScalar
     }
 }
 
@@ -321,7 +321,7 @@ $_results += Invoke-StorageCheck
 $_overall_tag  = if (@($_results | Where-Object { $_.result_tag -ne 'PASS' }).Count -eq 0) { 'PASS' } else { 'FAIL' }
 
 $_per_run_path = Write-CombinedPerRunLog -Count $_count -Date2 $_date2 -OverallTag $_overall_tag -Results $_results
-Append-CombinedSummary                  -Count $_count -Date2 $_date2 -OverallTag $_overall_tag -Results $_results
+Add-CombinedSummary                  -Count $_count -Date2 $_date2 -OverallTag $_overall_tag -Results $_results
 
 Write-Host ("Overall    : {0}" -f $_overall_tag)
 Write-Host ("Per-run log: {0}" -f $_per_run_path)
