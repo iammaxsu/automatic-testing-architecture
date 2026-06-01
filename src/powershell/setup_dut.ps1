@@ -92,7 +92,7 @@ $ErrorActionPreference = "Stop"
 
 # -- Version & shared library --------------------------------------------------
 
-$_script_ver                = '00.00.05'
+$_script_ver                = '00.00.06'
 $_requires_function_ps1_api = '00.00.01'
 
 $_fn = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Definition) 'function.ps1'
@@ -112,8 +112,15 @@ Write-Host "setup_dut.ps1 v$_script_ver  (function.ps1 API $($script:_function_p
 # -- 1. PowerShell execution policy -------------------------------------------
 
 Write-Step "1 / 10 PowerShell execution policy"
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope LocalMachine -Force
-Write-OK "Execution policy = RemoteSigned (machine-wide)"
+try {
+    Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope LocalMachine -Force -ErrorAction Stop
+    Write-OK "Execution policy = RemoteSigned (machine-wide)"
+} catch {
+    # A Group Policy (or more specific scope) may override LocalMachine.
+    # This is not fatal: the script itself runs fine under -ExecutionPolicy Bypass.
+    Write-Warn "Could not set LocalMachine policy (overridden by Group Policy) - continuing"
+    Write-Host "         Effective policy: $(Get-ExecutionPolicy)"
+}
 
 
 # -- 2. OpenSSH Server --------------------------------------------------------
