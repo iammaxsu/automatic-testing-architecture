@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Test output
+logs/
+*.result.json
+counter.log
+
+# Editor / OS
+.DS_Store
+*.swp

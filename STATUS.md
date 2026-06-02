@@ -1,32 +1,32 @@
 # Project Status
 
-_Generated 2026-05-29 06:33 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-06-02 03:02 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
-**Total:** 118
+**Total:** 123
 
 ### By priority
 
 | Priority | Count |
 | --- | --- |
-| Must | 104 |
-| Should | 12 |
+| Must | 108 |
+| Should | 13 |
 | — | 2 |
 
 ### By status
 
 | Status | Count |
 | --- | --- |
-| proposed | 103 |
+| proposed | 104 |
 | implementing | 3 |
-| implemented | 12 |
+| implemented | 16 |
 
 ```mermaid
 pie showData title Requirements by status
-    "proposed" : 103
+    "proposed" : 104
     "implementing" : 3
-    "implemented" : 12
+    "implemented" : 16
 ```
 
 ### By section
@@ -38,10 +38,10 @@ pie showData title Requirements by status
 | DOC | 4 | 0 | 4 |
 | DSK | 10 | 0 | 8 |
 | FUN | 7 | 0 | 6 |
-| FWK | 27 | 0 | 27 |
-| LOG | 22 | 0 | 22 |
+| FWK | 27 | 0 | 26 |
+| LOG | 24 | 0 | 24 |
 | NET | 13 | 0 | 13 |
-| PWR | 7 | 0 | 0 |
+| PWR | 10 | 0 | 0 |
 | SET | 5 | 0 | 4 |
 | SLP | 5 | 0 | 5 |
 
@@ -81,7 +81,6 @@ pie showData title Requirements by status
 | [FUN005](requirements/FUN005.md) | proposed | Shared log() Interface |
 | [FUN006](requirements/FUN006.md) | proposed | Exactly-Once Counter Semantics |
 | [FWK001](requirements/FWK001.md) | proposed | Snake Case Naming |
-| [FWK002](requirements/FWK002.md) | proposed | Private Variable Naming |
 | [FWK003](requirements/FWK003.md) | proposed | Private Function Naming |
 | [FWK004](requirements/FWK004.md) | proposed | Config and Function as Public API |
 | [FWK005](requirements/FWK005.md) | proposed | Semantic Version Strings |
@@ -111,7 +110,7 @@ pie showData title Requirements by status
 | [LOG005](requirements/LOG005.md) | proposed | Log Filename Includes ISO 8601 Timestamp |
 | [LOG006](requirements/LOG006.md) | proposed | Log Filename Includes Test Result |
 | [LOG007](requirements/LOG007.md) | proposed | Log File Extension |
-| [LOG008](requirements/LOG008.md) | proposed | Log Filename Order |
+| [LOG008](requirements/LOG008.md) | proposed | Discrete-Mode Log Filename Order |
 | [LOG009](requirements/LOG009.md) | proposed | Log Directory Verification at Startup |
 | [LOG010](requirements/LOG010.md) | proposed | Elapsed Time Reporting |
 | [LOG011](requirements/LOG011.md) | proposed | Per-fio-Invocation Log File |
@@ -119,11 +118,12 @@ pie showData title Requirements by status
 | [LOG013](requirements/LOG013.md) | proposed | Disk Test Average Throughput Summary |
 | [LOG014](requirements/LOG014.md) | proposed | Log Entry Timestamp and Level Prefix |
 | [LOG015](requirements/LOG015.md) | proposed | Machine-Readable result.json |
-| [LOG017](requirements/LOG017.md) | proposed | Three-Artefact Output Model |
+| [LOG017](requirements/LOG017.md) | proposed | Three-Artefact Output Model and Two Logging Modes |
 | [LOG018](requirements/LOG018.md) | proposed | HTML Report Generated from result.json |
 | [LOG020](requirements/LOG020.md) | proposed | Minimum result.json Fields |
 | [LOG021](requirements/LOG021.md) | proposed | Output File Ownership |
 | [LOG022](requirements/LOG022.md) | proposed | ISO 8601 Timestamp Consistency |
+| [LOG023](requirements/LOG023.md) | proposed | Test Session Identity and Resume |
 | [NET001](requirements/NET001.md) | proposed | Enumerate enp and eno Interfaces |
 | [NET002](requirements/NET002.md) | proposed | Namespace-Based Loopback Testing |
 | [NET003](requirements/NET003.md) | proposed | Clean Namespace State Before Testing |
@@ -230,11 +230,15 @@ _(may indicate untested code paths — worth a review)_
 | [DET012](requirements/DET012.md) | implemented | Windows Hardware Baseline Verification |
 | [DSK009](requirements/DSK009.md) | implemented | fio Engine and Write-Consistency Flags Aligned with KDiskMark v3.2.0 |
 | [FUN007](requirements/FUN007.md) | implemented | Windows PowerShell Shared Function Library |
+| [FWK002](requirements/FWK002.md) | implemented | Cross-Language Naming Conventions |
 | [PWR001](requirements/PWR001.md) | implemented | AT and ATX PSU Type Selection |
 | [PWR002](requirements/PWR002.md) | implemented | GPIO Relay Abstraction |
 | [PWR003](requirements/PWR003.md) | implemented | Network-Based DUT Liveness Detection |
 | [PWR004](requirements/PWR004.md) | implemented | Per-Cycle Verdict Taxonomy |
 | [PWR005](requirements/PWR005.md) | implemented | Structured result.json Output (LOG015 Compliance) |
 | [PWR007](requirements/PWR007.md) | implemented | Safety Controls: Consecutive Fail Abort and Graceful Stop |
+| [PWR008](requirements/PWR008.md) | implemented | Power Cycle Test Warmup and Initial-State Normalization |
+| [PWR009](requirements/PWR009.md) | implemented | Multi-Strategy DUT Shutdown |
+| [PWR010](requirements/PWR010.md) | implemented | Cycle Phase Timing Model and Parameter Defaults |
 | [SET005](requirements/SET005.md) | implemented | Windows DUT Pre-test Bootstrap Script |
 

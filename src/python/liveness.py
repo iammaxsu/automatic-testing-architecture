@@ -91,9 +91,9 @@ class LivenessChecker:
                 return True, elapsed
             # Distinguish "ping OK but port not ready yet" for informative logging
             if self.ping():
-                log.debug("ping OK, TCP port %d not ready yet", self.port)
+                log.info("ping OK — TCP port %d not ready yet", self.port)
             else:
-                log.debug("no ping response")
+                log.info("no ping response from %s", self.host)
             time.sleep(poll_interval)
 
         log.warning("DUT did not come online within %d s", timeout_sec)

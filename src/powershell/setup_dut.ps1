@@ -92,7 +92,7 @@ $ErrorActionPreference = "Stop"
 
 # -- Version & shared library --------------------------------------------------
 
-$_script_ver                = '00.00.05'
+$_script_ver                = '00.00.07'
 $_requires_function_ps1_api = '00.00.01'
 
 $_fn = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Definition) 'function.ps1'
@@ -112,8 +112,15 @@ Write-Host "setup_dut.ps1 v$_script_ver  (function.ps1 API $($script:_function_p
 # -- 1. PowerShell execution policy -------------------------------------------
 
 Write-Step "1 / 10 PowerShell execution policy"
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope LocalMachine -Force
-Write-OK "Execution policy = RemoteSigned (machine-wide)"
+try {
+    Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope LocalMachine -Force -ErrorAction Stop
+    Write-OK "Execution policy = RemoteSigned (machine-wide)"
+} catch {
+    # A Group Policy (or more specific scope) may override LocalMachine.
+    # This is not fatal: the script itself runs fine under -ExecutionPolicy Bypass.
+    Write-Warn "Could not set LocalMachine policy (overridden by Group Policy) - continuing"
+    Write-Host "         Effective policy: $(Get-ExecutionPolicy)"
+}
 
 
 # -- 2. OpenSSH Server --------------------------------------------------------
@@ -186,6 +193,11 @@ if (-not (Get-NetFirewallRule -Name "Allow-ICMPv4-In" -ErrorAction SilentlyConti
 } else {
     Write-Skip "Firewall rule already exists: ICMPv4 ping"
 }
+
+# Disable Windows Firewall entirely on all profiles (test environment).
+# Individual rules above are kept as fallback if firewall is re-enabled by policy.
+Set-NetFirewallProfile -All -Enabled False
+Write-OK "Windows Firewall disabled (Domain / Private / Public)"
 
 
 # -- 5. Security policy: allow blank-password accounts over network ------------
@@ -328,6 +340,7 @@ Write-Host ("=" * 56) -ForegroundColor Cyan
 Write-Host "  Execution policy  : RemoteSigned"
 Write-Host "  SSH (TCP 22)      : installed + running + firewall open"
 Write-Host "  ICMPv4 ping       : firewall open"
+Write-Host "  Windows Firewall  : disabled (all profiles)"
 Write-Host "  Power scheme      : no sleep / no hibernate"
 Write-Host "  Power button      : Shut down"
 Write-Host "  Windows Update    : no auto-reboot"
