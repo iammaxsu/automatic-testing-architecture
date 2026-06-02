@@ -3,20 +3,15 @@
   DUT-local software reboot endurance test (PWR011).
 
 .DESCRIPTION
-  Runs entirely on the DUT — no Pi or control node required.
+  Runs entirely on the DUT - no Pi or control node required.
 
   STARTING A TEST
-    Run once manually (as Administrator) with -Cycles N:
-      powershell -ExecutionPolicy Bypass -File .\reboot.ps1 -Cycles 100
+    Just run it. Uses the default cycle count if you do not pass -Cycles:
+      .\reboot.ps1                 (uses default cycle count)
+      .\reboot.ps1 -Cycles 100     (run 100 reboot cycles)
 
-    WARNING: the machine will reboot shortly after this command!
-    A 10-second countdown is shown so you can press Ctrl+C to cancel.
-
-  CHECKING STATUS
-    Run with no arguments to see current test status without starting anything:
-      .\reboot.ps1
-    Or read the status file directly:
-      Get-Content .\logs\REBOOT_STATUS.txt
+    WARNING: the machine will reboot after a visible countdown.
+    Press Ctrl+C during the countdown to cancel.
 
   DURING THE TEST
     Task Scheduler invokes reboot.ps1 on every startup (registered by
@@ -25,39 +20,41 @@
         then reboot again (or stop if n has reached m).
       - If no test is in progress: exit silently (normal boot).
 
+  CHECKING PROGRESS (after reboots)
+    Open the plain-text status file - it is rewritten after every cycle:
+      notepad .\logs\REBOOT_STATUS.txt
+    Do NOT run reboot.ps1 to check status: with a test in progress it would
+    resume and trigger another reboot.
+
   STOPPING EARLY
-    Delete logs\reboot_session.json. The next boot will not trigger a reboot.
+    Delete logs\reboot_session.json. The next boot will not reboot again.
 
   RESUMING AFTER POWER LOSS
-    If power fails mid-test, the session file retains the last completed n.
-    Task Scheduler will resume automatically on the next boot. No manual
-    action needed.
+    The session file retains the last completed cycle. Task Scheduler resumes
+    automatically on the next boot - no manual action needed.
 
 .EXAMPLE
-  # Start a 50-cycle test (machine will reboot!)
-  powershell -ExecutionPolicy Bypass -File .\reboot.ps1 -Cycles 50
-
-  # Check current status without starting anything
-  powershell -ExecutionPolicy Bypass -File .\reboot.ps1
-
-  # Dry-run: verify logic without actually rebooting
-  powershell -ExecutionPolicy Bypass -File .\reboot.ps1 -DryRun -Cycles 3
+  .\reboot.ps1
+  .\reboot.ps1 -Cycles 50
+  .\reboot.ps1 -Cycles 50 -Settle 10
+  .\reboot.ps1 -DryRun -Cycles 3
 #>
 
 [CmdletBinding()]
 param(
-    [int]   $Cycles    = 0,     # target cycle count; 0 = status check / Task Scheduler resume
-    [int]   $Settle    = 30,    # seconds to wait before rebooting (lets logs flush)
+    [int]   $Cycles    = 0,     # cycle count; 0 = use default (or resume via Task Scheduler)
+    [int]   $Settle    = 30,    # seconds of countdown before each reboot
     [switch]$DryRun             # skip actual Restart-Computer (for testing)
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# -- Version & shared library --------------------------------------------------
+# -- Version & defaults --------------------------------------------------------
 
-$_script_ver                = '00.00.03'
+$_script_ver                = '00.00.04'
 $_requires_function_ps1_api = '00.00.01'
+$_default_cycles            = 1000   # used when run with no -Cycles and no test in progress
 
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 
@@ -103,76 +100,63 @@ function Write-StatusFile {
     Set-Content -Path $_status_file -Value $Content -Encoding UTF8
 }
 
-# -- Session resolution --------------------------------------------------------
-# Rule: -Cycles N (N > 0) always starts a NEW session.
-#       No arguments (Cycles=0) resumes an existing session (Task Scheduler mode)
-#       or shows status if none exists.
-
-$session  = Read-SessionJson
-$resuming = $false
-$ts       = Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'
-
-if ($Cycles -gt 0) {
-    # ── Manual start: always create a new session ─────────────────────────────
-    $sessionId = Get-Date2
-    $m         = $Cycles
-    $n         = 0
-    $session   = @{
-        session_id = $sessionId
+function New-RebootSession {
+    param([int]$Target)
+    $ts = Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'
+    $sid = Get-Date2
+    $s = @{
+        session_id = $sid
         test       = 'reboot'
-        m          = $m
-        n          = $n
+        m          = $Target
+        n          = 0
         status     = 'running'
         started_at = $ts
         updated_at = $ts
     }
-    Write-SessionJson -Data $session
-    Append-CycleLog -SessionId $sessionId -Line "SESSION_START: $sessionId  m=$m  t=$ts"
-    Write-StatusFile "REBOOT TEST IN PROGRESS`r`nSession : $sessionId`r`nTarget  : $m cycles`r`nDone    : 0 / $m`r`nStarted : $ts`r`nLog     : $_log_path\reboot_$sessionId.log"
-
-    # Prominent reboot warning with countdown
-    Write-Host ""
-    Write-Host "  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" -ForegroundColor Red
-    Write-Host "  !!!   REBOOT TEST STARTING — $m CYCLES PLANNED   !!!" -ForegroundColor Red
-    Write-Host "  !!!   This machine will REBOOT in $Settle seconds!    !!!" -ForegroundColor Red
-    Write-Host "  !!!   Press Ctrl+C NOW to cancel.                !!!" -ForegroundColor Red
-    Write-Host "  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" -ForegroundColor Red
-    Write-Host ""
-    Write-Host "  Session : $sessionId" -ForegroundColor Cyan
-    Write-Host "  Log     : $_log_path\reboot_$sessionId.log" -ForegroundColor Cyan
-    Write-Host "  Status  : $_status_file" -ForegroundColor Cyan
-    Write-Host ""
-
+    Write-SessionJson -Data $s
+    Append-CycleLog -SessionId $sid -Line "SESSION_START: $sid  m=$Target  t=$ts"
+    Write-StatusFile "REBOOT TEST IN PROGRESS`r`nSession : $sid`r`nTarget  : $Target cycles`r`nDone    : 0 / $Target`r`nStarted : $ts`r`nLog     : $_log_path\reboot_$sid.log"
+    return $s
 }
-elseif ($null -ne $session -and
-        $session.status -eq 'running' -and
-        [int]$session.n -lt [int]$session.m) {
-    # ── Task Scheduler / resume mode ─────────────────────────────────────────
+
+# -- Session resolution --------------------------------------------------------
+# Rules:
+#   -Cycles N (N > 0)         -> always start a NEW session of N cycles
+#   no args, test running     -> resume (this is the Task Scheduler boot trigger)
+#   no args, no test running  -> start a NEW session of the default cycle count
+
+$session  = Read-SessionJson
+$resuming = $false
+
+$runningExists = ($null -ne $session -and
+                  $session.status -eq 'running' -and
+                  [int]$session.n -lt [int]$session.m)
+
+if ($Cycles -gt 0) {
+    $session = New-RebootSession -Target $Cycles
+    $sessionId = [string]$session.session_id
+    $m = [int]$session.m
+    $n = 0
+}
+elseif ($runningExists) {
     $resuming  = $true
     $sessionId = [string]$session.session_id
     $m         = [int]$session.m
     $n         = [int]$session.n
 }
 else {
-    # ── Status display (no test running, no -Cycles) ──────────────────────────
-    if ($null -ne $session) {
-        $st = $session.status
-        $nn = $session.n; $mm = $session.m
-        Write-Host "[reboot] Last session: $($session.session_id)  $nn/$mm  status=$st" -ForegroundColor Cyan
-    } else {
-        Write-Host "[reboot] No reboot test in progress." -ForegroundColor DarkGray
-        Write-Host "         Run:  .\reboot.ps1 -Cycles N   to start a test."
-    }
-    exit 0
+    $session = New-RebootSession -Target $_default_cycles
+    $sessionId = [string]$session.session_id
+    $m = [int]$session.m
+    $n = 0
 }
 
 # -- Record this boot (Task Scheduler trigger on resume) -----------------------
 
 if ($resuming) {
     $n++
-    $verdict = 'PASS'   # PASS = Task Scheduler ran = DUT booted far enough (PWR011)
-    $ts      = Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'
-    $entry   = "CYCLE: n=$n/$m  verdict=$verdict  t=$ts"
+    $ts    = Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'
+    $entry = "CYCLE: n=$n/$m  verdict=PASS  t=$ts"   # PASS = booted far enough to run (PWR011)
     Write-Host "[reboot] $entry" -ForegroundColor Green
     Append-CycleLog -SessionId $sessionId -Line $entry
 
@@ -196,17 +180,35 @@ if ($resuming) {
         exit 0
     }
 
-    Write-StatusFile "REBOOT TEST IN PROGRESS`r`nSession : $sessionId`r`nTarget  : $m cycles`r`nDone    : $n / $m`r`nUpdated : $ts`r`nLog     : $_log_path\reboot_$sessionId.log"
     Write-SessionJson -Data $session
-    Write-Host "[reboot] Cycle $n / $m recorded. Next reboot in $Settle s ..." -ForegroundColor Yellow
+    Write-StatusFile "REBOOT TEST IN PROGRESS`r`nSession : $sessionId`r`nTarget  : $m cycles`r`nDone    : $n / $m`r`nUpdated : $ts`r`nLog     : $_log_path\reboot_$sessionId.log"
+    Write-Host "[reboot] Cycle $n / $m recorded." -ForegroundColor Green
+}
+else {
+    # Fresh start banner (interactive).
+    Write-Host ""
+    Write-Host "  ************************************************" -ForegroundColor Red
+    Write-Host ("  ***  REBOOT TEST STARTING - {0} CYCLES" -f $m)    -ForegroundColor Red
+    Write-Host "  ***  This machine will REBOOT repeatedly!"        -ForegroundColor Red
+    Write-Host "  ***  Press Ctrl+C now to cancel."                 -ForegroundColor Red
+    Write-Host "  ************************************************" -ForegroundColor Red
+    Write-Host ""
+    Write-Host ("  Session : {0}" -f $sessionId) -ForegroundColor Cyan
+    Write-Host ("  Status  : {0}" -f $_status_file) -ForegroundColor Cyan
+    Write-Host ""
 }
 
-# -- Reboot (or dry-run) -------------------------------------------------------
+# -- Countdown then reboot -----------------------------------------------------
 
 if ($DryRun) {
-    Write-Host "[reboot] DRY-RUN: would Restart-Computer in $Settle s" -ForegroundColor DarkGray
+    Write-Host "[reboot] DRY-RUN: would reboot after $Settle s countdown" -ForegroundColor DarkGray
     exit 0
 }
 
-Start-Sleep -Seconds $Settle
+Write-Host -NoNewline "[reboot] Rebooting in: " -ForegroundColor Yellow
+for ($i = $Settle; $i -gt 0; $i--) {
+    Write-Host -NoNewline ("{0} " -f $i) -ForegroundColor Yellow
+    Start-Sleep -Seconds 1
+}
+Write-Host ""
 Restart-Computer -Force
