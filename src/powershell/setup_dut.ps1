@@ -84,6 +84,8 @@ param(
     [string]$TestPassword             = "",
     [string]$DevDetectScript          = "",
     [int]   $DevDetectStartupDelaySec = 30,
+    [string]$RebootScript             = "",
+    [int]   $RebootStartupDelaySec    = 60,
     [switch]$AnsibleSSH
 )
 
@@ -92,7 +94,7 @@ $ErrorActionPreference = "Stop"
 
 # -- Version & shared library --------------------------------------------------
 
-$_script_ver                = '00.00.07'
+$_script_ver                = '00.00.08'
 $_requires_function_ps1_api = '00.00.01'
 
 $_fn = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Definition) 'function.ps1'
@@ -262,47 +264,78 @@ if ($TestUser -ne "") {
 }
 
 
-# -- 9. Task Scheduler: run dev_detect.ps1 at every startup -------------------
+# -- 9. Task Scheduler: startup tasks (dev_detect + reboot) -------------------
 
-Write-Step "9 / 10 Task Scheduler  -  device detection at startup"
+Write-Step "9 / 10 Task Scheduler  -  startup tasks"
 
+# Helper: registers a single startup task as SYSTEM with a delay.
+function Register-StartupTask {
+    param(
+        [string]$TaskName,
+        [string]$Description,
+        [string]$ScriptPath,
+        [int]   $DelaySec
+    )
+    $action    = New-ScheduledTaskAction `
+        -Execute  "powershell.exe" `
+        -Argument "-ExecutionPolicy Bypass -NonInteractive -WindowStyle Hidden -File `"$ScriptPath`""
+    $trigger       = New-ScheduledTaskTrigger -AtStartup
+    $trigger.Delay = "PT${DelaySec}S"
+    $settings  = New-ScheduledTaskSettingsSet `
+        -ExecutionTimeLimit (New-TimeSpan -Minutes 10) `
+        -MultipleInstances   IgnoreNew `
+        -StartWhenAvailable
+    $principal = New-ScheduledTaskPrincipal `
+        -UserId    "SYSTEM" `
+        -LogonType ServiceAccount `
+        -RunLevel  Highest
+    Register-ScheduledTask `
+        -TaskName    $TaskName `
+        -Description $Description `
+        -Action      $action `
+        -Trigger     $trigger `
+        -Settings    $settings `
+        -Principal   $principal `
+        -Force | Out-Null
+}
+
+# 9a. dev_detect.ps1
 if ($DevDetectScript -ne "") {
     if (-not (Test-Path $DevDetectScript)) {
         Write-Warn "Script not found: $DevDetectScript"
-        Write-Warn "Copy dev_detect.ps1 to the DUT first, then re-run with -DevDetectScript pointing to it"
+        Write-Warn "Copy dev_detect.ps1 to the DUT first, then re-run with -DevDetectScript pointing to it."
     } else {
-        $taskAction = New-ScheduledTaskAction `
-            -Execute  "powershell.exe" `
-            -Argument "-ExecutionPolicy Bypass -NonInteractive -WindowStyle Hidden -File `"$DevDetectScript`""
-
-        $taskTrigger       = New-ScheduledTaskTrigger -AtStartup
-        $taskTrigger.Delay = "PT${DevDetectStartupDelaySec}S"
-
-        $taskSettings = New-ScheduledTaskSettingsSet `
-            -ExecutionTimeLimit (New-TimeSpan -Minutes 10) `
-            -MultipleInstances   IgnoreNew `
-            -StartWhenAvailable
-
-        $taskPrincipal = New-ScheduledTaskPrincipal `
-            -UserId    "SYSTEM" `
-            -LogonType ServiceAccount `
-            -RunLevel  Highest
-
-        Register-ScheduledTask `
+        Register-StartupTask `
             -TaskName    "DUT-DevDetect" `
-            -Description "Runs dev_detect.ps1 at startup for power-cycle / reboot hardware verification" `
-            -Action      $taskAction `
-            -Trigger     $taskTrigger `
-            -Settings    $taskSettings `
-            -Principal   $taskPrincipal `
-            -Force | Out-Null
-
+            -Description "Runs dev_detect.ps1 at startup for hardware component verification" `
+            -ScriptPath  $DevDetectScript `
+            -DelaySec    $DevDetectStartupDelaySec
         Write-OK "Task 'DUT-DevDetect' registered (startup + ${DevDetectStartupDelaySec}s delay, runs as SYSTEM)"
         Write-Host "         Script : $DevDetectScript"
     }
 } else {
-    Write-Skip "Task Scheduler not configured (no -DevDetectScript supplied)"
+    Write-Skip "DUT-DevDetect not configured (no -DevDetectScript supplied)"
     Write-Host "         Pass -DevDetectScript with the full path to dev_detect.ps1 to register the startup task."
+}
+
+# 9b. reboot.ps1
+if ($RebootScript -ne "") {
+    if (-not (Test-Path $RebootScript)) {
+        Write-Warn "Script not found: $RebootScript"
+        Write-Warn "Copy reboot.ps1 to the DUT first, then re-run with -RebootScript pointing to it."
+    } else {
+        Register-StartupTask `
+            -TaskName    "DUT-Reboot" `
+            -Description "Runs reboot.ps1 at startup to continue an in-progress reboot endurance test" `
+            -ScriptPath  $RebootScript `
+            -DelaySec    $RebootStartupDelaySec
+        Write-OK "Task 'DUT-Reboot' registered (startup + ${RebootStartupDelaySec}s delay, runs as SYSTEM)"
+        Write-Host "         Script : $RebootScript"
+        Write-Host "         NOTE   : reboot.ps1 exits silently when no test is in progress."
+    }
+} else {
+    Write-Skip "DUT-Reboot not configured (no -RebootScript supplied)"
+    Write-Host "         Pass -RebootScript with the full path to reboot.ps1 to register the startup task."
 }
 
 
@@ -352,7 +385,12 @@ if ($TestUser -ne "") {
 if ($DevDetectScript -ne "" -and (Test-Path $DevDetectScript)) {
     Write-Host "  Task Scheduler    : DUT-DevDetect (startup + ${DevDetectStartupDelaySec}s, as SYSTEM)"
 } else {
-    Write-Host "  Task Scheduler    : not configured"
+    Write-Host "  Task Scheduler    : DUT-DevDetect not configured"
+}
+if ($RebootScript -ne "" -and (Test-Path $RebootScript)) {
+    Write-Host "  Task Scheduler    : DUT-Reboot    (startup + ${RebootStartupDelaySec}s, as SYSTEM)"
+} else {
+    Write-Host "  Task Scheduler    : DUT-Reboot    not configured"
 }
 if ($AnsibleSSH) {
     Write-Host "  Ansible SSH       : DefaultShell = PowerShell 5.1"
