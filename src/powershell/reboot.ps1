@@ -26,12 +26,12 @@
   RESUMING
     If the DUT loses power during a test, run reboot.ps1 manually again.
     If the session file still exists with status=running, it resumes from
-    where it left off. Use --new-session to force a fresh start instead.
+    where it left off. Use -NewSession to force a fresh start instead.
 
 .EXAMPLE
-  powershell -ExecutionPolicy Bypass -File .\reboot.ps1 --cycles 50
-  powershell -ExecutionPolicy Bypass -File .\reboot.ps1 --cycles 50 --settle 10
-  powershell -ExecutionPolicy Bypass -File .\reboot.ps1 --dry-run --cycles 3
+  powershell -ExecutionPolicy Bypass -File .\reboot.ps1 -Cycles 50
+  powershell -ExecutionPolicy Bypass -File .\reboot.ps1 -Cycles 50 -Settle 10
+  powershell -ExecutionPolicy Bypass -File .\reboot.ps1 -DryRun -Cycles 3
 #>
 
 [CmdletBinding()]
