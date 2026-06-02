@@ -47,7 +47,7 @@ $ErrorActionPreference = 'Stop'
 
 # -- Version & shared library --------------------------------------------------
 
-$_script_ver                = '00.00.01'
+$_script_ver                = '00.00.02'
 $_requires_function_ps1_api = '00.00.01'
 
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -163,7 +163,11 @@ if ($resuming) {
 
 # -- Schedule next reboot (if not complete and not dry-run) --------------------
 
-Write-Host "[reboot] Cycle $n / $m complete. Next reboot in $Settle s ..." -ForegroundColor Yellow
+if ($resuming) {
+    Write-Host "[reboot] Cycle $n / $m recorded. Next reboot in $Settle s ..." -ForegroundColor Yellow
+} else {
+    Write-Host "[reboot] Session started. Rebooting in $Settle s to begin cycle 1 / $m ..." -ForegroundColor Yellow
+}
 
 if ($DryRun) {
     Write-Host "[reboot] DRY-RUN: would Restart-Computer in $Settle s" -ForegroundColor DarkGray

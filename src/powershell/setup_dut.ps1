@@ -94,7 +94,7 @@ $ErrorActionPreference = "Stop"
 
 # -- Version & shared library --------------------------------------------------
 
-$_script_ver                = '00.00.08'
+$_script_ver                = '00.00.09'
 $_requires_function_ps1_api = '00.00.01'
 
 $_fn = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Definition) 'function.ps1'
@@ -269,6 +269,8 @@ if ($TestUser -ne "") {
 Write-Step "9 / 10 Task Scheduler  -  startup tasks"
 
 # Helper: registers a single startup task as SYSTEM with a delay.
+# ScriptPath is resolved to an absolute path: Task Scheduler runs as SYSTEM with
+# working directory C:\Windows\System32, so a relative path would never be found.
 function Register-StartupTask {
     param(
         [string]$TaskName,
@@ -276,9 +278,12 @@ function Register-StartupTask {
         [string]$ScriptPath,
         [int]   $DelaySec
     )
+    $absScript = (Resolve-Path -LiteralPath $ScriptPath).Path
+    $workDir   = Split-Path -Parent $absScript
     $action    = New-ScheduledTaskAction `
-        -Execute  "powershell.exe" `
-        -Argument "-ExecutionPolicy Bypass -NonInteractive -WindowStyle Hidden -File `"$ScriptPath`""
+        -Execute          "powershell.exe" `
+        -Argument         "-ExecutionPolicy Bypass -NonInteractive -WindowStyle Hidden -File `"$absScript`"" `
+        -WorkingDirectory $workDir
     $trigger       = New-ScheduledTaskTrigger -AtStartup
     $trigger.Delay = "PT${DelaySec}S"
     $settings  = New-ScheduledTaskSettingsSet `
@@ -311,7 +316,7 @@ if ($DevDetectScript -ne "") {
             -ScriptPath  $DevDetectScript `
             -DelaySec    $DevDetectStartupDelaySec
         Write-OK "Task 'DUT-DevDetect' registered (startup + ${DevDetectStartupDelaySec}s delay, runs as SYSTEM)"
-        Write-Host "         Script : $DevDetectScript"
+        Write-Host "         Script : $((Resolve-Path -LiteralPath $DevDetectScript).Path)"
     }
 } else {
     Write-Skip "DUT-DevDetect not configured (no -DevDetectScript supplied)"
@@ -330,7 +335,7 @@ if ($RebootScript -ne "") {
             -ScriptPath  $RebootScript `
             -DelaySec    $RebootStartupDelaySec
         Write-OK "Task 'DUT-Reboot' registered (startup + ${RebootStartupDelaySec}s delay, runs as SYSTEM)"
-        Write-Host "         Script : $RebootScript"
+        Write-Host "         Script : $((Resolve-Path -LiteralPath $RebootScript).Path)"
         Write-Host "         NOTE   : reboot.ps1 exits silently when no test is in progress."
     }
 } else {
