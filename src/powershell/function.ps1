@@ -174,13 +174,17 @@ function Convert-LinkSpeedToGb {
 # the caller already initialised them (e.g. from a shared config.ps1).
 
 function Get-Date2 {
-    if ($script:_date2 -and -not [string]::IsNullOrWhiteSpace($script:_date2)) { return $script:_date2 }
+    # StrictMode-safe: $_date2 may be unset if config.ps1 was not loaded.
+    $d = Get-Variable -Name '_date2' -ValueOnly -ErrorAction SilentlyContinue
+    if ($d -and -not [string]::IsNullOrWhiteSpace([string]$d)) { return [string]$d }
     return (Get-Date -Format 'yyyyMMddTHHmmss')   # ISO 8601 basic, local (LOG022)
 }
 
 function Get-NextCount {
-    if ($script:_newcount -and ($script:_newcount -as [int] -ne $null)) {
-        return [int]$script:_newcount
+    # StrictMode-safe: $_newcount may be unset if the caller did not provide it.
+    $nc = Get-Variable -Name '_newcount' -ValueOnly -ErrorAction SilentlyContinue
+    if ($null -ne $nc -and (($nc -as [int]) -ne $null)) {
+        return [int]$nc
     }
     $count = 1
     if (Test-Path $_counter_file) {
