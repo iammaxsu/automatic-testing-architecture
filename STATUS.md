@@ -1,30 +1,30 @@
 # Project Status
 
-_Generated 2026-06-01 09:10 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-06-02 03:02 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
-**Total:** 121
+**Total:** 123
 
 ### By priority
 
 | Priority | Count |
 | --- | --- |
-| Must | 107 |
-| Should | 12 |
+| Must | 108 |
+| Should | 13 |
 | — | 2 |
 
 ### By status
 
 | Status | Count |
 | --- | --- |
-| proposed | 102 |
+| proposed | 104 |
 | implementing | 3 |
 | implemented | 16 |
 
 ```mermaid
 pie showData title Requirements by status
-    "proposed" : 102
+    "proposed" : 104
     "implementing" : 3
     "implemented" : 16
 ```
@@ -39,7 +39,7 @@ pie showData title Requirements by status
 | DSK | 10 | 0 | 8 |
 | FUN | 7 | 0 | 6 |
 | FWK | 27 | 0 | 26 |
-| LOG | 22 | 0 | 22 |
+| LOG | 24 | 0 | 24 |
 | NET | 13 | 0 | 13 |
 | PWR | 10 | 0 | 0 |
 | SET | 5 | 0 | 4 |
@@ -110,7 +110,7 @@ pie showData title Requirements by status
 | [LOG005](requirements/LOG005.md) | proposed | Log Filename Includes ISO 8601 Timestamp |
 | [LOG006](requirements/LOG006.md) | proposed | Log Filename Includes Test Result |
 | [LOG007](requirements/LOG007.md) | proposed | Log File Extension |
-| [LOG008](requirements/LOG008.md) | proposed | Log Filename Order |
+| [LOG008](requirements/LOG008.md) | proposed | Discrete-Mode Log Filename Order |
 | [LOG009](requirements/LOG009.md) | proposed | Log Directory Verification at Startup |
 | [LOG010](requirements/LOG010.md) | proposed | Elapsed Time Reporting |
 | [LOG011](requirements/LOG011.md) | proposed | Per-fio-Invocation Log File |
@@ -118,11 +118,12 @@ pie showData title Requirements by status
 | [LOG013](requirements/LOG013.md) | proposed | Disk Test Average Throughput Summary |
 | [LOG014](requirements/LOG014.md) | proposed | Log Entry Timestamp and Level Prefix |
 | [LOG015](requirements/LOG015.md) | proposed | Machine-Readable result.json |
-| [LOG017](requirements/LOG017.md) | proposed | Three-Artefact Output Model |
+| [LOG017](requirements/LOG017.md) | proposed | Three-Artefact Output Model and Two Logging Modes |
 | [LOG018](requirements/LOG018.md) | proposed | HTML Report Generated from result.json |
 | [LOG020](requirements/LOG020.md) | proposed | Minimum result.json Fields |
 | [LOG021](requirements/LOG021.md) | proposed | Output File Ownership |
 | [LOG022](requirements/LOG022.md) | proposed | ISO 8601 Timestamp Consistency |
+| [LOG023](requirements/LOG023.md) | proposed | Test Session Identity and Resume |
 | [NET001](requirements/NET001.md) | proposed | Enumerate enp and eno Interfaces |
 | [NET002](requirements/NET002.md) | proposed | Namespace-Based Loopback Testing |
 | [NET003](requirements/NET003.md) | proposed | Clean Namespace State Before Testing |

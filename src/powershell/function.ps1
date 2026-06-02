@@ -175,7 +175,7 @@ function Convert-LinkSpeedToGb {
 
 function Get-Date2 {
     if ($script:_date2 -and -not [string]::IsNullOrWhiteSpace($script:_date2)) { return $script:_date2 }
-    return (Get-Date -Format 'yyyyMMddHHmmss')
+    return (Get-Date -Format 'yyyyMMddTHHmmss')   # ISO 8601 basic, local (LOG022)
 }
 
 function Get-NextCount {

@@ -19,6 +19,7 @@
 #   --warmup  N               initialization cycles before the counted test begins (default: 1)
 #   --boot-timeout SECONDS    max wait for DUT to come online (default: 120)
 #   --ssh-user USERNAME       SSH login for graceful OS shutdown (default: none, use ATX press)
+#   --new-session             force a new session instead of resuming an incomplete one (LOG023)
 #
 # Verdicts per cycle:
 #   PASS            — boot OK, ran full ON_TIME, shut down cleanly
@@ -95,6 +96,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--ssh-user", default=config.SHUTDOWN_SSH_USER,
                    dest="ssh_user",
                    help="SSH username for graceful shutdown (empty = skip SSH method)")
+    p.add_argument("--new-session", action="store_true", dest="new_session",
+                   help="Force a new session even if an incomplete one exists (LOG023)")
     return p.parse_args()
 
 
@@ -244,6 +247,34 @@ def _build_summary(cycles: list, target: int) -> dict:
     }
 
 
+# ── result structure ──────────────────────────────────────────────────────────
+
+def _new_result(args: argparse.Namespace, session_id: str, m: int) -> dict:
+    """Build a fresh result.json structure for a new session."""
+    return {
+        "schema_version": "1.1",
+        "test_name":      "power_cycle",
+        "session_id":     session_id,
+        "started_at":     function.now_iso(),
+        "ended_at":       None,
+        "config": {
+            "power_type":       args.type,
+            "dut_host":         args.host,
+            "dut_port":         args.port,
+            "cycles_target":    m,
+            "on_time_sec":      args.on_time,
+            "off_time_sec":     args.off_time,
+            "boot_timeout_sec": args.boot_timeout,
+            "dead_timeout_sec": config.DEAD_TIMEOUT_SEC,
+            "warmup_cycles":    args.warmup,
+            "ssh_user":         args.ssh_user or None,
+        },
+        "cycles":          [],
+        "summary":         {},
+        "overall_verdict": "RUNNING",
+    }
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -251,35 +282,67 @@ def main() -> int:
     if args.report is None:
         args.report = args.out
 
-    # Timestamp for this run
-    ts   = function.now_ts()
-    stem = f"power_cycle_{ts}"
-
-    # Paths
-    out_dir    = Path(args.out)
-    rep_dir    = Path(args.report)
-    log_path   = out_dir / f"{stem}.log"
-    json_path  = out_dir / f"{stem}.result.json"
-    html_path  = rep_dir / f"{stem}_report.html"
-
+    out_dir = Path(args.out)
+    rep_dir = Path(args.report)
     out_dir.mkdir(parents=True, exist_ok=True)
     rep_dir.mkdir(parents=True, exist_ok=True)
 
-    function.setup_logging(str(log_path))
+    # ── Session resolution (LOG023) ────────────────────────────────────────────
+    session_path = out_dir / "power_cycle_session.json"
+    session = function.read_json(str(session_path))
+    resuming = bool(
+        session
+        and session.get("status") == "running"
+        and session.get("n", 0) < session.get("m", 0)
+        and not args.new_session
+    )
+
+    if resuming:
+        session_id = session["session_id"]
+        m          = session["m"]
+        start_n    = session["n"] + 1
+    else:
+        session_id = function.now_ts()
+        m          = args.cycles
+        start_n    = 1
+        session = {
+            "session_id": session_id,
+            "test":       "power_cycle",
+            "m":          m,
+            "n":          0,
+            "status":     "running",
+            "started_at": function.now_iso(),
+            "updated_at": function.now_iso(),
+        }
+        function.write_json(str(session_path), session)
+
+    # Paths derived from session_id; a resumed run reuses the same files.
+    stem      = f"power_cycle_{session_id}"
+    log_path  = out_dir / f"{stem}.log"
+    json_path = out_dir / f"{stem}.result.json"
+    html_path = rep_dir / f"power_cycle_report_{session_id}.html"
+
+    function.setup_logging(str(log_path))   # FileHandler appends on resume
     signal.signal(signal.SIGINT, _sigint_handler)
 
     log.info("Power Cycle Test")
+    log.info("  Session : %s%s", session_id, "  (RESUMING)" if resuming else "")
     log.info("  Type    : %s",     args.type)
     log.info("  Host    : %s",     args.host or "(liveness disabled)")
-    log.info("  Cycles  : %d",     args.cycles)
+    log.info("  Cycles  : m=%d, starting at n=%d", m, start_n)
     log.info("  On/Off  : %ds / %ds", args.on_time, args.off_time)
     log.info("  GPIO pin: %d",     args.pin)
-    log.info("  Warmup  : %d cycle(s)", args.warmup)
+    log.info("  Warmup  : %d cycle(s)%s", args.warmup,
+             "  (skipped on resume)" if resuming else "")
     log.info("  Boot TO : %ds",    args.boot_timeout)
     log.info("  SSH user: %s",     args.ssh_user or "(none — ATX relay only)")
     log.info("  Log     : %s",     log_path)
     log.info("  JSON    : %s",     json_path)
     log.info("  Report  : %s",     html_path)
+
+    if resuming and args.cycles != m and args.cycles != config.CYCLES:
+        log.warning("Requested --cycles %d differs from resumed session m=%d; using %d",
+                    args.cycles, m, m)
 
     if args.dry_run:
         log.info("  *** DRY-RUN mode — GPIO will NOT be touched ***")
@@ -317,28 +380,16 @@ def main() -> int:
         time_based_delay_sec=args.off_time,
     )
 
-    # Build initial result structure
-    result = {
-        "schema_version": "1.0",
-        "test_name":      "power_cycle",
-        "started_at":     function.now_iso(),
-        "ended_at":       None,
-        "config": {
-            "power_type":       args.type,
-            "dut_host":         args.host,
-            "dut_port":         args.port,
-            "cycles_target":    args.cycles,
-            "on_time_sec":      args.on_time,
-            "off_time_sec":     args.off_time,
-            "boot_timeout_sec": args.boot_timeout,
-            "dead_timeout_sec": config.DEAD_TIMEOUT_SEC,
-            "warmup_cycles":    args.warmup,
-            "ssh_user":         args.ssh_user or None,
-        },
-        "cycles":          [],
-        "summary":         {},
-        "overall_verdict": "RUNNING",
-    }
+    # Build or load result structure (resume reuses the existing file)
+    if resuming:
+        result = function.read_json(str(json_path)) or _new_result(args, session_id, m)
+        # Crash safety: drop any cycle records past the last committed session n
+        # (result.json is written before session.json, so an orphan can exist).
+        result["cycles"] = result.get("cycles", [])[: session["n"]]
+        log.info("Resuming session %s: %d of %d cycles already recorded",
+                 session_id, len(result["cycles"]), m)
+    else:
+        result = _new_result(args, session_id, m)
 
     # ── Initial state normalization ───────────────────────────────────────────
     # If DUT is already alive when the test starts (e.g. left on after setup_dut),
@@ -347,25 +398,27 @@ def main() -> int:
         log.info("DUT is alive at test start — forcing off to establish known state ...")
         _force_off(args, relay)
 
-    # ── Warmup cycles ─────────────────────────────────────────────────────────
-    if args.warmup > 0:
+    # ── Warmup cycles (new session only) ──────────────────────────────────────
+    if args.warmup > 0 and not resuming:
         log.info("=== Warmup: %d cycle(s) before counted test ===", args.warmup)
         for w in range(1, args.warmup + 1):
             rec = run_one_cycle(w, args, relay, checker, shutdown_coord,
                                 total=args.warmup, is_warmup=True)
             log.info("[WARMUP %d/%d] verdict: %s (not counted)", w, args.warmup, rec["verdict"])
-        log.info("=== Warmup complete — starting %d counted cycle(s) ===", args.cycles)
+        log.info("=== Warmup complete — starting counted cycle(s) ===")
 
     consecutive_fails = 0
+    last_n = start_n - 1
 
     try:
-        for n in range(1, args.cycles + 1):
+        for n in range(start_n, m + 1):
             if _stop_requested:
                 log.info("Stop requested — exiting loop after cycle %d", n - 1)
                 break
 
-            rec = run_one_cycle(n, args, relay, checker, shutdown_coord)
+            rec = run_one_cycle(n, args, relay, checker, shutdown_coord, total=m)
             result["cycles"].append(rec)
+            last_n = n
 
             # Track consecutive failures
             if rec["verdict"] == PASS:
@@ -386,16 +439,28 @@ def main() -> int:
                     break
 
             # Persist JSON after every cycle (atomic write)
-            result["summary"] = _build_summary(result["cycles"], args.cycles)
+            result["summary"] = _build_summary(result["cycles"], m)
             result["overall_verdict"] = "RUNNING"
             function.write_result_json(str(json_path), result)
+
+            # Persist session progress after every cycle (atomic write, LOG023)
+            session["n"] = n
+            session["updated_at"] = function.now_iso()
+            function.write_json(str(session_path), session)
 
     finally:
         relay.cleanup()
 
+    # Mark session complete if all cycles ran; otherwise leave it resumable.
+    if last_n >= m and not _stop_requested:
+        session["status"] = "complete"
+    session["n"] = last_n
+    session["updated_at"] = function.now_iso()
+    function.write_json(str(session_path), session)
+
     # Finalise
     result["ended_at"] = function.now_iso()
-    summary = _build_summary(result["cycles"], args.cycles)
+    summary = _build_summary(result["cycles"], m)
     result["summary"] = summary
 
     if summary["fail"] == 0 and summary["total_ran"] > 0:
