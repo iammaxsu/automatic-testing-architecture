@@ -67,7 +67,7 @@ $ErrorActionPreference = 'Stop'
 
 # -- Version & defaults --------------------------------------------------------
 
-$_script_ver                = '00.00.07'
+$_script_ver                = '00.00.08'
 $_requires_function_ps1_api = '00.00.01'
 $_default_cycles            = 1000   # used when run with no -Cycles and no test in progress
 
@@ -238,10 +238,18 @@ function Invoke-ReportPy {
     }
     if (-not (Test-Path $rpy)) { return }
 
-    $pyCmd = Get-Command python -ErrorAction SilentlyContinue
-    if (-not $pyCmd) { return }
+    # Prefer 'python', fall back to the 'py' launcher (often present when
+    # 'python' is not on PATH, e.g. right after a python.org install).
+    $pyExe  = $null
+    $pyArgs = @()
+    if (Get-Command python -ErrorAction SilentlyContinue) {
+        $pyExe = 'python'
+    } elseif (Get-Command py -ErrorAction SilentlyContinue) {
+        $pyExe = 'py'; $pyArgs = @('-3')
+    }
+    if (-not $pyExe) { return }
 
-    try { & python $rpy $jsonFile 2>$null } catch {}
+    try { & $pyExe @pyArgs $rpy $jsonFile 2>$null } catch {}
 }
 
 function New-RebootSession {
