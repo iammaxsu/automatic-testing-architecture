@@ -514,7 +514,10 @@ def main(argv=None) -> int:
 
     out_path = Path(argv[1]) if len(argv) > 1 else in_path.with_suffix(".html")
     try:
-        with open(in_path, encoding="utf-8") as f:
+        # utf-8-sig strips a leading BOM if present (PowerShell 5.1's
+        # Set-Content -Encoding UTF8 writes one) and is a no-op otherwise,
+        # so the same renderer reads JSON from reboot.ps1 and reboot.py alike.
+        with open(in_path, encoding="utf-8-sig") as f:
             result = json.load(f)
     except Exception as exc:
         print(f"ERROR: cannot read JSON {in_path}: {exc}")

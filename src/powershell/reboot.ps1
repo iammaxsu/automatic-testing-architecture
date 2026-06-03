@@ -67,7 +67,7 @@ $ErrorActionPreference = 'Stop'
 
 # -- Version & defaults --------------------------------------------------------
 
-$_script_ver                = '00.00.08'
+$_script_ver                = '00.00.09'
 $_requires_function_ps1_api = '00.00.01'
 $_default_cycles            = 1000   # used when run with no -Cycles and no test in progress
 
@@ -93,6 +93,15 @@ $_status_file  = Join-Path $_log_path 'REBOOT_STATUS.txt'
 
 function Now-Iso { Get-Date -Format 'yyyy-MM-ddTHH:mm:ss' }   # extended, local (LOG022)
 
+# Write text as UTF-8 WITHOUT a BOM. PowerShell 5.1's `Set-Content -Encoding
+# UTF8` always prepends a BOM, which is invalid in JSON (RFC 8259) and trips up
+# strict parsers (report.py, jq, Ansible). .NET's UTF8Encoding($false) omits it.
+function Write-Utf8NoBom {
+    param([string]$Path, [string]$Text)
+    $enc = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Text, $enc)
+}
+
 # -- JSON helpers (session) ----------------------------------------------------
 
 function Read-SessionJson {
@@ -104,7 +113,7 @@ function Read-SessionJson {
 function Write-SessionJson {
     param([hashtable]$Data)
     $tmp = $_session_file + '.tmp'
-    $Data | ConvertTo-Json -Depth 5 | Set-Content -Path $tmp -Encoding UTF8
+    Write-Utf8NoBom -Path $tmp -Text ($Data | ConvertTo-Json -Depth 5)
     Move-Item -Path $tmp -Destination $_session_file -Force
 }
 
@@ -140,7 +149,7 @@ function Write-ResultJson {
     param([string]$SessionId, [hashtable]$Result)
     $file = Get-ResultFile -SessionId $SessionId
     $tmp  = $file + '.tmp'
-    $Result | ConvertTo-Json -Depth 8 | Set-Content -Path $tmp -Encoding UTF8
+    Write-Utf8NoBom -Path $tmp -Text ($Result | ConvertTo-Json -Depth 8)
     Move-Item -Path $tmp -Destination $file -Force
 }
 
