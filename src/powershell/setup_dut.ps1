@@ -18,7 +18,7 @@
       8. (Optional) Configures auto-logon for the test user account
       9. (Optional) Registers Task Scheduler tasks (dev_detect.ps1 + reboot.ps1) at startup
      10. (Optional) Configures PowerShell as the default SSH shell for Ansible
-     11. Installs Python 3 so reboot.ps1 can automatically generate HTML reports
+     11. Installs Python 3 and downloads report.py so reboot.ps1 can auto-generate HTML reports
 
     This script is intentionally idempotent: running it multiple times is safe.
 
@@ -98,10 +98,11 @@ $ErrorActionPreference = "Stop"
 
 # -- Version & shared library --------------------------------------------------
 
-$_script_ver                = '00.00.12'
+$_script_ver                = '00.00.13'
 $_requires_function_ps1_api = '00.00.01'
 
-$_fn = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Definition) 'function.ps1'
+$_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
+$_fn = Join-Path $_script_root 'function.ps1'
 if (-not (Test-Path $_fn)) {
     Write-Error "function.ps1 not found at $_fn  -  cannot continue"
     exit 1
@@ -433,7 +434,7 @@ function Install-PythonViaDownload {
     }
 }
 
-Write-Step "11 / 11  Python 3 runtime"
+Write-Step "11 / 11  Python 3 runtime + report.py renderer"
 
 $pythonReady = $false
 $pyCmd = Get-Command python -ErrorAction SilentlyContinue
@@ -462,6 +463,34 @@ if ($pyCmd) {
         Write-Host "         Tick 'Add python.exe to PATH', then re-run this script."
     }
 }
+
+# Download report.py alongside the PowerShell scripts so reboot.ps1 can call it
+# automatically after each cycle.  report.py is pure stdlib - no pip needed.
+# setup_dut.ps1 is the single entry point for the user; it handles both Python
+# (the runtime) and report.py (the renderer) in one unconditional step.
+
+function Install-ReportPy {
+    param([string]$DestDir)
+    $destFile = Join-Path $DestDir 'report.py'
+    if (Test-Path $destFile) {
+        Write-Skip "report.py already present: $destFile"
+        return $true
+    }
+    $url = 'https://raw.githubusercontent.com/iammaxsu/automatic-testing-architecture/main/src/python/report.py'
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Write-Host "  Downloading report.py from GitHub..."
+        Invoke-WebRequest -Uri $url -OutFile $destFile -UseBasicParsing
+        Write-OK "report.py downloaded to: $destFile"
+        return $true
+    } catch {
+        Write-Warn "Could not download report.py: $($_.Exception.Message)"
+        Write-Host "         Copy src/python/report.py from the repository manually."
+        return $false
+    }
+}
+
+$reportPyReady = Install-ReportPy -DestDir $_script_root
 
 
 # -- Summary -------------------------------------------------------------------
@@ -498,9 +527,14 @@ if ($AnsibleSSH) {
     Write-Host "  Ansible SSH       : not configured"
 }
 if ($pythonReady) {
-    Write-Host "  Python runtime    : available (reboot.ps1 will auto-generate HTML reports)"
+    Write-Host "  Python runtime    : available"
 } else {
     Write-Host "  Python runtime    : install manually then re-run this script"
+}
+if ($reportPyReady) {
+    Write-Host "  report.py         : present (HTML reports auto-generated after each cycle)"
+} else {
+    Write-Host "  report.py         : not available - copy from src/python/report.py manually"
 }
 Write-Host ""
 Write-Host "  >>> Reboot required for all changes to take effect. <<<" -ForegroundColor Yellow
