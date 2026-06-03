@@ -106,19 +106,33 @@ def _ssh_reboot(args: argparse.Namespace, ssh_timeout: int = 10) -> bool:
     ]
     log.info("SSH reboot: %s@%s  cmd=%s", args.ssh_user, args.host, args.ssh_cmd)
     try:
-        subprocess.run(
+        result = subprocess.run(
             cmd,
             timeout=ssh_timeout + 5,
-            check=True,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
         )
-        return True
-    except subprocess.CalledProcessError as exc:
-        # Exit code 255 is expected when SSH closes as the OS reboots mid-command.
-        if exc.returncode == 255:
+        rc = result.returncode
+        if rc == 0:
             return True
-        log.warning("SSH reboot command returned %d", exc.returncode)
+        # 255: SSH transport closed — the OS started shutting down before the
+        # command could return cleanly. This is a normal "success" for sudo reboot.
+        if rc == 255:
+            log.info("SSH reboot: exit 255 — connection closed by remote (reboot initiated)")
+            return True
+        # Any other non-zero exit (1 = sudo permission denied, etc.) is a real
+        # failure. Log stderr to help diagnose the cause.
+        stderr_text = (result.stderr or b"").decode(errors="replace").strip()
+        log.warning("SSH reboot command returned %d%s", rc,
+                    f": {stderr_text}" if stderr_text else "")
+        if rc == 1 and not stderr_text:
+            log.warning("Exit 1 with no stderr often means sudo requires a password. "
+                        "Fix: on the DUT run: "
+                        "echo '%s ALL=(ALL) NOPASSWD: /sbin/reboot' "
+                        "| sudo tee /etc/sudoers.d/reboot-nopasswd", args.ssh_user)
+        return False
+    except subprocess.TimeoutExpired:
+        log.warning("SSH reboot timed out after %ds", ssh_timeout + 5)
         return False
     except Exception as exc:
         log.warning("SSH reboot error: %s", exc)
