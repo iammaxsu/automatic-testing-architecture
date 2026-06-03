@@ -6,8 +6,10 @@
   Runs entirely on the DUT - no Pi or control node required.
 
   STARTING A TEST
-    Just run it. Uses the default cycle count if you do not pass -Cycles:
-      .\reboot.ps1                 (uses default cycle count)
+    You MUST pass -Cycles N to start a test. Running with no arguments
+    is the Task Scheduler path — it resumes an in-progress test or exits
+    silently. Without -Cycles there is no way to distinguish a user
+    starting a test from Task Scheduler running on a normal boot.
       .\reboot.ps1 -Cycles 100     (run 100 reboot cycles)
 
     The machine will reboot after a short countdown. Press Ctrl+C to cancel.
@@ -67,7 +69,7 @@ $ErrorActionPreference = 'Stop'
 
 # -- Version & defaults --------------------------------------------------------
 
-$_script_ver                = '00.00.09'
+$_script_ver                = '00.00.10'
 $_requires_function_ps1_api = '00.00.01'
 $_default_cycles            = 1000   # used when run with no -Cycles and no test in progress
 
@@ -309,7 +311,14 @@ function Invoke-RebootWithCountdown {
 # Rules:
 #   -Cycles N (N > 0)         -> always start a NEW session of N cycles
 #   no args, test running     -> resume (this is the Task Scheduler boot trigger)
-#   no args, no test running  -> start a NEW session of the default cycle count
+#   no args, no test running  -> EXIT SILENTLY (normal boot, no test in progress)
+#
+# The third case is intentionally silent: Task Scheduler registers reboot.ps1
+# permanently, so it fires on EVERY boot. When no test has been started (or the
+# previous session completed), the script must do nothing and exit cleanly.
+# Previously this branch auto-started a 1000-cycle session, which caused the DUT
+# to reboot 1000 times whenever reboot.py (or any other tool) triggered a reboot
+# while no session was running.
 
 $session  = Read-SessionJson
 $resuming = $false
@@ -331,10 +340,8 @@ elseif ($runningExists) {
     $n         = [int]$session.n
 }
 else {
-    $session = New-RebootSession -Target $_default_cycles
-    $sessionId = [string]$session.session_id
-    $m = [int]$session.m
-    $n = 0
+    # No test in progress — normal boot. Exit without doing anything.
+    exit 0
 }
 
 # -- Record this boot (Task Scheduler trigger on resume) -----------------------
