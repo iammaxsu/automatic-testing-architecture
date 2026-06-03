@@ -1,16 +1,16 @@
 # Project Status
 
-_Generated 2026-06-03 03:57 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-06-03 08:49 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
-**Total:** 125
+**Total:** 127
 
 ### By priority
 
 | Priority | Count |
 | --- | --- |
-| Must | 110 |
+| Must | 112 |
 | Should | 13 |
 | — | 2 |
 
@@ -20,13 +20,13 @@ _Generated 2026-06-03 03:57 · regenerate with `python scripts/stats.py > STATUS
 | --- | --- |
 | proposed | 106 |
 | implementing | 3 |
-| implemented | 16 |
+| implemented | 18 |
 
 ```mermaid
 pie showData title Requirements by status
     "proposed" : 106
     "implementing" : 3
-    "implemented" : 16
+    "implemented" : 18
 ```
 
 ### By section
@@ -38,7 +38,7 @@ pie showData title Requirements by status
 | DOC | 4 | 0 | 4 |
 | DSK | 10 | 0 | 8 |
 | FUN | 7 | 0 | 6 |
-| FWK | 27 | 0 | 26 |
+| FWK | 29 | 0 | 26 |
 | LOG | 24 | 0 | 24 |
 | NET | 13 | 0 | 13 |
 | PWR | 12 | 0 | 2 |
@@ -233,6 +233,8 @@ _(may indicate untested code paths — worth a review)_
 | [DSK009](requirements/DSK009.md) | implemented | fio Engine and Write-Consistency Flags Aligned with KDiskMark v3.2.0 |
 | [FUN007](requirements/FUN007.md) | implemented | Windows PowerShell Shared Function Library |
 | [FWK002](requirements/FWK002.md) | implemented | Cross-Language Naming Conventions |
+| [FWK028](requirements/FWK028.md) | implemented | Machine-Readable Canonical Form First |
+| [FWK029](requirements/FWK029.md) | implemented | Emergency Stop Safety Mechanism |
 | [PWR001](requirements/PWR001.md) | implemented | AT and ATX PSU Type Selection |
 | [PWR002](requirements/PWR002.md) | implemented | GPIO Relay Abstraction |
 | [PWR003](requirements/PWR003.md) | implemented | Network-Based DUT Liveness Detection |
