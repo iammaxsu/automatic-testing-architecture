@@ -57,6 +57,14 @@ _COLOUR = {
     "NO_DATA":       "#9e9e9e",
 }
 
+# Shutdown method colours: green = cleanest, orange = concerning, grey = unconfirmed.
+_SHUTDOWN_METHOD_COLOUR = {
+    "ssh":   "#4caf50",
+    "atx":   "#2196f3",
+    "force": "#ff9800",
+    "time":  "#607d8b",
+}
+
 # Failure verdicts, in the order they appear in cards / donut / table.
 _FAIL_ORDER = ["NO_BOOT", "CRASH", "HANG_SHUTDOWN", "RELAY_ERROR", "SSH_ERROR"]
 
@@ -87,6 +95,25 @@ def _pass_boot_series(cycles: list) -> list:
         if c.get("verdict") == "PASS" and c.get("boot_time_sec") is not None:
             out.append((c["n"], float(c["boot_time_sec"])))
     return out
+
+
+def _shutdown_series(cycles: list) -> list:
+    """[(n, shutdown_time_sec)] for cycles that recorded a shutdown time (power_cycle only)."""
+    out = []
+    for c in cycles:
+        if c.get("shutdown_time_sec") is not None:
+            out.append((c["n"], float(c["shutdown_time_sec"])))
+    return out
+
+
+def _shutdown_method_counts(cycles: list) -> dict:
+    """{method: count} for cycles that recorded a shutdown method (power_cycle only)."""
+    counts: dict = {}
+    for c in cycles:
+        m = c.get("shutdown_method")
+        if m:
+            counts[m] = counts.get(m, 0) + 1
+    return counts
 
 
 def _boot_stats(values: list) -> dict:
@@ -294,7 +321,7 @@ def _render(result: dict) -> str:
     n_fail       = summary.get("fail", 0)
     fb           = summary.get("fail_breakdown", {})
 
-    # Analysis
+    # Analysis — boot time
     series   = _pass_boot_series(cycles)
     values   = [y for _, y in series]
     stats    = _boot_stats(values)
@@ -304,6 +331,16 @@ def _render(result: dict) -> str:
     hist_lbl, hist_cnt = _histogram(values)
     buckets  = _failure_buckets(cycles)
     fail_rows = _fail_rows_html(cycles)
+
+    # Analysis — shutdown time + method (power_cycle only; empty for reboot)
+    sd_series  = _shutdown_series(cycles)
+    sd_values  = [y for _, y in sd_series]
+    sd_stats   = _boot_stats(sd_values) if sd_values else {}
+    sd_ds      = _boot_datasets(sd_series, sd_stats) if sd_values else "[]"
+    sd_fail_mk = _failure_markers(cycles)   # same failure positions
+    method_counts = _shutdown_method_counts(cycles)
+    has_shutdown  = bool(sd_series)
+    has_methods   = bool(method_counts)
 
     # Donut (pass + each failure type actually present)
     donut_labels  = ["PASS"] + [k for k in _FAIL_ORDER if fb.get(k, 0) > 0]
@@ -327,6 +364,91 @@ def _render(result: dict) -> str:
                 f'<div class="card"><div class="label">{k}</div>'
                 f'<div class="value" style="color:{_verdict_colour(k)}">{fb[k]}</div></div>'
             )
+
+    # Shutdown-time statistics cards (power_cycle only)
+    def sdstat(key, unit="s"):
+        if not sd_stats:
+            return "-"
+        return f"{sd_stats[key]:.1f}{unit}"
+
+    shutdown_stats_section = ""
+    if has_shutdown:
+        shutdown_stats_section = f"""
+<div class="section-title">Shutdown-time statistics (all cycles with confirmed shutdown)</div>
+<div class="cards">
+  <div class="card"><div class="label">Min</div><div class="value">{sdstat("min")}</div></div>
+  <div class="card"><div class="label">Median</div><div class="value">{sdstat("median")}</div></div>
+  <div class="card"><div class="label">Mean</div><div class="value">{sdstat("mean")}</div></div>
+  <div class="card"><div class="label">p95</div><div class="value">{sdstat("p95")}</div></div>
+  <div class="card"><div class="label">p99</div><div class="value">{sdstat("p99")}</div></div>
+  <div class="card"><div class="label">Max</div><div class="value">{sdstat("max")}</div></div>
+  <div class="card"><div class="label">Std-dev</div><div class="value">{sdstat("stddev")}</div></div>
+</div>"""
+
+    # Shutdown time chart + method distribution chart HTML (power_cycle only)
+    shutdown_chart_html = ""
+    if has_shutdown:
+        shutdown_chart_html = """
+  <div class="chart-box full-width">
+    <h2>Shutdown time per cycle - trend, +/-3 sigma band, outliers, and failures (at baseline)</h2>
+    <canvas id="shutdownChart"></canvas>
+  </div>"""
+
+    method_chart_html = ""
+    if has_methods:
+        method_chart_html = """
+  <div class="chart-box">
+    <h2>Shutdown method distribution (force = DUT failed to shut down gracefully)</h2>
+    <canvas id="methodChart"></canvas>
+  </div>"""
+
+    # Build shutdown method chart data + conditional JS blocks
+    method_labels  = list(method_counts.keys())
+    method_values  = [method_counts[k] for k in method_labels]
+    method_colours = [_SHUTDOWN_METHOD_COLOUR.get(k, "#999") for k in method_labels]
+
+    method_js = ""
+    if has_methods:
+        method_js = (
+            f'new Chart(document.getElementById("methodChart"), {{'
+            f'  type:"doughnut",'
+            f'  data:{{ labels:{json.dumps(method_labels)},'
+            f'    datasets:[{{data:{json.dumps(method_values)},'
+            f'                backgroundColor:{json.dumps(method_colours)},borderWidth:2}}] }},'
+            f'  options:{{responsive:true,plugins:{{'
+            f'    legend:{{position:"bottom"}},'
+            f'    tooltip:{{callbacks:{{label:ctx=>`${{ctx.label}}: ${{ctx.parsed}} cycles '
+            f'(${{Math.round(ctx.parsed/ctx.dataset.data.reduce((a,b)=>a+b,0)*100)}}%)`}}}}'
+            f'  }}}}'
+            f'}});'
+        )
+
+    shutdown_js = ""
+    if has_shutdown:
+        sd_fail_json = _failure_markers(cycles)
+        no_boot_col  = _verdict_colour("NO_BOOT")
+        shutdown_js = (
+            f'new Chart(document.getElementById("shutdownChart"), {{'
+            f'  data:{{ datasets: {sd_ds}.concat([{{'
+            f'    label:"Failure", type:"scatter", data:{sd_fail_json},'
+            f'    backgroundColor:"{no_boot_col}", pointStyle:"crossRot",'
+            f'    pointRadius:7, pointHoverRadius:9, order:0'
+            f'  }}]) }},'
+            f'  options:{{'
+            f'    responsive:true,'
+            f'    interaction:{{mode:"nearest",intersect:true}},'
+            f'    plugins:{{'
+            f'      legend:{{position:"top"}},'
+            f'      tooltip:{{callbacks:{{label:ctx=>`${{ctx.dataset.label}}: '
+            f'cycle ${{ctx.parsed.x}}, ${{ctx.parsed.y}}`}}}}'
+            f'    }},'
+            f'    scales:{{'
+            f'      x:{{title:{{display:true,text:"Cycle number"}},type:"linear"}},'
+            f'      y:{{title:{{display:true,text:"Seconds"}},beginAtZero:true}}'
+            f'    }}'
+            f'  }}'
+            f'}});'
+        )
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -386,7 +508,7 @@ def _render(result: dict) -> str:
 </div>
 
 <!-- Boot-time statistics cards -->
-<div class="section-title">Boot-time statistics (passing cycles)</div>
+<div class="section-title">Boot-time statistics (passing cycles with recorded boot time)</div>
 <div class="cards">
   <div class="card"><div class="label">Min</div><div class="value">{stat("min")}</div></div>
   <div class="card"><div class="label">Median</div><div class="value">{stat("median")}</div></div>
@@ -418,7 +540,11 @@ def _render(result: dict) -> str:
     <h2>Result distribution</h2>
     <canvas id="donutChart"></canvas>
   </div>
+  {method_chart_html}
+  {shutdown_chart_html}
 </div>
+
+{shutdown_stats_section}
 
 <!-- Failure table -->
 <div class="section-title">Failed cycles detail</div>
@@ -494,6 +620,12 @@ new Chart(document.getElementById("donutChart"), {{
                 backgroundColor:{json.dumps(donut_colours)},borderWidth:2}}] }},
   options:{{responsive:true,plugins:{{legend:{{position:"bottom"}}}}}}
 }});
+
+// -- Shutdown method distribution (power_cycle only, omitted for reboot) --
+{method_js}
+
+// -- Shutdown time chart (power_cycle only, omitted for reboot) --
+{shutdown_js}
 </script>
 </body>
 </html>"""
