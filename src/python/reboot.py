@@ -34,6 +34,7 @@ from pathlib import Path
 import config
 import function
 from liveness import LivenessChecker
+from report import generate_report
 
 log = logging.getLogger("reboot")
 
@@ -368,6 +369,11 @@ def main() -> int:
 
     function.write_result_json(str(json_path), result)
     log.info("Result JSON: %s", json_path)
+
+    # Render the HTML report from the canonical result.json (FWK028).
+    html_path = out_dir / f"{stem}.report.html"
+    generate_report(result, str(html_path))
+    log.info("HTML report: %s", html_path)
 
     s = result["summary"]
     log.info("=" * 50)

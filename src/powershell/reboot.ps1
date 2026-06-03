@@ -10,15 +10,30 @@
       .\reboot.ps1                 (uses default cycle count)
       .\reboot.ps1 -Cycles 100     (run 100 reboot cycles)
 
-    WARNING: the machine will reboot after a visible countdown.
-    Press Ctrl+C during the countdown to cancel.
+    The machine will reboot after a short countdown. Press Ctrl+C to cancel.
 
   DURING THE TEST
     Task Scheduler invokes reboot.ps1 on every startup (registered by
     setup_dut.ps1). Each invocation checks the session file:
-      - If a test is in progress (status=running, n < m): record this boot,
-        then reboot again (or stop if n has reached m).
+      - If a test is in progress (status=running, n < m): record this boot
+        (verdict PASS = the DUT booted far enough to run the script), then
+        reboot again, or stop if n has reached m.
       - If no test is in progress: exit silently (normal boot).
+    After each cycle a msg.exe popup notifies the interactive user.
+
+  ARTEFACTS (in logs\)  - FWK028: result.json is the canonical source of truth
+    reboot_<session>.result.json   canonical machine-readable result
+    reboot_<session>.log           human-readable per-cycle log
+    REBOOT_STATUS.txt              plain-text progress (rewritten each cycle)
+    reboot_session.json            resume bookkeeping (not the result)
+
+  HTML REPORT
+    The canonical result.json is rendered to HTML by the shared Python
+    renderer (run on the DUT if Python is installed, or anywhere later):
+      python report.py logs\reboot_<session>.result.json
+    Boot time recorded per cycle is the reboot ROUND-TRIP (shutdown + POST +
+    boot), the quantity that grows as the DUT degrades. The first cycle has
+    no prior reboot to measure against, so its boot time is null.
 
   CHECKING PROGRESS (after reboots)
     Open the plain-text status file - it is rewritten after every cycle:
@@ -52,7 +67,7 @@ $ErrorActionPreference = 'Stop'
 
 # -- Version & defaults --------------------------------------------------------
 
-$_script_ver                = '00.00.05'
+$_script_ver                = '00.00.06'
 $_requires_function_ps1_api = '00.00.01'
 $_default_cycles            = 1000   # used when run with no -Cycles and no test in progress
 
@@ -74,7 +89,11 @@ if (-not (Test-Path $_log_path)) { New-Item -Path $_log_path -ItemType Directory
 $_session_file = Join-Path $_log_path 'reboot_session.json'
 $_status_file  = Join-Path $_log_path 'REBOOT_STATUS.txt'
 
-# -- Helpers -------------------------------------------------------------------
+# -- Time helpers --------------------------------------------------------------
+
+function Now-Iso { Get-Date -Format 'yyyy-MM-ddTHH:mm:ss' }   # extended, local (LOG022)
+
+# -- JSON helpers (session) ----------------------------------------------------
 
 function Read-SessionJson {
     if (-not (Test-Path $_session_file)) { return $null }
@@ -89,6 +108,102 @@ function Write-SessionJson {
     Move-Item -Path $tmp -Destination $_session_file -Force
 }
 
+# -- JSON helpers (canonical result.json, FWK028) ------------------------------
+
+function Get-ResultFile {
+    param([string]$SessionId)
+    Join-Path $_log_path "reboot_$SessionId.result.json"
+}
+
+function New-ResultSkeleton {
+    param([string]$SessionId, [int]$Target, [string]$StartedAt)
+    @{
+        schema_version  = '1.1'
+        test_name       = 'reboot'
+        session_id      = $SessionId
+        started_at      = $StartedAt
+        ended_at        = $null
+        config          = @{
+            dut_host         = $env:COMPUTERNAME
+            cycles_target    = $Target
+            boot_timeout_sec = $null
+            off_time_sec     = $Settle
+            mode             = 'dut-local-reboot'
+        }
+        cycles          = @()
+        summary          = @{}
+        overall_verdict = 'RUNNING'
+    }
+}
+
+function Write-ResultJson {
+    param([string]$SessionId, [hashtable]$Result)
+    $file = Get-ResultFile -SessionId $SessionId
+    $tmp  = $file + '.tmp'
+    $Result | ConvertTo-Json -Depth 8 | Set-Content -Path $tmp -Encoding UTF8
+    Move-Item -Path $tmp -Destination $file -Force
+}
+
+function Read-ResultJson {
+    param([string]$SessionId)
+    $file = Get-ResultFile -SessionId $SessionId
+    if (-not (Test-Path $file)) { return $null }
+    try { return (Get-Content $file -Raw -Encoding UTF8 | ConvertFrom-Json) }
+    catch { return $null }
+}
+
+# Append one PASS cycle to the result, recompute summary, and persist.
+function Update-ResultWithCycle {
+    param(
+        [string]   $SessionId,
+        [int]      $N,
+        [int]      $Target,
+        [string]   $StartedAt,
+        [object]   $BootTimeSec,   # [double] or $null
+        [bool]     $Complete
+    )
+    $existing = Read-ResultJson -SessionId $SessionId
+    if ($null -eq $existing) {
+        $result = New-ResultSkeleton -SessionId $SessionId -Target $Target -StartedAt $StartedAt
+        $cycles = @()
+    } else {
+        # Rebuild as a fresh hashtable so ConvertTo-Json output stays stable.
+        $result = New-ResultSkeleton -SessionId $SessionId -Target $Target -StartedAt $existing.started_at
+        $cycles = @($existing.cycles)
+    }
+
+    $rec = @{
+        n             = $N
+        t_start       = (Now-Iso)
+        t_reboot_cmd  = $null
+        boot_time_sec = $BootTimeSec
+        verdict       = 'PASS'      # PASS = booted far enough to run the script (PWR011)
+        notes         = ''
+    }
+    $cycles = @($cycles) + $rec
+    $result.cycles = $cycles
+
+    $passCount = (@($cycles | Where-Object { $_.verdict -eq 'PASS' })).Count
+    $result.summary = @{
+        cycles_target  = $Target
+        total_ran      = $cycles.Count
+        pass           = $passCount
+        fail           = ($cycles.Count - $passCount)
+        fail_breakdown = @{ NO_BOOT = 0 }
+    }
+
+    if ($Complete) {
+        $result.ended_at        = (Now-Iso)
+        $result.overall_verdict = 'PASS'
+    } else {
+        $result.overall_verdict = 'RUNNING'
+    }
+
+    Write-ResultJson -SessionId $SessionId -Result $result
+}
+
+# -- Log / status helpers ------------------------------------------------------
+
 function Append-CycleLog {
     param([string]$SessionId, [string]$Line)
     $logFile = Join-Path $_log_path "reboot_$SessionId.log"
@@ -100,23 +215,55 @@ function Write-StatusFile {
     Set-Content -Path $_status_file -Value $Content -Encoding UTF8
 }
 
+function Notify-User {
+    param([string]$Message)
+    # msg.exe sends across sessions (SYSTEM -> interactive desktop). Absent on
+    # some Windows editions (e.g. Home), so fail silently if it is missing.
+    try { & msg.exe * $Message 2>$null } catch {}
+}
+
 function New-RebootSession {
     param([int]$Target)
-    $ts = Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'
+    $ts  = Now-Iso
     $sid = Get-Date2
     $s = @{
-        session_id = $sid
-        test       = 'reboot'
-        m          = $Target
-        n          = 0
-        status     = 'running'
-        started_at = $ts
-        updated_at = $ts
+        session_id     = $sid
+        test           = 'reboot'
+        m              = $Target
+        n              = 0
+        status         = 'running'
+        started_at     = $ts
+        updated_at     = $ts
+        last_reboot_at = $null   # set just before each Restart-Computer
     }
     Write-SessionJson -Data $s
     Append-CycleLog -SessionId $sid -Line "SESSION_START: $sid  m=$Target  t=$ts"
     Write-StatusFile "REBOOT TEST IN PROGRESS`r`nSession : $sid`r`nTarget  : $Target cycles`r`nDone    : 0 / $Target`r`nStarted : $ts`r`nLog     : $_log_path\reboot_$sid.log"
+    # Create the canonical result skeleton up front.
+    $skeleton = New-ResultSkeleton -SessionId $sid -Target $Target -StartedAt $ts
+    Write-ResultJson -SessionId $sid -Result $skeleton
     return $s
+}
+
+# Persist last_reboot_at then reboot (or simulate under -DryRun).
+function Invoke-RebootWithCountdown {
+    param([hashtable]$Session)
+    $Session.last_reboot_at = (Now-Iso)
+    $Session.updated_at     = (Now-Iso)
+    Write-SessionJson -Data $Session
+
+    if ($DryRun) {
+        Write-Host "[reboot] DRY-RUN: would reboot after $Settle s countdown" -ForegroundColor DarkGray
+        exit 0
+    }
+
+    Write-Host -NoNewline "[reboot] Rebooting in: " -ForegroundColor Yellow
+    for ($i = $Settle; $i -gt 0; $i--) {
+        Write-Host -NoNewline ("{0} " -f $i) -ForegroundColor Yellow
+        Start-Sleep -Seconds 1
+    }
+    Write-Host ""
+    Restart-Computer -Force
 }
 
 # -- Session resolution --------------------------------------------------------
@@ -155,59 +302,78 @@ else {
 
 if ($resuming) {
     $n++
-    $ts    = Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'
-    $entry = "CYCLE: n=$n/$m  verdict=PASS  t=$ts"   # PASS = booted far enough to run (PWR011)
+    $ts = Now-Iso
+
+    # Reboot round-trip = now - time the previous reboot was issued.
+    # Guard the property access: a session written by an older reboot.ps1 may
+    # not have last_reboot_at, and StrictMode throws on missing properties.
+    $bootTime = $null
+    $lastReboot = $null
+    if ($session.PSObject.Properties.Name -contains 'last_reboot_at') {
+        $lastReboot = $session.last_reboot_at
+    }
+    if ($lastReboot -and -not [string]::IsNullOrWhiteSpace([string]$lastReboot)) {
+        try {
+            $delta = ([datetime]::Now - [datetime]::Parse([string]$lastReboot)).TotalSeconds
+            if ($delta -ge 0) { $bootTime = [math]::Round($delta, 2) }
+        } catch { $bootTime = $null }
+    }
+
+    $btText = if ($null -eq $bootTime) { 'n/a' } else { "${bootTime}s" }
+    $entry  = "CYCLE: n=$n/$m  verdict=PASS  boot=$btText  t=$ts"
     Write-Host "[reboot] $entry" -ForegroundColor Green
     Append-CycleLog -SessionId $sessionId -Line $entry
 
-    $session = @{
-        session_id = $sessionId
-        test       = 'reboot'
-        m          = $m
-        n          = $n
-        status     = 'running'
-        started_at = [string]$session.started_at
-        updated_at = $ts
-    }
+    $complete = ($n -ge $m)
+    Update-ResultWithCycle -SessionId $sessionId -N $n -Target $m `
+        -StartedAt ([string]$session.started_at) -BootTimeSec $bootTime -Complete $complete
 
-    if ($n -ge $m) {
-        $session.status = 'complete'
-        Write-SessionJson -Data $session
+    $statusVal = 'running'
+    if ($complete) { $statusVal = 'complete' }
+    $newSession = @{
+        session_id     = $sessionId
+        test           = 'reboot'
+        m              = $m
+        n              = $n
+        status         = $statusVal
+        started_at     = [string]$session.started_at
+        updated_at     = $ts
+        last_reboot_at = $null
+    }
+    Write-SessionJson -Data $newSession
+
+    if ($complete) {
         $summary = "SESSION_COMPLETE: $sessionId  n=$n/$m  t=$ts"
         Write-Host "[reboot] $summary" -ForegroundColor Cyan
         Append-CycleLog -SessionId $sessionId -Line $summary
         Write-StatusFile "REBOOT TEST COMPLETE`r`nSession  : $sessionId`r`nResult   : PASS ($n / $m cycles)`r`nFinished : $ts`r`nLog      : $_log_path\reboot_$sessionId.log"
-        # Notify the interactive user - msg.exe sends across sessions (SYSTEM -> user desktop)
-        try { & msg.exe * "Reboot test COMPLETE: $n / $m cycles PASS  [$sessionId]" 2>$null } catch {}
+        Notify-User "Reboot test COMPLETE: $n / $m cycles PASS  [$sessionId]"
         exit 0
     }
 
-    Write-SessionJson -Data $session
     Write-StatusFile "REBOOT TEST IN PROGRESS`r`nSession : $sessionId`r`nTarget  : $m cycles`r`nDone    : $n / $m`r`nUpdated : $ts`r`nLog     : $_log_path\reboot_$sessionId.log"
     Write-Host "[reboot] Cycle $n / $m recorded." -ForegroundColor Green
-    # Notify the interactive user - msg.exe sends across sessions (SYSTEM -> user desktop)
-    try { & msg.exe * "Reboot test: cycle $n / $m PASS - continuing..." 2>$null } catch {}
+    Notify-User "Reboot test: cycle $n / $m PASS - continuing..."
+
+    Invoke-RebootWithCountdown -Session $newSession
 }
 else {
-    # Fresh start: show session info (interactive run).
+    # Fresh start: show session info (interactive run), then reboot.
     Write-Host ""
     Write-Host ("[reboot] New session: $sessionId  target=$m cycles") -ForegroundColor Cyan
     Write-Host ("[reboot] Status file: $_status_file") -ForegroundColor Cyan
     Write-Host ("[reboot] Press Ctrl+C to cancel.") -ForegroundColor Yellow
     Write-Host ""
-}
 
-# -- Countdown then reboot -----------------------------------------------------
-
-if ($DryRun) {
-    Write-Host "[reboot] DRY-RUN: would reboot after $Settle s countdown" -ForegroundColor DarkGray
-    exit 0
+    $startSession = @{
+        session_id     = $sessionId
+        test           = 'reboot'
+        m              = $m
+        n              = 0
+        status         = 'running'
+        started_at     = [string]$session.started_at
+        updated_at     = (Now-Iso)
+        last_reboot_at = $null
+    }
+    Invoke-RebootWithCountdown -Session $startSession
 }
-
-Write-Host -NoNewline "[reboot] Rebooting in: " -ForegroundColor Yellow
-for ($i = $Settle; $i -gt 0; $i--) {
-    Write-Host -NoNewline ("{0} " -f $i) -ForegroundColor Yellow
-    Start-Sleep -Seconds 1
-}
-Write-Host ""
-Restart-Computer -Force
