@@ -1,16 +1,16 @@
 # Project Status
 
-_Generated 2026-06-02 03:02 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-06-03 03:57 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
-**Total:** 123
+**Total:** 125
 
 ### By priority
 
 | Priority | Count |
 | --- | --- |
-| Must | 108 |
+| Must | 110 |
 | Should | 13 |
 | — | 2 |
 
@@ -18,13 +18,13 @@ _Generated 2026-06-02 03:02 · regenerate with `python scripts/stats.py > STATUS
 
 | Status | Count |
 | --- | --- |
-| proposed | 104 |
+| proposed | 106 |
 | implementing | 3 |
 | implemented | 16 |
 
 ```mermaid
 pie showData title Requirements by status
-    "proposed" : 104
+    "proposed" : 106
     "implementing" : 3
     "implemented" : 16
 ```
@@ -41,7 +41,7 @@ pie showData title Requirements by status
 | FWK | 27 | 0 | 26 |
 | LOG | 24 | 0 | 24 |
 | NET | 13 | 0 | 13 |
-| PWR | 10 | 0 | 0 |
+| PWR | 12 | 0 | 2 |
 | SET | 5 | 0 | 4 |
 | SLP | 5 | 0 | 5 |
 
@@ -134,6 +134,8 @@ pie showData title Requirements by status
 | [NET008](requirements/NET008.md) | proposed | Verdict Assignment per Test Item |
 | [NET011](requirements/NET011.md) | implementing | NIC Include/Exclude Lists |
 | [NET013](requirements/NET013.md) | proposed | iperf3 Log Filename Convention |
+| [PWR011](requirements/PWR011.md) | proposed | DUT-Local Reboot Test (`reboot.ps1`) |
+| [PWR012](requirements/PWR012.md) | proposed | Pi-Side Reboot Test (`reboot.py`) |
 | [SET001](requirements/SET001.md) | proposed | Tunable Parameters in config Only |
 | [SET002](requirements/SET002.md) | proposed | Utility Functions in function Only |
 | [SET003](requirements/SET003.md) | proposed | config Contains No Executable Logic |

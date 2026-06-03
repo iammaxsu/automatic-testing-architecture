@@ -16,8 +16,9 @@
       6. Sets power scheme: no sleep / no hibernate, power button = Shut down
       7. Disables Windows Update automatic reboot
       8. (Optional) Configures auto-logon for the test user account
-      9. (Optional) Registers Task Scheduler task to run dev_detect.ps1 at startup
+      9. (Optional) Registers Task Scheduler tasks (dev_detect.ps1 + reboot.ps1) at startup
      10. (Optional) Configures PowerShell as the default SSH shell for Ansible
+     11. Installs Python 3 and downloads report.py so reboot.ps1 can auto-generate HTML reports
 
     This script is intentionally idempotent: running it multiple times is safe.
 
@@ -75,8 +76,11 @@
     .\setup_dut.ps1 -AnsibleSSH
 
 .EXAMPLE
-    # Complete lab setup: auto-logon + device detection + Ansible SSH
-    .\setup_dut.ps1 -TestUser "testuser" -DevDetectScript "C:\TestAutomation\dev_detect.ps1" -AnsibleSSH
+    # Complete lab setup: auto-logon + device detection + reboot task + Ansible SSH
+    .\setup_dut.ps1 -TestUser "testuser" `
+                    -DevDetectScript "C:\TestAutomation\powershell\dev_detect.ps1" `
+                    -RebootScript    "C:\TestAutomation\powershell\reboot.ps1" `
+                    -AnsibleSSH
 #>
 
 param(
@@ -84,6 +88,8 @@ param(
     [string]$TestPassword             = "",
     [string]$DevDetectScript          = "",
     [int]   $DevDetectStartupDelaySec = 30,
+    [string]$RebootScript             = "",
+    [int]   $RebootStartupDelaySec    = 60,
     [switch]$AnsibleSSH
 )
 
@@ -92,10 +98,11 @@ $ErrorActionPreference = "Stop"
 
 # -- Version & shared library --------------------------------------------------
 
-$_script_ver                = '00.00.07'
+$_script_ver                = '00.00.13'
 $_requires_function_ps1_api = '00.00.01'
 
-$_fn = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Definition) 'function.ps1'
+$_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
+$_fn = Join-Path $_script_root 'function.ps1'
 if (-not (Test-Path $_fn)) {
     Write-Error "function.ps1 not found at $_fn  -  cannot continue"
     exit 1
@@ -111,7 +118,7 @@ Write-Host "setup_dut.ps1 v$_script_ver  (function.ps1 API $($script:_function_p
 
 # -- 1. PowerShell execution policy -------------------------------------------
 
-Write-Step "1 / 10 PowerShell execution policy"
+Write-Step "1 / 11 PowerShell execution policy"
 try {
     Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope LocalMachine -Force -ErrorAction Stop
     Write-OK "Execution policy = RemoteSigned (machine-wide)"
@@ -125,7 +132,7 @@ try {
 
 # -- 2. OpenSSH Server --------------------------------------------------------
 
-Write-Step "2 / 10 OpenSSH Server"
+Write-Step "2 / 11 OpenSSH Server"
 
 $sshCap = Get-WindowsCapability -Online -Name OpenSSH.Server*
 if ($sshCap.State -eq "NotPresent") {
@@ -144,7 +151,7 @@ Write-OK "sshd running, startup = Automatic"
 
 # -- 3. SSH configuration: allow empty passwords -------------------------------
 
-Write-Step "3 / 10 SSH configuration (PermitEmptyPasswords)"
+Write-Step "3 / 11 SSH configuration (PermitEmptyPasswords)"
 
 $sshConfigPath = "C:\ProgramData\ssh\sshd_config"
 
@@ -172,7 +179,7 @@ if (-not (Test-Path $sshConfigPath)) {
 
 # -- 4. Firewall: SSH (TCP 22) and ICMPv4 ping ---------------------------------
 
-Write-Step "4 / 10 Firewall rules"
+Write-Step "4 / 11 Firewall rules"
 
 if (-not (Get-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -ErrorAction SilentlyContinue)) {
     New-NetFirewallRule -Name        "OpenSSH-Server-In-TCP" `
@@ -202,7 +209,7 @@ Write-OK "Windows Firewall disabled (Domain / Private / Public)"
 
 # -- 5. Security policy: allow blank-password accounts over network ------------
 
-Write-Step "5 / 10 Security policy (LimitBlankPasswordUse)"
+Write-Step "5 / 11 Security policy (LimitBlankPasswordUse)"
 
 $tmpSec = "$env:TEMP\secpol_dut.inf"
 secedit /export /cfg $tmpSec | Out-Null
@@ -218,7 +225,7 @@ Write-OK "LimitBlankPasswordUse set to 0 (blank-password SSH logins allowed)"
 
 # -- 6. Power scheme -----------------------------------------------------------
 
-Write-Step "6 / 10 Power scheme"
+Write-Step "6 / 11 Power scheme"
 
 foreach ($type in @("monitor", "disk", "standby", "hibernate")) {
     foreach ($mode in @("ac", "dc")) {
@@ -235,7 +242,7 @@ Write-OK "All power timeouts = 0; power button = Shut down; no screen lock on re
 
 # -- 7. Windows Update: disable automatic reboot -------------------------------
 
-Write-Step "7 / 10 Windows Update (disable automatic reboot)"
+Write-Step "7 / 11 Windows Update (disable automatic reboot)"
 
 $wuPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"
 if (-not (Test-Path $wuPath)) { New-Item -Path $wuPath -Force | Out-Null }
@@ -246,7 +253,7 @@ Write-OK "Windows Update will not auto-reboot during tests"
 
 # -- 8. Auto-logon (optional) --------------------------------------------------
 
-Write-Step "8 / 10 Auto-logon"
+Write-Step "8 / 11 Auto-logon"
 
 if ($TestUser -ne "") {
     $regPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
@@ -262,53 +269,89 @@ if ($TestUser -ne "") {
 }
 
 
-# -- 9. Task Scheduler: run dev_detect.ps1 at every startup -------------------
+# -- 9. Task Scheduler: startup tasks (dev_detect + reboot) -------------------
 
-Write-Step "9 / 10 Task Scheduler  -  device detection at startup"
+Write-Step "9 / 11 Task Scheduler  -  startup tasks"
 
+# Helper: registers a single startup task as SYSTEM with a delay.
+# ScriptPath is resolved to an absolute path: Task Scheduler runs as SYSTEM with
+# working directory C:\Windows\System32, so a relative path would never be found.
+function Register-StartupTask {
+    param(
+        [string]$TaskName,
+        [string]$Description,
+        [string]$ScriptPath,
+        [int]   $DelaySec
+    )
+    $absScript = (Resolve-Path -LiteralPath $ScriptPath).Path
+    $workDir   = Split-Path -Parent $absScript
+    $action    = New-ScheduledTaskAction `
+        -Execute          "powershell.exe" `
+        -Argument         "-ExecutionPolicy Bypass -NonInteractive -WindowStyle Hidden -File `"$absScript`"" `
+        -WorkingDirectory $workDir
+    $trigger       = New-ScheduledTaskTrigger -AtStartup
+    $trigger.Delay = "PT${DelaySec}S"
+    $settings  = New-ScheduledTaskSettingsSet `
+        -ExecutionTimeLimit (New-TimeSpan -Minutes 10) `
+        -MultipleInstances   IgnoreNew `
+        -StartWhenAvailable
+    $principal = New-ScheduledTaskPrincipal `
+        -UserId    "SYSTEM" `
+        -LogonType ServiceAccount `
+        -RunLevel  Highest
+    Register-ScheduledTask `
+        -TaskName    $TaskName `
+        -Description $Description `
+        -Action      $action `
+        -Trigger     $trigger `
+        -Settings    $settings `
+        -Principal   $principal `
+        -Force | Out-Null
+}
+
+# 9a. dev_detect.ps1
 if ($DevDetectScript -ne "") {
     if (-not (Test-Path $DevDetectScript)) {
         Write-Warn "Script not found: $DevDetectScript"
-        Write-Warn "Copy dev_detect.ps1 to the DUT first, then re-run with -DevDetectScript pointing to it"
+        Write-Warn "Copy dev_detect.ps1 to the DUT first, then re-run with -DevDetectScript pointing to it."
     } else {
-        $taskAction = New-ScheduledTaskAction `
-            -Execute  "powershell.exe" `
-            -Argument "-ExecutionPolicy Bypass -NonInteractive -WindowStyle Hidden -File `"$DevDetectScript`""
-
-        $taskTrigger       = New-ScheduledTaskTrigger -AtStartup
-        $taskTrigger.Delay = "PT${DevDetectStartupDelaySec}S"
-
-        $taskSettings = New-ScheduledTaskSettingsSet `
-            -ExecutionTimeLimit (New-TimeSpan -Minutes 10) `
-            -MultipleInstances   IgnoreNew `
-            -StartWhenAvailable
-
-        $taskPrincipal = New-ScheduledTaskPrincipal `
-            -UserId    "SYSTEM" `
-            -LogonType ServiceAccount `
-            -RunLevel  Highest
-
-        Register-ScheduledTask `
+        Register-StartupTask `
             -TaskName    "DUT-DevDetect" `
-            -Description "Runs dev_detect.ps1 at startup for power-cycle / reboot hardware verification" `
-            -Action      $taskAction `
-            -Trigger     $taskTrigger `
-            -Settings    $taskSettings `
-            -Principal   $taskPrincipal `
-            -Force | Out-Null
-
+            -Description "Runs dev_detect.ps1 at startup for hardware component verification" `
+            -ScriptPath  $DevDetectScript `
+            -DelaySec    $DevDetectStartupDelaySec
         Write-OK "Task 'DUT-DevDetect' registered (startup + ${DevDetectStartupDelaySec}s delay, runs as SYSTEM)"
-        Write-Host "         Script : $DevDetectScript"
+        Write-Host "         Script : $((Resolve-Path -LiteralPath $DevDetectScript).Path)"
     }
 } else {
-    Write-Skip "Task Scheduler not configured (no -DevDetectScript supplied)"
+    Write-Skip "DUT-DevDetect not configured (no -DevDetectScript supplied)"
     Write-Host "         Pass -DevDetectScript with the full path to dev_detect.ps1 to register the startup task."
+}
+
+# 9b. reboot.ps1
+if ($RebootScript -ne "") {
+    if (-not (Test-Path $RebootScript)) {
+        Write-Warn "Script not found: $RebootScript"
+        Write-Warn "Copy reboot.ps1 to the DUT first, then re-run with -RebootScript pointing to it."
+    } else {
+        Register-StartupTask `
+            -TaskName    "DUT-Reboot" `
+            -Description "Runs reboot.ps1 at startup to continue an in-progress reboot endurance test" `
+            -ScriptPath  $RebootScript `
+            -DelaySec    $RebootStartupDelaySec
+        Write-OK "Task 'DUT-Reboot' registered (startup + ${RebootStartupDelaySec}s delay, runs as SYSTEM)"
+        Write-Host "         Script : $((Resolve-Path -LiteralPath $RebootScript).Path)"
+        Write-Host "         NOTE   : reboot.ps1 exits silently when no test is in progress."
+    }
+} else {
+    Write-Skip "DUT-Reboot not configured (no -RebootScript supplied)"
+    Write-Host "         Pass -RebootScript with the full path to reboot.ps1 to register the startup task."
 }
 
 
 # -- 10. Ansible SSH: PowerShell as default SSH shell -------------------------
 
-Write-Step "10 / 10  Ansible SSH  -  PowerShell default shell"
+Write-Step "10 / 11  Ansible SSH  -  PowerShell default shell"
 
 if ($AnsibleSSH) {
     $regPath = "HKLM:\SOFTWARE\OpenSSH"
@@ -329,6 +372,125 @@ if ($AnsibleSSH) {
 } else {
     Write-Skip "Ansible SSH not configured (add -AnsibleSSH to enable)"
 }
+
+
+# -- 11. Python 3 runtime ------------------------------------------------------
+# reboot.ps1 calls report.py after every cycle to keep the HTML report current.
+# report.py is stdlib-only (no pip packages needed).
+#
+# Two install paths: winget when present (fast), otherwise download the official
+# python.org installer and run it silently. Either way the install is unconditional.
+
+function Install-PythonViaWinget {
+    $wingetCmd = Get-Command winget -ErrorAction SilentlyContinue
+    if (-not $wingetCmd) { return $false }
+    Write-Host "  Installing Python 3 via winget (silent)..."
+    try {
+        winget install --exact --id Python.Python.3.12 --silent `
+            --accept-package-agreements --accept-source-agreements --scope machine
+        return $true
+    } catch {
+        Write-Warn "winget install failed: $($_.Exception.Message)  -  trying direct download"
+        return $false
+    }
+}
+
+function Install-PythonViaDownload {
+    # Download the official installer for this machine's architecture and run it
+    # silently. python.org keeps every release at this path, so the URL is stable.
+    $ver = '3.12.7'
+    switch ($env:PROCESSOR_ARCHITECTURE) {
+        'ARM64' { $fileName = "python-$ver-arm64.exe" }
+        'x86'   { $fileName = "python-$ver.exe" }        # 32-bit installer has no suffix
+        default { $fileName = "python-$ver-amd64.exe" }  # AMD64
+    }
+    $url  = "https://www.python.org/ftp/python/$ver/$fileName"
+    $dest = Join-Path $env:TEMP $fileName
+
+    try {
+        # PowerShell 5.1 defaults to TLS 1.0/1.1; python.org requires TLS 1.2.
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Write-Host "  Downloading $url ..."
+        Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
+    } catch {
+        Write-Warn "Download failed: $($_.Exception.Message)"
+        return $false
+    }
+
+    Write-Host "  Running silent install (InstallAllUsers=1 PrependPath=1)..."
+    try {
+        $p = Start-Process -FilePath $dest `
+            -ArgumentList '/quiet InstallAllUsers=1 PrependPath=1 Include_test=0' `
+            -Wait -PassThru
+        Remove-Item $dest -Force -ErrorAction SilentlyContinue
+        if ($p.ExitCode -ne 0) {
+            Write-Warn "Python installer returned exit code $($p.ExitCode)"
+            return $false
+        }
+        return $true
+    } catch {
+        Write-Warn "Installer launch failed: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+Write-Step "11 / 11  Python 3 runtime + report.py renderer"
+
+$pythonReady = $false
+$pyCmd = Get-Command python -ErrorAction SilentlyContinue
+if ($pyCmd) {
+    $pythonReady = $true
+    Write-Skip "Python already installed: $((& python --version 2>&1))"
+} else {
+    $installed = Install-PythonViaWinget
+    if (-not $installed) { $installed = Install-PythonViaDownload }
+
+    # Refresh PATH for this session (installers write to the machine PATH).
+    $machinePath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
+    if ($machinePath) { $env:Path = "$machinePath;$env:Path" }
+    $pyCmd = Get-Command python -ErrorAction SilentlyContinue
+
+    if ($pyCmd) {
+        $pythonReady = $true
+        Write-OK "Python installed and ready: $((& python --version 2>&1))"
+    } elseif ($installed) {
+        $pythonReady = $true   # installed; PATH refresh pending - works after reboot
+        Write-Warn "Python was installed but is not on PATH in this session."
+        Write-Host "         It will be available after the reboot (reboot.ps1 runs post-reboot)."
+    } else {
+        Write-Warn "Automatic Python install did not succeed."
+        Write-Host "         Install manually from https://www.python.org/downloads/"
+        Write-Host "         Tick 'Add python.exe to PATH', then re-run this script."
+    }
+}
+
+# Download report.py alongside the PowerShell scripts so reboot.ps1 can call it
+# automatically after each cycle.  report.py is pure stdlib - no pip needed.
+# setup_dut.ps1 is the single entry point for the user; it handles both Python
+# (the runtime) and report.py (the renderer) in one unconditional step.
+
+function Install-ReportPy {
+    param([string]$DestDir)
+    $destFile = Join-Path $DestDir 'report.py'
+    if (Test-Path $destFile) {
+        Write-Skip "report.py already present: $destFile"
+        return $true
+    }
+    $url = 'https://raw.githubusercontent.com/iammaxsu/automatic-testing-architecture/main/src/python/report.py'
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Write-Host "  Downloading report.py from GitHub..."
+        Invoke-WebRequest -Uri $url -OutFile $destFile -UseBasicParsing
+        Write-OK "report.py downloaded to: $destFile"
+        return $true
+    } catch {
+        Write-Warn "Could not download report.py: $($_.Exception.Message)"
+        Write-Host "         Copy src/python/report.py from the repository manually."
+        return $false
+    }
+}
+
+$reportPyReady = Install-ReportPy -DestDir $_script_root
 
 
 # -- Summary -------------------------------------------------------------------
@@ -352,12 +514,27 @@ if ($TestUser -ne "") {
 if ($DevDetectScript -ne "" -and (Test-Path $DevDetectScript)) {
     Write-Host "  Task Scheduler    : DUT-DevDetect (startup + ${DevDetectStartupDelaySec}s, as SYSTEM)"
 } else {
-    Write-Host "  Task Scheduler    : not configured"
+    Write-Host "  Task Scheduler    : DUT-DevDetect not configured"
+}
+if ($RebootScript -ne "" -and (Test-Path $RebootScript)) {
+    Write-Host "  Task Scheduler    : DUT-Reboot    (startup + ${RebootStartupDelaySec}s, as SYSTEM)"
+} else {
+    Write-Host "  Task Scheduler    : DUT-Reboot    not configured"
 }
 if ($AnsibleSSH) {
     Write-Host "  Ansible SSH       : DefaultShell = PowerShell 5.1"
 } else {
     Write-Host "  Ansible SSH       : not configured"
+}
+if ($pythonReady) {
+    Write-Host "  Python runtime    : available"
+} else {
+    Write-Host "  Python runtime    : install manually then re-run this script"
+}
+if ($reportPyReady) {
+    Write-Host "  report.py         : present (HTML reports auto-generated after each cycle)"
+} else {
+    Write-Host "  report.py         : not available - copy from src/python/report.py manually"
 }
 Write-Host ""
 Write-Host "  >>> Reboot required for all changes to take effect. <<<" -ForegroundColor Yellow

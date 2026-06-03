@@ -82,6 +82,14 @@ MAX_CONSECUTIVE_FAILS = 3   # Abort the run after N consecutive failed cycles (0
 WARMUP_CYCLES         = 1   # CLI: --warmup   Uncounted init cycles before the counted
                             #   test (absorbs unknown initial DUT state). 0 = skip.
 
+# ---------- Reboot test (reboot.py) ----------
+REBOOT_SSH_CMD    = "sudo reboot"   # Command sent over SSH to reboot the DUT.
+                                    #   Linux: "sudo reboot"
+                                    #   Windows (if sshd is installed): "shutdown /r /t 5"
+REBOOT_SETTLE_SEC = 5               # Seconds to wait after SSH reboot command before
+                                    #   starting to poll for the DUT going offline.
+                                    #   Gives the OS time to begin its reboot sequence.
+
 # ---------- Output ----------
 LOG_DIR    = "./logs"       # CLI: --out      Where to write result.json and .log
 REPORT_DIR = "./logs"       # CLI: --report   Where to write _report.html (may differ from LOG_DIR)
