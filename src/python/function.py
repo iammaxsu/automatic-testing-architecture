@@ -2,11 +2,48 @@
 import json
 import logging
 import os
+import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
 
 _COUNTER_FILE = "counter.log"
+
+
+# ---------- DUT OS detection ----------
+
+def detect_dut_os(host: str, port: int, ssh_user: str, timeout: int = 10) -> str:
+    """Probe the DUT via SSH to determine its OS.
+
+    Sends 'uname -s':
+      Linux  → exits 0, stdout contains "Linux"  → returns "linux"
+      Windows cmd.exe / PowerShell → uname not found, exit ≠ 0 → returns "windows"
+
+    Returns "linux", "windows", or "unknown" (SSH unreachable or unexpected output).
+    Never raises.
+    """
+    log = logging.getLogger("function")
+    cmd = [
+        "ssh",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "BatchMode=yes",
+        "-o", f"ConnectTimeout={timeout}",
+        "-p", str(port),
+        f"{ssh_user}@{host}",
+        "uname -s",
+    ]
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout + 5
+        )
+        if result.returncode == 0 and "Linux" in result.stdout:
+            log.info("DUT OS detected: linux (uname -s → %s)", result.stdout.strip())
+            return "linux"
+        log.info("DUT OS detected: windows (uname -s exit %d)", result.returncode)
+        return "windows"
+    except Exception as exc:
+        log.warning("DUT OS detection failed: %s — using config default", exc)
+        return "unknown"
 
 
 # ---------- Counter ----------

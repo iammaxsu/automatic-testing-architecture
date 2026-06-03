@@ -93,10 +93,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--boot-timeout", default=config.BOOT_TIMEOUT_SEC, type=int,
                    dest="boot_timeout",
                    help="Max seconds waiting for DUT to boot (default: %(default)s)")
-    p.add_argument("--dut-os",   default=config.DUT_OS,
-                   choices=["windows", "linux"], dest="dut_os",
-                   help="DUT operating system; selects default SSH shutdown command "
-                        "(default: %(default)s)")
+    p.add_argument("--dut-os",   default="auto",
+                   choices=["auto", "windows", "linux"], dest="dut_os",
+                   help="DUT operating system: auto (probe via SSH), windows, or linux. "
+                        "Selects the default SSH shutdown command. (default: %(default)s)")
     p.add_argument("--ssh-user", default=config.SHUTDOWN_SSH_USER,
                    dest="ssh_user",
                    help="SSH username for graceful shutdown (empty = skip SSH method)")
@@ -376,7 +376,14 @@ def main() -> int:
     elif not args.host:
         log.warning("DUT_HOST is not set — liveness checks disabled")
 
-    # Resolve shutdown SSH command: explicit --ssh-cmd wins; otherwise derive from --dut-os.
+    # Resolve DUT OS: probe via SSH when "auto", then pick the right shutdown command.
+    if args.dut_os == "auto":
+        if args.dry_run or args.no_check or not args.ssh_user or not args.host:
+            args.dut_os = config.DUT_OS
+        else:
+            detected = function.detect_dut_os(args.host, args.port, args.ssh_user)
+            args.dut_os = detected if detected != "unknown" else config.DUT_OS
+
     shutdown_cmd = args.ssh_cmd or config._OS_SHUTDOWN_CMD.get(args.dut_os,
                                                                 "shutdown /s /t 5")
 

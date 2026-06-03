@@ -78,10 +78,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--ssh-user",      default=config.SHUTDOWN_SSH_USER,
                    dest="ssh_user",
                    help="SSH username for reboot command (required at runtime)")
-    p.add_argument("--dut-os",        default=config.DUT_OS,
-                   choices=["windows", "linux"], dest="dut_os",
-                   help="DUT operating system; selects default SSH reboot command "
-                        "(default: %(default)s)")
+    p.add_argument("--dut-os",        default="auto",
+                   choices=["auto", "windows", "linux"], dest="dut_os",
+                   help="DUT operating system: auto (probe via SSH), windows, or linux. "
+                        "Selects the default SSH reboot command. (default: %(default)s)")
     p.add_argument("--ssh-cmd",       default=None,
                    dest="ssh_cmd",
                    help="Reboot command to run over SSH "
@@ -258,7 +258,14 @@ def _new_result(args: argparse.Namespace, session_id: str, m: int) -> dict:
 def main() -> int:
     args = parse_args()
 
-    # Resolve ssh_cmd: explicit --ssh-cmd wins; otherwise derive from --dut-os.
+    # Resolve DUT OS: probe via SSH when "auto", then pick the right reboot command.
+    if args.dut_os == "auto":
+        if args.dry_run or args.no_check or not args.ssh_user or not args.host:
+            args.dut_os = config.DUT_OS  # can't probe — fall back to config default
+        else:
+            detected = function.detect_dut_os(args.host, args.port, args.ssh_user)
+            args.dut_os = detected if detected != "unknown" else config.DUT_OS
+
     if args.ssh_cmd is None:
         args.ssh_cmd = config._OS_REBOOT_CMD.get(args.dut_os, config.REBOOT_SSH_CMD)
 
