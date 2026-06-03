@@ -52,7 +52,7 @@ $ErrorActionPreference = 'Stop'
 
 # -- Version & defaults --------------------------------------------------------
 
-$_script_ver                = '00.00.04'
+$_script_ver                = '00.00.05'
 $_requires_function_ps1_api = '00.00.01'
 $_default_cycles            = 1000   # used when run with no -Cycles and no test in progress
 
@@ -177,24 +177,23 @@ if ($resuming) {
         Write-Host "[reboot] $summary" -ForegroundColor Cyan
         Append-CycleLog -SessionId $sessionId -Line $summary
         Write-StatusFile "REBOOT TEST COMPLETE`r`nSession  : $sessionId`r`nResult   : PASS ($n / $m cycles)`r`nFinished : $ts`r`nLog      : $_log_path\reboot_$sessionId.log"
+        # Notify the interactive user - msg.exe sends across sessions (SYSTEM -> user desktop)
+        try { & msg.exe * "Reboot test COMPLETE: $n / $m cycles PASS  [$sessionId]" 2>$null } catch {}
         exit 0
     }
 
     Write-SessionJson -Data $session
     Write-StatusFile "REBOOT TEST IN PROGRESS`r`nSession : $sessionId`r`nTarget  : $m cycles`r`nDone    : $n / $m`r`nUpdated : $ts`r`nLog     : $_log_path\reboot_$sessionId.log"
     Write-Host "[reboot] Cycle $n / $m recorded." -ForegroundColor Green
+    # Notify the interactive user - msg.exe sends across sessions (SYSTEM -> user desktop)
+    try { & msg.exe * "Reboot test: cycle $n / $m PASS - continuing..." 2>$null } catch {}
 }
 else {
-    # Fresh start banner (interactive).
+    # Fresh start: show session info (interactive run).
     Write-Host ""
-    Write-Host "  ************************************************" -ForegroundColor Red
-    Write-Host ("  ***  REBOOT TEST STARTING - {0} CYCLES" -f $m)    -ForegroundColor Red
-    Write-Host "  ***  This machine will REBOOT repeatedly!"        -ForegroundColor Red
-    Write-Host "  ***  Press Ctrl+C now to cancel."                 -ForegroundColor Red
-    Write-Host "  ************************************************" -ForegroundColor Red
-    Write-Host ""
-    Write-Host ("  Session : {0}" -f $sessionId) -ForegroundColor Cyan
-    Write-Host ("  Status  : {0}" -f $_status_file) -ForegroundColor Cyan
+    Write-Host ("[reboot] New session: $sessionId  target=$m cycles") -ForegroundColor Cyan
+    Write-Host ("[reboot] Status file: $_status_file") -ForegroundColor Cyan
+    Write-Host ("[reboot] Press Ctrl+C to cancel.") -ForegroundColor Yellow
     Write-Host ""
 }
 
