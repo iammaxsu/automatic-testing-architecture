@@ -20,6 +20,11 @@
      10. (Optional) Configures PowerShell as the default SSH shell for Ansible
      11. Installs Python 3 and downloads report.py so reboot.ps1 can auto-generate HTML reports
 
+    SSH authentication summary:
+      - Blank-password account  : steps 3 + 5 allow password-free SSH login out of the box.
+      - Password-protected account: pass -PiSshPublicKey with the Pi's public key; the key is
+        installed in administrators_authorized_keys so SSH never prompts for a password.
+
     This script is intentionally idempotent: running it multiple times is safe.
 
     IMPORTANT  -  chicken-and-egg note:
@@ -49,6 +54,15 @@
     Seconds to wait after boot before running dev_detect.ps1 (default: 30).
     Increase if your hardware takes longer to fully enumerate devices.
 
+.PARAMETER PiSshPublicKey
+    The SSH public key of the Raspberry Pi controller (contents of ~/.ssh/id_rsa.pub
+    or ~/.ssh/id_ed25519.pub on the Pi).
+    When provided, the key is appended to C:\ProgramData\ssh\administrators_authorized_keys
+    so the Pi can SSH into this DUT without any password, regardless of whether the
+    Windows account has a password set.
+    Obtain the key on the Pi with: cat ~/.ssh/id_ed25519.pub
+    (or id_rsa.pub if using RSA keys)
+
 .PARAMETER AnsibleSSH
     When specified, configures PowerShell as the default shell for SSH connections
     by writing to HKLM:\SOFTWARE\OpenSSH (DefaultShell + DefaultShellCommandOption).
@@ -60,12 +74,12 @@
     .\setup_dut.ps1
 
 .EXAMPLE
-    # With auto-logon for a test account called "testuser"
-    .\setup_dut.ps1 -TestUser "testuser" -TestPassword "mypassword"
+    # Blank-password account (no SSH key needed - steps 3+5 already allow it)
+    .\setup_dut.ps1 -TestUser "testuser" -TestPassword ""
 
 .EXAMPLE
-    # Auto-logon with a passwordless account
-    .\setup_dut.ps1 -TestUser "testuser" -TestPassword ""
+    # Password-protected account: install Pi SSH key for passwordless login
+    .\setup_dut.ps1 -TestUser "testuser" -PiSshPublicKey "ssh-ed25519 AAAA...key... pi@raspberrypi"
 
 .EXAMPLE
     # Full setup including device-detection task at startup
@@ -86,6 +100,7 @@
 param(
     [string]$TestUser                 = "",
     [string]$TestPassword             = "",
+    [string]$PiSshPublicKey           = "",
     [string]$DevDetectScript          = "",
     [int]   $DevDetectStartupDelaySec = 30,
     [string]$RebootScript             = "",
@@ -98,7 +113,7 @@ $ErrorActionPreference = "Stop"
 
 # -- Version & shared library --------------------------------------------------
 
-$_script_ver                = '00.00.13'
+$_script_ver                = '00.00.14'
 $_requires_function_ps1_api = '00.00.01'
 
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -174,6 +189,44 @@ if (-not (Test-Path $sshConfigPath)) {
     $content | Set-Content -Path $sshConfigPath -Encoding UTF8
     Restart-Service sshd
     Write-OK "sshd restarted with new configuration"
+}
+
+
+# -- 3b. SSH key: install Pi public key for passwordless login (optional) ------
+#
+# For blank-password accounts, steps 3 + 5 (PermitEmptyPasswords + LimitBlankPasswordUse)
+# already allow the Pi to SSH in without any credential.  This step is only needed when
+# the Windows account has a password.
+#
+# Windows OpenSSH uses administrators_authorized_keys (not ~/.ssh/authorized_keys) for
+# accounts in the Administrators group.  The file needs strict ACL (SYSTEM + Admins only)
+# or sshd ignores it.
+
+if ($PiSshPublicKey -ne "") {
+    $authDir  = "C:\ProgramData\ssh"
+    $authFile = Join-Path $authDir "administrators_authorized_keys"
+
+    if (-not (Test-Path $authDir)) { New-Item -Path $authDir -ItemType Directory -Force | Out-Null }
+
+    # Append the key only if it is not already present (idempotent).
+    $existing = @()
+    if (Test-Path $authFile) { $existing = @(Get-Content $authFile) }
+    if ($existing -notcontains $PiSshPublicKey) {
+        Add-Content -Path $authFile -Value $PiSshPublicKey -Encoding UTF8
+        Write-OK "Pi SSH public key appended to $authFile"
+    } else {
+        Write-Skip "Pi SSH public key already present in $authFile"
+    }
+
+    # Strict ACL: remove inherited permissions, grant SYSTEM and Administrators full control.
+    # Without this sshd (running as SYSTEM) silently ignores the file.
+    icacls $authFile /inheritance:r /grant "SYSTEM:(F)" /grant "Administrators:(F)" 2>$null | Out-Null
+    Write-OK "administrators_authorized_keys ACL fixed (SYSTEM + Administrators only)"
+    Write-Host "         Test from the Pi: ssh $TestUser@$($env:COMPUTERNAME)"
+} else {
+    Write-Skip "SSH key install skipped (no -PiSshPublicKey supplied)"
+    Write-Host "         If the account has no password, steps 3+5 already allow passwordless SSH."
+    Write-Host "         If it has a password, pass -PiSshPublicKey `"<content of ~/.ssh/id_ed25519.pub>`""
 }
 
 
@@ -520,6 +573,11 @@ if ($RebootScript -ne "" -and (Test-Path $RebootScript)) {
     Write-Host "  Task Scheduler    : DUT-Reboot    (startup + ${RebootStartupDelaySec}s, as SYSTEM)"
 } else {
     Write-Host "  Task Scheduler    : DUT-Reboot    not configured"
+}
+if ($PiSshPublicKey -ne "") {
+    Write-Host "  Pi SSH key        : installed (administrators_authorized_keys)"
+} else {
+    Write-Host "  Pi SSH key        : not installed (ok if account has no password)"
 }
 if ($AnsibleSSH) {
     Write-Host "  Ansible SSH       : DefaultShell = PowerShell 5.1"

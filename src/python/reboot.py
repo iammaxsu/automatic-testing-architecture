@@ -78,9 +78,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--ssh-user",      default=config.SHUTDOWN_SSH_USER,
                    dest="ssh_user",
                    help="SSH username for reboot command (required at runtime)")
-    p.add_argument("--ssh-cmd",       default=config.REBOOT_SSH_CMD,
+    p.add_argument("--dut-os",        default="auto",
+                   choices=["auto", "windows", "linux"], dest="dut_os",
+                   help="DUT operating system: auto (probe via SSH), windows, or linux. "
+                        "Selects the default SSH reboot command. (default: %(default)s)")
+    p.add_argument("--ssh-cmd",       default=None,
                    dest="ssh_cmd",
-                   help="Reboot command to run over SSH (default: %(default)s)")
+                   help="Reboot command to run over SSH "
+                        "(default: OS-appropriate command selected by --dut-os)")
     p.add_argument("--new-session",   action="store_true", dest="new_session",
                    help="Force a new session even if an incomplete one exists (LOG023)")
     return p.parse_args()
@@ -106,19 +111,33 @@ def _ssh_reboot(args: argparse.Namespace, ssh_timeout: int = 10) -> bool:
     ]
     log.info("SSH reboot: %s@%s  cmd=%s", args.ssh_user, args.host, args.ssh_cmd)
     try:
-        subprocess.run(
+        result = subprocess.run(
             cmd,
             timeout=ssh_timeout + 5,
-            check=True,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
         )
-        return True
-    except subprocess.CalledProcessError as exc:
-        # Exit code 255 is expected when SSH closes as the OS reboots mid-command.
-        if exc.returncode == 255:
+        rc = result.returncode
+        if rc == 0:
             return True
-        log.warning("SSH reboot command returned %d", exc.returncode)
+        # 255: SSH transport closed — the OS started shutting down before the
+        # command could return cleanly. This is a normal "success" for sudo reboot.
+        if rc == 255:
+            log.info("SSH reboot: exit 255 — connection closed by remote (reboot initiated)")
+            return True
+        # Any other non-zero exit (1 = sudo permission denied, etc.) is a real
+        # failure. Log stderr to help diagnose the cause.
+        stderr_text = (result.stderr or b"").decode(errors="replace").strip()
+        log.warning("SSH reboot command returned %d%s", rc,
+                    f": {stderr_text}" if stderr_text else "")
+        if rc == 1 and not stderr_text:
+            log.warning("Exit 1 with no stderr often means sudo requires a password. "
+                        "Fix: on the DUT run: "
+                        "echo '%s ALL=(ALL) NOPASSWD: /sbin/reboot' "
+                        "| sudo tee /etc/sudoers.d/reboot-nopasswd", args.ssh_user)
+        return False
+    except subprocess.TimeoutExpired:
+        log.warning("SSH reboot timed out after %ds", ssh_timeout + 5)
         return False
     except Exception as exc:
         log.warning("SSH reboot error: %s", exc)
@@ -238,6 +257,17 @@ def _new_result(args: argparse.Namespace, session_id: str, m: int) -> dict:
 
 def main() -> int:
     args = parse_args()
+
+    # Resolve DUT OS: probe via SSH when "auto", then pick the right reboot command.
+    if args.dut_os == "auto":
+        if args.dry_run or args.no_check or not args.ssh_user or not args.host:
+            args.dut_os = config.DUT_OS  # can't probe — fall back to config default
+        else:
+            detected = function.detect_dut_os(args.host, args.port, args.ssh_user)
+            args.dut_os = detected if detected != "unknown" else config.DUT_OS
+
+    if args.ssh_cmd is None:
+        args.ssh_cmd = config._OS_REBOOT_CMD.get(args.dut_os, config.REBOOT_SSH_CMD)
 
     if not args.ssh_user and not args.dry_run and not args.no_check:
         print("ERROR: --ssh-user is required for reboot.py (no relay fallback).")

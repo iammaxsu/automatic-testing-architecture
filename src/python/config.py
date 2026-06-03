@@ -83,12 +83,28 @@ WARMUP_CYCLES         = 1   # CLI: --warmup   Uncounted init cycles before the c
                             #   test (absorbs unknown initial DUT state). 0 = skip.
 
 # ---------- Reboot test (reboot.py) ----------
-REBOOT_SSH_CMD    = "sudo reboot"   # Command sent over SSH to reboot the DUT.
-                                    #   Linux: "sudo reboot"
-                                    #   Windows (if sshd is installed): "shutdown /r /t 5"
-REBOOT_SETTLE_SEC = 5               # Seconds to wait after SSH reboot command before
-                                    #   starting to poll for the DUT going offline.
-                                    #   Gives the OS time to begin its reboot sequence.
+# ---------- DUT operating system ----------
+# CLI: --dut-os   Set to "windows" or "linux" to match the DUT.
+# This selects the correct default SSH commands for reboot and graceful shutdown.
+# Override the individual commands at runtime with --ssh-cmd if needed.
+DUT_OS = "windows"
+
+# OS-specific SSH command defaults.  Not intended to be set directly;
+# scripts derive their defaults from these dicts using DUT_OS or --dut-os.
+_OS_REBOOT_CMD = {
+    "windows": "shutdown /r /t 0",     # immediate restart via Windows shutdown utility
+    "linux":   "sudo reboot",           # requires NOPASSWD for /sbin/reboot in sudoers
+}
+_OS_SHUTDOWN_CMD = {
+    "windows": "shutdown /s /t 5",     # graceful shutdown, 5-s countdown
+    "linux":   "sudo shutdown -h now",  # requires NOPASSWD for /sbin/shutdown in sudoers
+}
+
+# ---------- Reboot test (reboot.py) ----------
+REBOOT_SSH_CMD    = _OS_REBOOT_CMD[DUT_OS]  # derived from DUT_OS; override with --ssh-cmd
+REBOOT_SETTLE_SEC = 5                        # Seconds to wait after SSH reboot command before
+                                             #   starting to poll for the DUT going offline.
+                                             #   Gives the OS time to begin its reboot sequence.
 
 # ---------- Output ----------
 LOG_DIR    = "./logs"       # CLI: --out      Where to write result.json and .log
