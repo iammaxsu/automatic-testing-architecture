@@ -78,9 +78,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--ssh-user",      default=config.SHUTDOWN_SSH_USER,
                    dest="ssh_user",
                    help="SSH username for reboot command (required at runtime)")
-    p.add_argument("--ssh-cmd",       default=config.REBOOT_SSH_CMD,
+    p.add_argument("--dut-os",        default=config.DUT_OS,
+                   choices=["windows", "linux"], dest="dut_os",
+                   help="DUT operating system; selects default SSH reboot command "
+                        "(default: %(default)s)")
+    p.add_argument("--ssh-cmd",       default=None,
                    dest="ssh_cmd",
-                   help="Reboot command to run over SSH (default: %(default)s)")
+                   help="Reboot command to run over SSH "
+                        "(default: OS-appropriate command selected by --dut-os)")
     p.add_argument("--new-session",   action="store_true", dest="new_session",
                    help="Force a new session even if an incomplete one exists (LOG023)")
     return p.parse_args()
@@ -252,6 +257,10 @@ def _new_result(args: argparse.Namespace, session_id: str, m: int) -> dict:
 
 def main() -> int:
     args = parse_args()
+
+    # Resolve ssh_cmd: explicit --ssh-cmd wins; otherwise derive from --dut-os.
+    if args.ssh_cmd is None:
+        args.ssh_cmd = config._OS_REBOOT_CMD.get(args.dut_os, config.REBOOT_SSH_CMD)
 
     if not args.ssh_user and not args.dry_run and not args.no_check:
         print("ERROR: --ssh-user is required for reboot.py (no relay fallback).")

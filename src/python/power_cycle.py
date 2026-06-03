@@ -93,9 +93,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--boot-timeout", default=config.BOOT_TIMEOUT_SEC, type=int,
                    dest="boot_timeout",
                    help="Max seconds waiting for DUT to boot (default: %(default)s)")
+    p.add_argument("--dut-os",   default=config.DUT_OS,
+                   choices=["windows", "linux"], dest="dut_os",
+                   help="DUT operating system; selects default SSH shutdown command "
+                        "(default: %(default)s)")
     p.add_argument("--ssh-user", default=config.SHUTDOWN_SSH_USER,
                    dest="ssh_user",
                    help="SSH username for graceful shutdown (empty = skip SSH method)")
+    p.add_argument("--ssh-cmd",  default=None,
+                   dest="ssh_cmd",
+                   help="Shutdown command to run over SSH "
+                        "(default: OS-appropriate command selected by --dut-os)")
     p.add_argument("--new-session", action="store_true", dest="new_session",
                    help="Force a new session even if an incomplete one exists (LOG023)")
     return p.parse_args()
@@ -368,6 +376,10 @@ def main() -> int:
     elif not args.host:
         log.warning("DUT_HOST is not set — liveness checks disabled")
 
+    # Resolve shutdown SSH command: explicit --ssh-cmd wins; otherwise derive from --dut-os.
+    shutdown_cmd = args.ssh_cmd or config._OS_SHUTDOWN_CMD.get(args.dut_os,
+                                                                "shutdown /s /t 5")
+
     # Shutdown coordinator (constructed once; reused every cycle)
     shutdown_coord = ShutdownCoordinator(
         relay=relay,
@@ -378,6 +390,7 @@ def main() -> int:
         ssh_port=args.port,
         dead_timeout_sec=config.DEAD_TIMEOUT_SEC,
         time_based_delay_sec=args.off_time,
+        ssh_cmd=shutdown_cmd,
     )
 
     # Build or load result structure (resume reuses the existing file)
