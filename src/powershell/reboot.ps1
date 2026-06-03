@@ -67,7 +67,7 @@ $ErrorActionPreference = 'Stop'
 
 # -- Version & defaults --------------------------------------------------------
 
-$_script_ver                = '00.00.06'
+$_script_ver                = '00.00.07'
 $_requires_function_ps1_api = '00.00.01'
 $_default_cycles            = 1000   # used when run with no -Cycles and no test in progress
 
@@ -222,6 +222,28 @@ function Notify-User {
     try { & msg.exe * $Message 2>$null } catch {}
 }
 
+function Invoke-ReportPy {
+    param([string]$SessionId)
+    # Regenerate the HTML report from the canonical result.json after every cycle
+    # so the user can open logs\reboot_<id>.report.html at any time during or
+    # after the test to see current progress. Fails silently if Python or
+    # report.py is not found (the test itself continues unaffected).
+    $jsonFile = Get-ResultFile -SessionId $SessionId
+    if (-not (Test-Path $jsonFile)) { return }
+
+    # Look for report.py next to this script first, then in a sibling python\ folder.
+    $rpy = Join-Path $_script_root 'report.py'
+    if (-not (Test-Path $rpy)) {
+        $rpy = Join-Path (Split-Path -Parent $_script_root) 'python\report.py'
+    }
+    if (-not (Test-Path $rpy)) { return }
+
+    $pyCmd = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $pyCmd) { return }
+
+    try { & python $rpy $jsonFile 2>$null } catch {}
+}
+
 function New-RebootSession {
     param([int]$Target)
     $ts  = Now-Iso
@@ -347,12 +369,14 @@ if ($resuming) {
         Write-Host "[reboot] $summary" -ForegroundColor Cyan
         Append-CycleLog -SessionId $sessionId -Line $summary
         Write-StatusFile "REBOOT TEST COMPLETE`r`nSession  : $sessionId`r`nResult   : PASS ($n / $m cycles)`r`nFinished : $ts`r`nLog      : $_log_path\reboot_$sessionId.log"
+        Invoke-ReportPy -SessionId $sessionId
         Notify-User "Reboot test COMPLETE: $n / $m cycles PASS  [$sessionId]"
         exit 0
     }
 
     Write-StatusFile "REBOOT TEST IN PROGRESS`r`nSession : $sessionId`r`nTarget  : $m cycles`r`nDone    : $n / $m`r`nUpdated : $ts`r`nLog     : $_log_path\reboot_$sessionId.log"
     Write-Host "[reboot] Cycle $n / $m recorded." -ForegroundColor Green
+    Invoke-ReportPy -SessionId $sessionId
     Notify-User "Reboot test: cycle $n / $m PASS - continuing..."
 
     Invoke-RebootWithCountdown -Session $newSession

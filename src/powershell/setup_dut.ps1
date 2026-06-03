@@ -18,7 +18,7 @@
       8. (Optional) Configures auto-logon for the test user account
       9. (Optional) Registers Task Scheduler tasks (dev_detect.ps1 + reboot.ps1) at startup
      10. (Optional) Configures PowerShell as the default SSH shell for Ansible
-     11. (Optional) Installs Python and creates a one-click HTML report launcher
+     11. Installs Python 3 so reboot.ps1 can automatically generate HTML reports
 
     This script is intentionally idempotent: running it multiple times is safe.
 
@@ -49,19 +49,6 @@
     Seconds to wait after boot before running dev_detect.ps1 (default: 30).
     Increase if your hardware takes longer to fully enumerate devices.
 
-.PARAMETER InstallPython
-    When specified, installs Python 3 (via winget) so the DUT can render HTML
-    reports locally with report.py. report.py is stdlib-only, so no extra pip
-    packages are required. If winget is unavailable, the script prints manual
-    install instructions instead of failing.
-
-.PARAMETER ReportScript
-    Full path on this machine to report.py (the shared HTML renderer).
-    When specified, the script writes a one-click launcher (gen_report.cmd +
-    gen_report.ps1) next to reboot.ps1. Double-clicking gen_report.cmd renders
-    the newest *.result.json in the logs folder into an HTML report and opens it.
-    Leave empty (default) to skip the launcher.
-
 .PARAMETER AnsibleSSH
     When specified, configures PowerShell as the default shell for SSH connections
     by writing to HKLM:\SOFTWARE\OpenSSH (DefaultShell + DefaultShellCommandOption).
@@ -89,19 +76,11 @@
     .\setup_dut.ps1 -AnsibleSSH
 
 .EXAMPLE
-    # Install Python and create the one-click report launcher next to reboot.ps1
-    .\setup_dut.ps1 -InstallPython `
-                    -RebootScript "C:\TestAutomation\powershell\reboot.ps1" `
-                    -ReportScript "C:\TestAutomation\python\report.py"
-
-.EXAMPLE
-    # Complete lab setup: auto-logon + device detection + reboot task +
-    # Ansible SSH + Python + one-click report launcher
+    # Complete lab setup: auto-logon + device detection + reboot task + Ansible SSH
     .\setup_dut.ps1 -TestUser "testuser" `
                     -DevDetectScript "C:\TestAutomation\powershell\dev_detect.ps1" `
                     -RebootScript    "C:\TestAutomation\powershell\reboot.ps1" `
-                    -ReportScript    "C:\TestAutomation\python\report.py" `
-                    -InstallPython -AnsibleSSH
+                    -AnsibleSSH
 #>
 
 param(
@@ -111,8 +90,6 @@ param(
     [int]   $DevDetectStartupDelaySec = 30,
     [string]$RebootScript             = "",
     [int]   $RebootStartupDelaySec    = 60,
-    [string]$ReportScript             = "",
-    [switch]$InstallPython,
     [switch]$AnsibleSSH
 )
 
@@ -121,7 +98,7 @@ $ErrorActionPreference = "Stop"
 
 # -- Version & shared library --------------------------------------------------
 
-$_script_ver                = '00.00.10'
+$_script_ver                = '00.00.11'
 $_requires_function_ps1_api = '00.00.01'
 
 $_fn = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Definition) 'function.ps1'
@@ -396,115 +373,44 @@ if ($AnsibleSSH) {
 }
 
 
-# -- 11. Python runtime + one-click report generator --------------------------
-# report.py (shared renderer) is stdlib-only, so a plain Python install is all
-# that is needed to turn any test's result.json into an HTML report on the DUT.
+# -- 11. Python 3 runtime ------------------------------------------------------
+# reboot.ps1 calls report.py after every cycle to keep the HTML report current.
+# report.py is stdlib-only (no pip packages needed).
 
-Write-Step "11 / 11  Python runtime + one-click report generator"
+Write-Step "11 / 11  Python 3 runtime"
 
-# 11a. Install Python (optional).
 $pythonReady = $false
 $pyCmd = Get-Command python -ErrorAction SilentlyContinue
-if ($pyCmd) { $pythonReady = $true }
-
-if ($InstallPython) {
-    if ($pythonReady) {
-        Write-Skip "Python already installed: $((& python --version 2>&1))"
-    } else {
-        $wingetCmd = Get-Command winget -ErrorAction SilentlyContinue
-        if ($wingetCmd) {
-            Write-Host "  Installing Python 3 via winget (silent)..."
-            try {
-                winget install --exact --id Python.Python.3.12 --silent `
-                    --accept-package-agreements --accept-source-agreements --scope machine
-            } catch {
-                Write-Warn "winget install reported an error: $($_.Exception.Message)"
-            }
-            # winget updates the machine PATH; this session may not see it yet.
-            $machinePath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
-            if ($machinePath) { $env:Path = "$machinePath;$env:Path" }
-            $pyCmd = Get-Command python -ErrorAction SilentlyContinue
-            if ($pyCmd) {
-                $pythonReady = $true
-                Write-OK "Python ready: $((& python --version 2>&1))"
-            } else {
-                Write-Warn "Python installed but not on PATH in this session."
-                Write-Host "         Open a NEW console (or reboot) and verify: python --version"
-                $pythonReady = $true   # installed; PATH refresh pending
-            }
-        } else {
-            Write-Warn "winget not available - cannot auto-install Python."
-            Write-Host "         Install manually from https://www.python.org/downloads/"
-            Write-Host "         and tick 'Add python.exe to PATH' during setup."
+if ($pyCmd) {
+    $pythonReady = $true
+    Write-Skip "Python already installed: $((& python --version 2>&1))"
+} else {
+    $wingetCmd = Get-Command winget -ErrorAction SilentlyContinue
+    if ($wingetCmd) {
+        Write-Host "  Installing Python 3 via winget (silent)..."
+        try {
+            winget install --exact --id Python.Python.3.12 --silent `
+                --accept-package-agreements --accept-source-agreements --scope machine
+        } catch {
+            Write-Warn "winget install reported an error: $($_.Exception.Message)"
         }
-    }
-} else {
-    if ($pythonReady) {
-        Write-Skip "Python install not requested; existing Python found: $((& python --version 2>&1))"
-    } else {
-        Write-Skip "Python install not requested (add -InstallPython to install)"
-        Write-Host "         report.py needs Python to render HTML reports on the DUT."
-    }
-}
-
-# 11b. One-click report launcher (optional; needs -ReportScript pointing to report.py).
-if ($ReportScript -ne "") {
-    if (-not (Test-Path $ReportScript)) {
-        Write-Warn "report.py not found: $ReportScript  -  skipping one-click launcher"
-        Write-Warn "Copy report.py to the DUT first, then re-run with -ReportScript pointing to it."
-    } else {
-        $absReport = (Resolve-Path -LiteralPath $ReportScript).Path
-
-        # Logs live next to reboot.ps1 when known; otherwise next to report.py.
-        if ($RebootScript -ne "" -and (Test-Path $RebootScript)) {
-            $logsDir     = Join-Path (Split-Path -Parent (Resolve-Path -LiteralPath $RebootScript).Path) 'logs'
-            $launcherDir = Split-Path -Parent (Resolve-Path -LiteralPath $RebootScript).Path
+        # Refresh PATH for this session (winget writes to machine PATH).
+        $machinePath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
+        if ($machinePath) { $env:Path = "$machinePath;$env:Path" }
+        $pyCmd = Get-Command python -ErrorAction SilentlyContinue
+        if ($pyCmd) {
+            $pythonReady = $true
+            Write-OK "Python installed and ready: $((& python --version 2>&1))"
         } else {
-            $logsDir     = Join-Path (Split-Path -Parent $absReport) 'logs'
-            $launcherDir = Split-Path -Parent $absReport
+            Write-Warn "Python was installed but is not on PATH yet."
+            Write-Host "         Open a NEW console (or reboot), then verify: python --version"
+            $pythonReady = $true   # installed; PATH refresh pending - report will work after reboot
         }
-
-        $genPs1 = Join-Path $launcherDir 'gen_report.ps1'
-        $genCmd = Join-Path $launcherDir 'gen_report.cmd'
-
-        # Worker script: render the NEWEST *.result.json in $logsDir and open it.
-        $ps1Body = @'
-# gen_report.ps1 - one-click HTML report generator (created by setup_dut.ps1).
-# Renders the newest *.result.json in the logs folder via the shared report.py.
-$ErrorActionPreference = 'Stop'
-$report = '__REPORT__'
-$logs   = '__LOGS__'
-
-if (-not (Test-Path $logs)) { Write-Host "Logs folder not found: $logs"; Read-Host 'Press Enter to close'; exit 1 }
-$latest = Get-ChildItem -LiteralPath $logs -Filter '*.result.json' -ErrorAction SilentlyContinue |
-          Sort-Object LastWriteTime -Descending | Select-Object -First 1
-if (-not $latest) { Write-Host "No *.result.json found in $logs"; Read-Host 'Press Enter to close'; exit 1 }
-
-$html = $latest.FullName -replace '\.result\.json$', '.report.html'
-Write-Host "Rendering $($latest.Name) ..."
-& python "$report" "$($latest.FullName)" "$html"
-if (Test-Path $html) {
-    Write-Host "Report: $html"
-    Start-Process $html
-} else {
-    Write-Host 'Report was not produced - is Python installed and on PATH?'
-    Read-Host 'Press Enter to close'
-}
-'@
-        $ps1Body = $ps1Body.Replace('__REPORT__', $absReport).Replace('__LOGS__', $logsDir)
-        Set-Content -Path $genPs1 -Value $ps1Body -Encoding UTF8
-
-        # Double-clickable wrapper (a .ps1 opens in an editor when double-clicked).
-        $cmdBody = "@echo off`r`npowershell -ExecutionPolicy Bypass -NoProfile -File `"%~dp0gen_report.ps1`"`r`n"
-        Set-Content -Path $genCmd -Value $cmdBody -Encoding ASCII
-
-        Write-OK "One-click report launcher created:"
-        Write-Host "         $genCmd  (double-click to render the newest result.json)"
-        Write-Host "         Logs    : $logsDir"
-        Write-Host "         report.py: $absReport"
+    } else {
+        Write-Warn "winget not available - Python must be installed manually."
+        Write-Host "         Download from https://www.python.org/downloads/"
+        Write-Host "         Tick 'Add python.exe to PATH' during setup, then re-run this script."
     }
-} else {
-    Write-Skip "One-click report launcher not configured (add -ReportScript path\to\report.py)"
 }
 
 
@@ -542,14 +448,9 @@ if ($AnsibleSSH) {
     Write-Host "  Ansible SSH       : not configured"
 }
 if ($pythonReady) {
-    Write-Host "  Python runtime    : available (report.py can render reports on the DUT)"
+    Write-Host "  Python runtime    : available (reboot.ps1 will auto-generate HTML reports)"
 } else {
-    Write-Host "  Python runtime    : not installed (add -InstallPython)"
-}
-if ($ReportScript -ne "" -and (Test-Path $ReportScript)) {
-    Write-Host "  Report launcher   : gen_report.cmd created (one-click HTML report)"
-} else {
-    Write-Host "  Report launcher   : not configured (add -ReportScript path\to\report.py)"
+    Write-Host "  Python runtime    : install manually then re-run this script"
 }
 Write-Host ""
 Write-Host "  >>> Reboot required for all changes to take effect. <<<" -ForegroundColor Yellow
