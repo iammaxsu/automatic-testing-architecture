@@ -98,7 +98,7 @@ $ErrorActionPreference = "Stop"
 
 # -- Version & shared library --------------------------------------------------
 
-$_script_ver                = '00.00.11'
+$_script_ver                = '00.00.12'
 $_requires_function_ps1_api = '00.00.01'
 
 $_fn = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Definition) 'function.ps1'
@@ -376,6 +376,62 @@ if ($AnsibleSSH) {
 # -- 11. Python 3 runtime ------------------------------------------------------
 # reboot.ps1 calls report.py after every cycle to keep the HTML report current.
 # report.py is stdlib-only (no pip packages needed).
+#
+# Two install paths: winget when present (fast), otherwise download the official
+# python.org installer and run it silently. Either way the install is unconditional.
+
+function Install-PythonViaWinget {
+    $wingetCmd = Get-Command winget -ErrorAction SilentlyContinue
+    if (-not $wingetCmd) { return $false }
+    Write-Host "  Installing Python 3 via winget (silent)..."
+    try {
+        winget install --exact --id Python.Python.3.12 --silent `
+            --accept-package-agreements --accept-source-agreements --scope machine
+        return $true
+    } catch {
+        Write-Warn "winget install failed: $($_.Exception.Message)  -  trying direct download"
+        return $false
+    }
+}
+
+function Install-PythonViaDownload {
+    # Download the official installer for this machine's architecture and run it
+    # silently. python.org keeps every release at this path, so the URL is stable.
+    $ver = '3.12.7'
+    switch ($env:PROCESSOR_ARCHITECTURE) {
+        'ARM64' { $fileName = "python-$ver-arm64.exe" }
+        'x86'   { $fileName = "python-$ver.exe" }        # 32-bit installer has no suffix
+        default { $fileName = "python-$ver-amd64.exe" }  # AMD64
+    }
+    $url  = "https://www.python.org/ftp/python/$ver/$fileName"
+    $dest = Join-Path $env:TEMP $fileName
+
+    try {
+        # PowerShell 5.1 defaults to TLS 1.0/1.1; python.org requires TLS 1.2.
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Write-Host "  Downloading $url ..."
+        Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
+    } catch {
+        Write-Warn "Download failed: $($_.Exception.Message)"
+        return $false
+    }
+
+    Write-Host "  Running silent install (InstallAllUsers=1 PrependPath=1)..."
+    try {
+        $p = Start-Process -FilePath $dest `
+            -ArgumentList '/quiet InstallAllUsers=1 PrependPath=1 Include_test=0' `
+            -Wait -PassThru
+        Remove-Item $dest -Force -ErrorAction SilentlyContinue
+        if ($p.ExitCode -ne 0) {
+            Write-Warn "Python installer returned exit code $($p.ExitCode)"
+            return $false
+        }
+        return $true
+    } catch {
+        Write-Warn "Installer launch failed: $($_.Exception.Message)"
+        return $false
+    }
+}
 
 Write-Step "11 / 11  Python 3 runtime"
 
@@ -385,31 +441,25 @@ if ($pyCmd) {
     $pythonReady = $true
     Write-Skip "Python already installed: $((& python --version 2>&1))"
 } else {
-    $wingetCmd = Get-Command winget -ErrorAction SilentlyContinue
-    if ($wingetCmd) {
-        Write-Host "  Installing Python 3 via winget (silent)..."
-        try {
-            winget install --exact --id Python.Python.3.12 --silent `
-                --accept-package-agreements --accept-source-agreements --scope machine
-        } catch {
-            Write-Warn "winget install reported an error: $($_.Exception.Message)"
-        }
-        # Refresh PATH for this session (winget writes to machine PATH).
-        $machinePath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
-        if ($machinePath) { $env:Path = "$machinePath;$env:Path" }
-        $pyCmd = Get-Command python -ErrorAction SilentlyContinue
-        if ($pyCmd) {
-            $pythonReady = $true
-            Write-OK "Python installed and ready: $((& python --version 2>&1))"
-        } else {
-            Write-Warn "Python was installed but is not on PATH yet."
-            Write-Host "         Open a NEW console (or reboot), then verify: python --version"
-            $pythonReady = $true   # installed; PATH refresh pending - report will work after reboot
-        }
+    $installed = Install-PythonViaWinget
+    if (-not $installed) { $installed = Install-PythonViaDownload }
+
+    # Refresh PATH for this session (installers write to the machine PATH).
+    $machinePath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
+    if ($machinePath) { $env:Path = "$machinePath;$env:Path" }
+    $pyCmd = Get-Command python -ErrorAction SilentlyContinue
+
+    if ($pyCmd) {
+        $pythonReady = $true
+        Write-OK "Python installed and ready: $((& python --version 2>&1))"
+    } elseif ($installed) {
+        $pythonReady = $true   # installed; PATH refresh pending - works after reboot
+        Write-Warn "Python was installed but is not on PATH in this session."
+        Write-Host "         It will be available after the reboot (reboot.ps1 runs post-reboot)."
     } else {
-        Write-Warn "winget not available - Python must be installed manually."
-        Write-Host "         Download from https://www.python.org/downloads/"
-        Write-Host "         Tick 'Add python.exe to PATH' during setup, then re-run this script."
+        Write-Warn "Automatic Python install did not succeed."
+        Write-Host "         Install manually from https://www.python.org/downloads/"
+        Write-Host "         Tick 'Add python.exe to PATH', then re-run this script."
     }
 }
 
