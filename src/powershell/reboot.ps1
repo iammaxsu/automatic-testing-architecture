@@ -6,11 +6,10 @@
   Runs entirely on the DUT - no Pi or control node required.
 
   STARTING A TEST
-    You MUST pass -Cycles N to start a test. Running with no arguments
-    is the Task Scheduler path — it resumes an in-progress test or exits
-    silently. Without -Cycles there is no way to distinguish a user
-    starting a test from Task Scheduler running on a normal boot.
-      .\reboot.ps1 -Cycles 100     (run 100 reboot cycles)
+    Run with no arguments to start a new test (uses default cycle count) or
+    to resume an in-progress test after a reboot:
+      .\reboot.ps1              (start default test, or resume if one is running)
+      .\reboot.ps1 -Cycles 100  (start a new test with exactly 100 cycles)
 
     The machine will reboot after a short countdown. Press Ctrl+C to cancel.
 
@@ -20,7 +19,8 @@
       - If a test is in progress (status=running, n < m): record this boot
         (verdict PASS = the DUT booted far enough to run the script), then
         reboot again, or stop if n has reached m.
-      - If no test is in progress: exit silently (normal boot).
+      - If no test is running and a stop sentinel exists: exit silently.
+      - Otherwise: start a new session with the default cycle count.
     After each cycle a msg.exe popup notifies the interactive user.
 
   ARTEFACTS (in logs\)  - FWK028: result.json is the canonical source of truth
@@ -28,6 +28,7 @@
     reboot_<session>.log           human-readable per-cycle log
     REBOOT_STATUS.txt              plain-text progress (rewritten each cycle)
     reboot_session.json            resume bookkeeping (not the result)
+    reboot_stopped.flag            stop sentinel (created by -Stop; deleted by -Cycles N)
 
   HTML REPORT
     The canonical result.json is rendered to HTML by the shared Python
@@ -40,27 +41,38 @@
   CHECKING PROGRESS (after reboots)
     Open the plain-text status file - it is rewritten after every cycle:
       notepad .\logs\REBOOT_STATUS.txt
-    Do NOT run reboot.ps1 to check status: with a test in progress it would
-    resume and trigger another reboot.
+    Do NOT run reboot.ps1 without -Stop to check status: with a test in
+    progress it would resume and trigger another reboot.
 
-  STOPPING EARLY
-    Delete logs\reboot_session.json. The next boot will not reboot again.
+  STOPPING A TEST
+    Use -Stop to cleanly halt any running test and prevent the next boot
+    from auto-restarting:
+      .\reboot.ps1 -Stop
+    This writes logs\reboot_stopped.flag. To start a new test afterwards,
+    use -Cycles N (which clears the sentinel automatically).
 
   RESUMING AFTER POWER LOSS
     The session file retains the last completed cycle. Task Scheduler resumes
     automatically on the next boot - no manual action needed.
+
+  RUNNING WITH PYTHON (reboot.py / run_tests.sh)
+    When the Pi controls the DUT via reboot.py, run -Stop first to prevent
+    the DUT's Task Scheduler from auto-starting its own session:
+      ssh user@dut "powershell -File .\reboot.ps1 -Stop"
 
 .EXAMPLE
   .\reboot.ps1
   .\reboot.ps1 -Cycles 50
   .\reboot.ps1 -Cycles 50 -Settle 10
   .\reboot.ps1 -DryRun -Cycles 3
+  .\reboot.ps1 -Stop
 #>
 
 [CmdletBinding()]
 param(
-    [int]   $Cycles    = 0,     # cycle count; 0 = use default (or resume via Task Scheduler)
+    [int]   $Cycles    = 0,     # cycle count; 0 = resume or start default
     [int]   $Settle    = 30,    # seconds of countdown before each reboot
+    [switch]$Stop,              # cleanly halt any running test and write stop sentinel
     [switch]$DryRun             # skip actual Restart-Computer (for testing)
 )
 
@@ -69,7 +81,7 @@ $ErrorActionPreference = 'Stop'
 
 # -- Version & defaults --------------------------------------------------------
 
-$_script_ver                = '00.00.10'
+$_script_ver                = '00.00.11'
 $_requires_function_ps1_api = '00.00.01'
 $_default_cycles            = 1000   # used when run with no -Cycles and no test in progress
 
@@ -90,6 +102,7 @@ if (-not (Test-Path $_log_path)) { New-Item -Path $_log_path -ItemType Directory
 
 $_session_file = Join-Path $_log_path 'reboot_session.json'
 $_status_file  = Join-Path $_log_path 'REBOOT_STATUS.txt'
+$_stopped_file = Join-Path $_log_path 'reboot_stopped.flag'
 
 # -- Time helpers --------------------------------------------------------------
 
@@ -307,18 +320,49 @@ function Invoke-RebootWithCountdown {
     Restart-Computer -Force
 }
 
+# -- Handle -Stop --------------------------------------------------------------
+
+if ($Stop) {
+    $session = Read-SessionJson
+    if ($null -ne $session -and $session.status -eq 'running') {
+        $n_now = [int]$session.n
+        $m_now = [int]$session.m
+        $sid   = [string]$session.session_id
+        $ts    = Now-Iso
+
+        $stoppedSession = @{
+            session_id     = $sid
+            test           = 'reboot'
+            m              = $m_now
+            n              = $n_now
+            status         = 'stopped'
+            started_at     = [string]$session.started_at
+            updated_at     = $ts
+            last_reboot_at = if ($session.PSObject.Properties.Name -contains 'last_reboot_at') {
+                                 [string]$session.last_reboot_at } else { $null }
+        }
+        Write-SessionJson -Data $stoppedSession
+        Append-CycleLog -SessionId $sid -Line "SESSION_STOPPED: $sid  n=$n_now/$m_now  t=$ts"
+        Write-StatusFile ("REBOOT TEST STOPPED`r`nSession : $sid`r`nStopped at: $n_now / $m_now cycles`r`nAt      : $ts`r`n`r`nRun '.\reboot.ps1 -Cycles N' to start a new test.")
+        Write-Host "[reboot] Test stopped at cycle $n_now / $m_now  (session: $sid)" -ForegroundColor Yellow
+    } else {
+        Write-Host "[reboot] No running test to stop." -ForegroundColor Gray
+    }
+    Write-Utf8NoBom -Path $_stopped_file -Text (Now-Iso)
+    Write-Host "[reboot] Stop sentinel written: $_stopped_file" -ForegroundColor Gray
+    Write-Host "[reboot] Next boot will NOT auto-start a new test." -ForegroundColor Gray
+    Write-Host "[reboot] Use '.\reboot.ps1 -Cycles N' to start a new test." -ForegroundColor Cyan
+    exit 0
+}
+
 # -- Session resolution --------------------------------------------------------
-# Rules:
-#   -Cycles N (N > 0)         -> always start a NEW session of N cycles
-#   no args, test running     -> resume (this is the Task Scheduler boot trigger)
-#   no args, no test running  -> EXIT SILENTLY (normal boot, no test in progress)
-#
-# The third case is intentionally silent: Task Scheduler registers reboot.ps1
-# permanently, so it fires on EVERY boot. When no test has been started (or the
-# previous session completed), the script must do nothing and exit cleanly.
-# Previously this branch auto-started a 1000-cycle session, which caused the DUT
-# to reboot 1000 times whenever reboot.py (or any other tool) triggered a reboot
-# while no session was running.
+# Rules (in priority order):
+#   -Cycles N (N > 0)              -> start NEW session; clear any stop sentinel
+#   no args, test running          -> resume (Task Scheduler boot trigger)
+#   no args, stop sentinel present -> exit silently (test was intentionally stopped)
+#   no args, nothing running       -> start new session with default cycle count
+
+$_stoppedFlagExists = Test-Path $_stopped_file
 
 $session  = Read-SessionJson
 $resuming = $false
@@ -328,10 +372,12 @@ $runningExists = ($null -ne $session -and
                   [int]$session.n -lt [int]$session.m)
 
 if ($Cycles -gt 0) {
-    $session = New-RebootSession -Target $Cycles
+    # Explicit -Cycles N: clear any stop sentinel and start fresh.
+    if ($_stoppedFlagExists) { Remove-Item $_stopped_file -Force }
+    $session   = New-RebootSession -Target $Cycles
     $sessionId = [string]$session.session_id
-    $m = [int]$session.m
-    $n = 0
+    $m         = [int]$session.m
+    $n         = 0
 }
 elseif ($runningExists) {
     $resuming  = $true
@@ -339,9 +385,16 @@ elseif ($runningExists) {
     $m         = [int]$session.m
     $n         = [int]$session.n
 }
-else {
-    # No test in progress — normal boot. Exit without doing anything.
+elseif ($_stoppedFlagExists) {
+    # Test was explicitly stopped — do not auto-restart.
     exit 0
+}
+else {
+    # No test in progress and no stop sentinel — start new with default cycles.
+    $session   = New-RebootSession -Target $_default_cycles
+    $sessionId = [string]$session.session_id
+    $m         = [int]$session.m
+    $n         = 0
 }
 
 # -- Record this boot (Task Scheduler trigger on resume) -----------------------
