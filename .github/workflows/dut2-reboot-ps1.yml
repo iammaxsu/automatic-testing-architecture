@@ -1,0 +1,152 @@
+name: DUT2 reboot endurance test (Pi → DUT2 PowerShell)
+
+# Runs reboot.ps1 on DUT2 (Windows) as a Task-Scheduler-driven endurance test.
+# The DUT reboots autonomously after each cycle; this workflow deploys the
+# scripts, starts the session, polls until complete, then collects artefacts.
+#
+# Requires:
+#   - self-hosted runner on the Pi labelled "pi"
+#   - SSH key on the Pi authorised for <ssh_user>@<dut_host>
+#   - reboot.ps1 + function.ps1 already registered with Task Scheduler on DUT2
+#     (one-time setup via setup_dut.ps1; see docs/ci-setup.md)
+#
+# Flow:
+#   1. scp src/powershell/*.ps1   → DUT2:<dut_script_dir>\
+#   2. ssh DUT2  reboot.ps1 -Stop          (clear any leftover session)
+#   3. ssh DUT2  reboot.ps1 -Cycles N      (DUT reboots; SSH exits non-zero — expected)
+#   4. Poll reboot_session.json every 60 s (retries through transient SSH failures
+#      while DUT is down between reboots)
+#   5. scp logs\  back to Pi workspace
+#   6. Upload logs + result.json as build artefact
+
+on:
+  workflow_dispatch:
+    inputs:
+      cycles:
+        description: "Reboot cycles (passed as -Cycles to reboot.ps1)"
+        default: "20"
+      settle_sec:
+        description: "Countdown seconds before each reboot (-Settle)"
+        default: "30"
+      dut_host:
+        description: "DUT2 IP / hostname"
+        default: "10.0.0.137"
+      ssh_user:
+        description: "SSH user on DUT2"
+        default: "nimitz4"
+      dut_script_dir:
+        description: "Absolute path to the scripts folder on DUT2 (forward or back slashes)"
+        default: "C:/TestScripts"
+      timeout_minutes:
+        description: "Hard timeout for the poll loop (minutes)"
+        default: "120"
+
+concurrency:
+  group: dut2-hardware
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: [self-hosted, pi]
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── 1. Deploy scripts ────────────────────────────────────────────────────
+      - name: Deploy PowerShell scripts to DUT2
+        run: |
+          scp -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
+            src/powershell/reboot.ps1 \
+            src/powershell/function.ps1 \
+            src/powershell/config.ps1 \
+            src/powershell/dev_detect.ps1 \
+            "${{ inputs.ssh_user }}@${{ inputs.dut_host }}:${{ inputs.dut_script_dir }}/"
+
+      # ── 2. Stop any leftover session (idempotent) ────────────────────────────
+      - name: Stop any in-progress reboot session on DUT2
+        run: |
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
+            "${{ inputs.ssh_user }}@${{ inputs.dut_host }}" \
+            "powershell -NoProfile -NonInteractive -File '${{ inputs.dut_script_dir }}/reboot.ps1' -Stop"
+
+      # ── 3. Start the endurance test (DUT will reboot; SSH exits non-zero) ───
+      - name: Start reboot endurance test on DUT2
+        run: |
+          # The script reboots the DUT after the countdown — the SSH connection
+          # is terminated by the reboot.  Exit code 255 (connection reset) is
+          # expected and must not fail the step.
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
+            "${{ inputs.ssh_user }}@${{ inputs.dut_host }}" \
+            "powershell -NoProfile -NonInteractive \
+              -File '${{ inputs.dut_script_dir }}/reboot.ps1' \
+              -Cycles ${{ inputs.cycles }} \
+              -Settle ${{ inputs.settle_sec }}" \
+          || true
+
+      # ── 4. Poll until complete (or timeout) ──────────────────────────────────
+      - name: Poll reboot_session.json until test completes
+        run: |
+          SESSION_FILE="${{ inputs.dut_script_dir }}/logs/reboot_session.json"
+          SSH="ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes"
+          HOST="${{ inputs.ssh_user }}@${{ inputs.dut_host }}"
+          DEADLINE=$(( $(date +%s) + ${{ inputs.timeout_minutes }} * 60 ))
+          POLL_INTERVAL=60
+
+          echo "Polling $SESSION_FILE every ${POLL_INTERVAL}s (timeout ${{ inputs.timeout_minutes }}m)"
+
+          while true; do
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              echo "::error::Poll loop timed out after ${{ inputs.timeout_minutes }} minutes"
+              exit 1
+            fi
+
+            STATUS=$(
+              $SSH "$HOST" \
+                "powershell -NoProfile -NonInteractive -Command \
+                  \"if (Test-Path '$SESSION_FILE') { \
+                      (Get-Content '$SESSION_FILE' -Raw | ConvertFrom-Json).status \
+                    } else { 'not-found' }\"" \
+              2>/dev/null \
+              | tr -d '\r\n' \
+            ) || STATUS="ssh-error"
+
+            TS=$(date -Iseconds)
+            echo "$TS  status=$STATUS"
+
+            case "$STATUS" in
+              complete)
+                echo "Test complete — collecting artefacts."
+                break
+                ;;
+              stopped)
+                echo "::error::DUT2 test was stopped unexpectedly (status=stopped)."
+                exit 1
+                ;;
+              running|not-found|ssh-error)
+                # ssh-error and not-found are expected while DUT is mid-reboot.
+                sleep "$POLL_INTERVAL"
+                ;;
+              *)
+                echo "::warning::Unexpected status value '$STATUS' — continuing poll."
+                sleep "$POLL_INTERVAL"
+                ;;
+            esac
+          done
+
+      # ── 5. Collect artefacts from DUT2 ───────────────────────────────────────
+      - name: Collect logs and result.json from DUT2
+        if: always()
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/logs"
+          scp -o StrictHostKeyChecking=no -o ConnectTimeout=15 -r \
+            "${{ inputs.ssh_user }}@${{ inputs.dut_host }}:${{ inputs.dut_script_dir }}/logs/." \
+            "$GITHUB_WORKSPACE/logs/" \
+          || echo "::warning::scp returned non-zero — partial or empty logs collected."
+
+      # ── 6. Upload artefact ───────────────────────────────────────────────────
+      - name: Upload logs and result.json
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dut2-reboot-ps1-logs
+          path: logs/**
+          if-no-files-found: warn

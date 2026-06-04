@@ -89,10 +89,47 @@ Flow:
 Manual dispatch. Inputs: power/reboot cycle counts, DUT2 host, SSH user, PSU type.
 Serialised by a `dut2-hardware` concurrency group. Uploads `logs/**` as artifact.
 
-## Pending -- DUT2 PowerShell
+## `dut2-reboot-ps1.yml` -- needs the `pi` runner
 
-`reboot.ps1` is a DUT-local endurance test driven by Task Scheduler and runs
-over hours. It cannot be modelled as a single synchronous SSH call. A CI workflow
-will need a "deploy -> start -> poll session file -> collect artifacts" approach.
-One-shot scripts such as `dev_detect.ps1` fit the synchronous model and could be
-automated first; USB transfer can be replaced by `scp` from the Pi at any time.
+Manual dispatch. Runs `reboot.ps1` on DUT2 (Windows) as a multi-hour endurance
+test. Because Task Scheduler reboots the DUT after each cycle, the workflow
+cannot use a single synchronous SSH call; it uses a deploy → start → poll →
+collect model:
+
+1. `scp src/powershell/*.ps1` → `DUT2:<dut_script_dir>\`
+2. `ssh DUT2 reboot.ps1 -Stop` — clears any leftover session (idempotent).
+3. `ssh DUT2 reboot.ps1 -Cycles N` — starts the test. DUT reboots after the
+   countdown; SSH exits non-zero (connection reset) — this is expected and the
+   step treats it as success (`|| true`).
+4. Poll `logs/reboot_session.json` on DUT2 every 60 s via SSH.  
+   SSH failures during mid-reboot are silently retried.  
+   The loop exits when `status == complete` or a configurable timeout fires.
+5. `scp -r DUT2:logs/` → Pi workspace.
+6. Upload `logs/**` (result.json, .log, .html) as a build artefact.
+
+**One-time DUT2 setup (before first run):**  
+Run `setup_dut.ps1` on the DUT once (via console, RDP, or USB). This installs
+OpenSSH, sets execution policy, and registers the Task Scheduler task that
+invokes `reboot.ps1` on every startup.
+
+### `dut_script_dir` input
+
+Provide the absolute path on DUT2 where the scripts are deployed  
+(default: `C:/TestScripts`). The path may use forward or backslashes.
+
+### One-shot PowerShell scripts (dev_detect.ps1, etc.)
+
+Synchronous scripts that run and exit normally (no self-reboot) fit a simpler
+model and can be wired up as an additional workflow job whenever needed:
+
+```bash
+# Example — run dev_detect.ps1 synchronously from the Pi runner
+ssh user@dut "powershell -NonInteractive -File 'C:/TestScripts/dev_detect.ps1'"
+scp user@dut:'C:/TestScripts/logs/*.log' ./logs/
+```
+
+## Pending
+
+- [ ] `test_warning_daemon.sh` — present on the vserver but not yet in this
+  repo. Decide whether to migrate into `src/bash-shell/` before or after the
+  main bash-shell migration is complete. See conversation context for details.
