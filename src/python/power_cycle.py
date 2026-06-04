@@ -401,8 +401,8 @@ def main() -> int:
             detected = function.detect_dut_os(args.host, args.port, args.ssh_user)
             args.dut_os = detected if detected != "unknown" else config.DUT_OS
 
-    shutdown_cmd = args.ssh_cmd or config._OS_SHUTDOWN_CMD.get(args.dut_os,
-                                                                "shutdown /s /t 5")
+    shutdown_cmd = args.ssh_cmd or config._OS_SHUTDOWN_CMD.get(
+                      args.dut_os, config._OS_SHUTDOWN_CMD["windows"])
 
     # Shutdown coordinator (constructed once; reused every cycle)
     shutdown_coord = ShutdownCoordinator(
