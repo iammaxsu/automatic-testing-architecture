@@ -46,15 +46,19 @@ Common options:
   --dry-run                simulate without touching GPIO or SSH
   --new-session            force new sessions; do not resume incomplete ones
 
-Power cycle only:
-  --type ATX|AT            PSU type           (default: ATX)
-  --pin N                  GPIO board pin number
-  --on N                   DUT on-time per cycle in seconds
-  --leave-on               skip shutdown on last cycle; leave DUT on for reboot phase
+Power cycle / reboot init (GPIO):
+  --type ATX|AT            PSU type (default: ATX)
+  --pin N                  GPIO board pin number (used by power_cycle for all cycles;
+                           used by reboot for the init power-on if DUT is offline)
 
-Reboot only:
-  --init-wait N            seconds to wait for DUT to come online before starting;
-                           use when running after power_cycle (default: 0)
+Power cycle only:
+  --on N                   DUT on-time per cycle in seconds
+
+Reboot init only:
+  --init-wait N            seconds to poll SSH when DUT is physically ON but SSH not
+                           ready (BIOS/POST, slow boot); 0 = fail immediately (default: 0)
+                           Note: when --pin is set, --boot-timeout governs the GPIO
+                           power-on wait; --init-wait is for the no-GPIO SSH-poll case.
 EOF
 }
 
@@ -77,7 +81,6 @@ OPT_MAX_CONSEC_FAILS=""
 OPT_NO_CHECK=0
 OPT_DRY_RUN=0
 OPT_NEW_SESSION=0
-OPT_LEAVE_ON=0
 OPT_INIT_WAIT=""
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
@@ -98,7 +101,6 @@ while [[ $# -gt 0 ]]; do
         --pin)            OPT_PIN="$2";           shift 2 ;;
         --early-fail-threshold)  OPT_EARLY_FAIL_THRESHOLD="$2"; shift 2 ;;
         --max-consecutive-fails) OPT_MAX_CONSEC_FAILS="$2";    shift 2 ;;
-        --leave-on)       OPT_LEAVE_ON=1;          shift   ;;
         --init-wait)      OPT_INIT_WAIT="$2";      shift 2 ;;
         --no-check)       OPT_NO_CHECK=1;           shift   ;;
         --dry-run)        OPT_DRY_RUN=1;            shift   ;;
@@ -125,6 +127,8 @@ COMMON_ARGS=()
 [[ -n "$OPT_DUT_OS"              ]] && COMMON_ARGS+=(--dut-os               "$OPT_DUT_OS")
 [[ -n "$OPT_BOOT_TIMEOUT"        ]] && COMMON_ARGS+=(--boot-timeout         "$OPT_BOOT_TIMEOUT")
 [[ -n "$OPT_OFF"                 ]] && COMMON_ARGS+=(--off                  "$OPT_OFF")
+[[ -n "$OPT_TYPE"                ]] && COMMON_ARGS+=(--type                 "$OPT_TYPE")
+[[ -n "$OPT_PIN"                 ]] && COMMON_ARGS+=(--pin                  "$OPT_PIN")
 [[ -n "$OPT_EARLY_FAIL_THRESHOLD" ]] && COMMON_ARGS+=(--early-fail-threshold "$OPT_EARLY_FAIL_THRESHOLD")
 [[ -n "$OPT_MAX_CONSEC_FAILS"    ]] && COMMON_ARGS+=(--max-consecutive-fails "$OPT_MAX_CONSEC_FAILS")
 [[ "$OPT_NO_CHECK"    -eq 1      ]] && COMMON_ARGS+=(--no-check)
@@ -147,11 +151,7 @@ if [[ "$OPT_POWER_CYCLES" -gt 0 ]]; then
 
     PC_OUT="$OPT_OUT/power_cycle"
     PC_ARGS=("${COMMON_ARGS[@]}" --cycles "$OPT_POWER_CYCLES" --out "$PC_OUT")
-    [[ -n "$OPT_ON"   ]] && PC_ARGS+=(--on   "$OPT_ON")
-    [[ -n "$OPT_TYPE" ]] && PC_ARGS+=(--type "$OPT_TYPE")
-    [[ -n "$OPT_PIN"  ]] && PC_ARGS+=(--pin  "$OPT_PIN")
-    # --leave-on: skip shutdown on last cycle so DUT is on when reboot phase starts
-    [[ "$OPT_LEAVE_ON" -eq 1 && "$OPT_REBOOT_CYCLES" -gt 0 ]] && PC_ARGS+=(--leave-on)
+    [[ -n "$OPT_ON" ]] && PC_ARGS+=(--on "$OPT_ON")
 
     set +e
     python3 "$SCRIPT_DIR/power_cycle.py" "${PC_ARGS[@]}"

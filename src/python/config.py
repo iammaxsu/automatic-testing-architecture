@@ -103,12 +103,23 @@ WARMUP_CYCLES         = 1   # CLI: --warmup   Uncounted init cycles before the c
                             #   test (absorbs unknown initial DUT state). 0 = skip.
 
 # ---------- Reboot test init (reboot.py) ----------
+# Two situations are handled (PWR013):
+#   1. DUT is physically ON but SSH not yet ready (BIOS/POST, slow boot):
+#      --init-wait N  polls SSH for up to N seconds before the first cycle.
+#   2. DUT is physically OFF (e.g. after power_cycle.py):
+#      --pin N + --type ATX|AT  issues one power-on press, then waits up to
+#      --boot-timeout seconds for SSH to become reachable.
+#      INIT_GPIO_PIN = None means no GPIO init; fail immediately if DUT is offline.
+INIT_GPIO_PIN = None        # CLI: --pin   GPIO BOARD pin for init-phase power-on.
+                            #   None = no GPIO init (fail if DUT offline and no --init-wait).
+                            #   Set to the same pin used in power_cycle.py when running
+                            #   the composite test (power_cycle → reboot).
 INIT_WAIT_SEC = 0           # CLI: --init-wait
-                            #   Seconds to wait for DUT to become SSH-reachable before
-                            #   starting the test. 0 = fail immediately if DUT is offline.
-                            #   Set > 0 when starting reboot.py right after power_cycle.py
-                            #   (DUT is powered off; needs time to be powered on and boot)
-                            #   or when DUT might still be at BIOS/POST.
+                            #   Seconds to wait (SSH poll) for DUT to become reachable before
+                            #   starting. 0 = fail immediately if DUT is offline.
+                            #   Use when DUT is physically ON but SSH not ready (BIOS/POST).
+                            #   When --pin is set, --boot-timeout governs the GPIO power-on
+                            #   wait instead; --init-wait is for the SSH-only case.
 
 # ---------- Reboot test (reboot.py) ----------
 # ---------- DUT operating system ----------
