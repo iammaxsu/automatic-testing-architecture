@@ -10,90 +10,89 @@ push / PR ──► GitHub
                │
                ├─► validate            (GitHub-hosted; no hardware)
                │
-               ├─► vserver runner ──► ansible ──► DUT1 (Linux)
+               ├─► vserver runner ──► rsync scripts ──► ansible ──► DUT1 (Linux)
                │
-               └─► pi runner ───────► Python (GPIO/relay) ──► DUT2 power tests
-                                  └──► SSH/SCP ─────────────► DUT2 PowerShell
+               └─► pi runner ───────► Python (GPIO/relay) ──────────► DUT2 power tests
 ```
 
 | Runner label | Machine | Handles |
 |--------------|---------|---------|
 | *(hosted)*   | GitHub  | `validate.yml` — compile + dry-run, no DUT |
+| `vserver`    | vserver | DUT1 ansible tests (`dut1-linux.yml`) |
 | `pi`         | Pi      | DUT2 power_cycle / reboot (`dut2-power.yml`) |
-| `vserver`    | vserver | DUT1 ansible tests (`dut1-linux.yml`, *pending*) |
 
-No GitHub Secrets are required: each runner already holds the SSH keys it
-needs (Pi → DUT2; vserver → DUT1). Internal IPs are passed as workflow inputs,
-not secrets.
+No GitHub Secrets are required. Each runner uses its local SSH keys and
+`ansible.cfg`; internal IPs are entered as workflow dispatch inputs.
 
 ## Installing a self-hosted runner
 
-Do this once on the Pi, and once on the vserver. Get the download URL and
-registration token from:
+Do this **once on the Pi** and **once on the vserver**. Get the exact download
+URL and registration token from:
 
-> GitHub repo → Settings → Actions → Runners → **New self-hosted runner**
+> GitHub repo -> Settings -> Actions -> Runners -> **New self-hosted runner**
+
+Choose **Linux ARM64** for the Pi; **Linux x64** for the vserver.
 
 ```bash
+# Run on each machine (fill in URL and TOKEN from the GitHub page above)
 mkdir -p ~/actions-runner && cd ~/actions-runner
-curl -o runner.tar.gz -L <URL-from-GitHub>          # pick the Linux ARM64 build on the Pi
+curl -o runner.tar.gz -L <URL-from-GitHub>
 tar xzf runner.tar.gz
 
-# Register. Set the label to match the workflow's runs-on:
+# Register with a label matching the workflow's runs-on:
 ./config.sh \
   --url https://github.com/iammaxsu/automatic-testing-architecture \
   --token <TOKEN-from-GitHub> \
-  --labels pi            # use "vserver" on the vserver
+  --labels pi          # use "vserver" on the vserver
 
-# Run as a service so it survives reboots:
+# Install and start as a systemd service (survives reboots):
 sudo ./svc.sh install
 sudo ./svc.sh start
 sudo ./svc.sh status
 ```
 
-The runner must run as a user that:
-- on the **Pi**: can access the GPIO and holds the SSH key for DUT2;
-- on the **vserver**: can run `ansible-playbook` with the lab inventory and
-  holds the SSH key for DUT1.
+Verify the runner shows **Idle** under Settings -> Actions -> Runners before
+triggering a workflow.
 
-Verify the runner shows **Idle** under Settings → Actions → Runners.
+### Runner user requirements
+
+| Machine | The runner user must be able to ... |
+|---------|--------------------------------------|
+| Pi      | access GPIO; SSH into DUT2 (key already in `~/.ssh/`) |
+| vserver | run `ansible-playbook`; SSH into DUT1; read/write `~/Downloads/test-automation_ansible/` |
+
+The default install creates a `runner` user. If `ansible-playbook` and the SSH
+keys are under `maxsu`, either install the runner as `maxsu` or copy the keys
+to the `runner` user's `~/.ssh/`.
 
 ## Workflows
 
-### `validate.yml` — runs now, no setup needed
-Triggers on every push / PR. Compiles all Python, syntax-checks every shell
-script, and dry-runs the composite runner. Pure software; no DUT touched.
+### `validate.yml` -- runs immediately, no setup needed
+Triggers on every push / PR (GitHub-hosted runner). Compiles all Python,
+syntax-checks every shell script, and dry-runs `run_tests.sh`. No DUT touched.
 
-### `dut2-power.yml` — needs the `pi` runner
-Manual dispatch (Actions → "DUT2 power tests (Pi)" → Run workflow). Inputs:
-power/reboot cycle counts, DUT2 host, SSH user, PSU type. Serialised by a
-`dut2-hardware` concurrency group. Uploads `logs/**` (result.json + HTML) as a
-build artifact.
+### `dut1-linux.yml` -- needs the `vserver` runner
+Manual dispatch (Actions -> "DUT1 Linux tests (vserver/ansible)" -> Run workflow).
 
-## Pending — require decisions before wiring
+Inputs: `test` (disk / net / both), `loops` (bLoops count).
 
-### DUT1 (Linux via ansible) — `ansible-playbooks/` not yet reconciled
-The playbooks were carried over from the legacy `Test-Automation` repo and do
-not match this repo's layout:
+Flow:
+1. `rsync src/bash-shell/*.sh` to `~/Downloads/test-automation_ansible/scripts/`
+   (updates scripts in-place; does **not** delete `test_warning_daemon.sh` or
+   other vserver-local scripts that are not yet in this repo).
+2. `ansible-playbook playbooks/01-deploy.yml` -- deploy to DUT1.
+3. `ansible-playbook playbooks/02-run-disk-test.yml -e bLoops=N` and/or
+   `03-run-net-test.yml`.
+4. Uploads `**/*.log` as a build artifact.
 
-1. `01-deploy.yml` copies from `{{ playbook_dir }}/../scripts/<name>.sh`, but
-   the bash scripts live in `src/bash-shell/`, not `scripts/`
-   (`scripts/` here holds only `stats.py` / `make_dashboard.py`).
-2. Its `scripts:` list includes `test_warning_daemon.sh`, which does not exist
-   in `src/bash-shell/` either.
-3. The `test_machines` inventory is not in the repo — it lives on the vserver.
+### `dut2-power.yml` -- needs the `pi` runner
+Manual dispatch. Inputs: power/reboot cycle counts, DUT2 host, SSH user, PSU type.
+Serialised by a `dut2-hardware` concurrency group. Uploads `logs/**` as artifact.
 
-Reconciling the playbook source path and script set (and deciding whether the
-inventory should be committed or stay vserver-local) is a prerequisite for a
-DUT1 CI workflow.
+## Pending -- DUT2 PowerShell
 
-### DUT2 PowerShell — async, not a synchronous CI job
-`reboot.ps1` is a DUT-local endurance test driven by Task Scheduler: it reboots
-DUT2 repeatedly over hours, so an SSH session that launches it cannot wait for
-completion. A CI workflow for it needs a "deploy → kick off → poll the session
-file / status until done → collect artifacts" model, not a single blocking SSH
-call. One-shot PowerShell tests (e.g. `dev_detect.ps1`) fit the synchronous
-model and could be automated first.
-
-The USB-stick transfer can be retired regardless: DUT2 already runs OpenSSH
-with the Pi's public key installed (`setup_dut.ps1`), so scripts can be copied
-with `scp` and invoked over SSH from the Pi.
+`reboot.ps1` is a DUT-local endurance test driven by Task Scheduler and runs
+over hours. It cannot be modelled as a single synchronous SSH call. A CI workflow
+will need a "deploy -> start -> poll session file -> collect artifacts" approach.
+One-shot scripts such as `dev_detect.ps1` fit the synchronous model and could be
+automated first; USB transfer can be replaced by `scp` from the Pi at any time.
