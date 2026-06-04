@@ -86,6 +86,10 @@ def parse_args() -> argparse.Namespace:
                    dest="ssh_cmd",
                    help="Reboot command to run over SSH "
                         "(default: OS-appropriate command selected by --dut-os)")
+    p.add_argument("--max-consecutive-fails", default=config.MAX_CONSECUTIVE_FAILS, type=int,
+                   dest="max_consecutive_fails",
+                   help="Abort after N consecutive failed cycles; 0 = never abort "
+                        "(default: %(default)s)")
     p.add_argument("--new-session",   action="store_true", dest="new_session",
                    help="Force a new session even if an incomplete one exists (LOG023)")
     return p.parse_args()
@@ -339,6 +343,23 @@ def main() -> int:
     elif not args.host:
         log.warning("DUT_HOST is not set — liveness checks disabled")
 
+    # ── Pre-start DUT liveness check ─────────────────────────────────────────────
+    # Reboot test requires the DUT to be reachable BEFORE the first cycle.
+    # Fail immediately with a clear diagnostic rather than burning
+    # --max-consecutive-fails cycles on SSH_ERROR.
+    if checker and not args.dry_run and not resuming:
+        log.info("Pre-start check: probing DUT at %s:%d ...", args.host, args.port)
+        if not checker.is_alive():
+            log.error("DUT is not reachable at %s:%d — cannot start reboot test.",
+                      args.host, args.port)
+            log.error("Reboot test requires the DUT to be online before the first cycle.")
+            log.error("Common causes:")
+            log.error("  * Ran after power_cycle test: power_cycle ends with the DUT powered OFF.")
+            log.error("    Power the DUT on manually, then re-run reboot.py.")
+            log.error("  * Wrong --host / --port, or SSH not running on the DUT.")
+            return 1
+        log.info("Pre-start check: DUT is reachable — starting test.")
+
     if resuming:
         result = function.read_json(str(json_path)) or _new_result(args, session_id, m)
         result["cycles"] = result.get("cycles", [])[: session["n"]]
@@ -363,13 +384,13 @@ def main() -> int:
             consecutive_fails = 0
         else:
             consecutive_fails += 1
-            log.warning("Consecutive fails: %d / %d",
-                        consecutive_fails, config.MAX_CONSECUTIVE_FAILS)
-            if (config.MAX_CONSECUTIVE_FAILS > 0
-                    and consecutive_fails >= config.MAX_CONSECUTIVE_FAILS):
-                log.error("Reached %d consecutive failures — aborting.",
-                          config.MAX_CONSECUTIVE_FAILS)
-                break
+            if args.max_consecutive_fails > 0:
+                log.warning("Consecutive fails: %d / %d",
+                            consecutive_fails, args.max_consecutive_fails)
+                if consecutive_fails >= args.max_consecutive_fails:
+                    log.error("Reached %d consecutive failures — aborting.",
+                              args.max_consecutive_fails)
+                    break
 
         result["summary"] = _build_summary(result["cycles"], m)
         result["overall_verdict"] = "RUNNING"

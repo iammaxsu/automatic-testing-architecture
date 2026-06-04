@@ -104,6 +104,10 @@ def parse_args() -> argparse.Namespace:
                    dest="ssh_cmd",
                    help="Shutdown command to run over SSH "
                         "(default: OS-appropriate command selected by --dut-os)")
+    p.add_argument("--max-consecutive-fails", default=config.MAX_CONSECUTIVE_FAILS, type=int,
+                   dest="max_consecutive_fails",
+                   help="Abort after N consecutive failed cycles; 0 = never abort "
+                        "(default: %(default)s)")
     p.add_argument("--new-session", action="store_true", dest="new_session",
                    help="Force a new session even if an incomplete one exists (LOG023)")
     return p.parse_args()
@@ -445,16 +449,17 @@ def main() -> int:
                 consecutive_fails = 0
             else:
                 consecutive_fails += 1
-                log.warning(
-                    "Consecutive fails: %d / %d",
-                    consecutive_fails,
-                    config.MAX_CONSECUTIVE_FAILS,
-                )
-                if (config.MAX_CONSECUTIVE_FAILS > 0
-                        and consecutive_fails >= config.MAX_CONSECUTIVE_FAILS):
+                if args.max_consecutive_fails > 0:
+                    log.warning(
+                        "Consecutive fails: %d / %d",
+                        consecutive_fails,
+                        args.max_consecutive_fails,
+                    )
+                if (args.max_consecutive_fails > 0
+                        and consecutive_fails >= args.max_consecutive_fails):
                     log.error(
                         "Reached %d consecutive failures — aborting test.",
-                        config.MAX_CONSECUTIVE_FAILS,
+                        args.max_consecutive_fails,
                     )
                     break
 
