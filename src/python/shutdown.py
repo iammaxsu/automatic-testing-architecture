@@ -1,7 +1,7 @@
 # shutdown.py — Multi-strategy DUT shutdown coordinator
 #
 # Shutdown priority order:
-#   1. SSH command   — OS shutdown command via ssh; Windows exits cleanly before relay acts
+#   1. SSH command   — "shutdown /s /t 5" via ssh; Windows exits cleanly before relay acts
 #   2. ATX soft press — 0.5 s relay pulse (ACPI power button signal)
 #   3. ATX force-off  — 5 s hold; applied automatically if soft press times out
 #   4. Time-based     — blind wait then ATX press; last resort when no liveness checker
@@ -61,7 +61,7 @@ class ShutdownCoordinator:
         self.dead_timeout_sec     = dead_timeout_sec
         self.time_based_delay_sec = time_based_delay_sec
         self.ssh_cmd              = ssh_cmd or config._OS_SHUTDOWN_CMD.get(
-                                        config.DUT_OS, config._OS_SHUTDOWN_CMD["windows"])
+                                        config.DUT_OS, "shutdown /s /t 5")
 
     # ------------------------------------------------------------------
     # Public API

@@ -71,7 +71,7 @@ HEALTH_CHECK_INTERVAL = 30  # Seconds between liveness probes during ON_TIME (ph
 
 # ---------- Shutdown ----------
 SHUTDOWN_SSH_USER = ""      # CLI: --ssh-user   SSH login for graceful OS shutdown.
-                            #   Set -> phase 3 sends the OS shutdown command over SSH and the
+                            #   Set -> phase 3 sends "shutdown /s /t 5" over SSH and the
                             #     power button is used ONLY to power on.
                             #   Empty -> phase 3 powers off with an ATX button press
                             #     instead (two presses per cycle: on, then off).
@@ -126,25 +126,20 @@ DUT_OS = "windows"
 
 # OS-specific SSH command defaults.  Not intended to be set directly;
 # scripts derive their defaults from these dicts using DUT_OS or --dut-os.
-#
-# Windows commands chain "msg * <text> & shutdown ..." so the DUT shows a
-# popup on the interactive desktop before rebooting/shutting down.  msg.exe
-# fails silently on editions that lack it or when no user is logged in; the
-# & separator (not &&) ensures the shutdown still runs regardless.
 _OS_REBOOT_CMD = {
-    "windows": "msg * Reboot test: system will reboot & shutdown /r /t 5",
+    "windows": "shutdown /r /t 0",     # immediate restart via Windows shutdown utility
     "linux":   "sudo reboot",           # requires NOPASSWD for /sbin/reboot in sudoers
 }
 _OS_SHUTDOWN_CMD = {
-    "windows": "msg * Power cycle test: system will shut down & shutdown /s /t 10",
+    "windows": "shutdown /s /t 5",     # graceful shutdown, 5-s countdown
     "linux":   "sudo shutdown -h now",  # requires NOPASSWD for /sbin/shutdown in sudoers
 }
 
 # ---------- Reboot test (reboot.py) ----------
 REBOOT_SSH_CMD    = _OS_REBOOT_CMD[DUT_OS]  # derived from DUT_OS; override with --ssh-cmd
-REBOOT_SETTLE_SEC = 8                        # Seconds to wait after SSH reboot command before
+REBOOT_SETTLE_SEC = 5                        # Seconds to wait after SSH reboot command before
                                              #   starting to poll for the DUT going offline.
-                                             #   Covers msg.exe execution (~1 s) + /t 5 countdown.
+                                             #   Gives the OS time to begin its reboot sequence.
 
 # ---------- Output ----------
 LOG_DIR    = "./logs"       # CLI: --out      Where to write result.json and .log

@@ -240,6 +240,11 @@ def run_one_cycle(
             return rec
 
         log.info("Cycle %d: DUT back online in %.1f s", n, boot_t)
+        function.notify_dut(
+            args.ssh_user, args.host, args.port,
+            f"Reboot test in progress - cycle {n}/{total}. Do not use.",
+            dry_run=args.dry_run,
+        )
     else:
         rec["t_online"] = function.now_iso()
         log.info("Cycle %d: liveness check disabled", n)

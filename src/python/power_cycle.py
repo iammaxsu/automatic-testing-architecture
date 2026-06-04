@@ -180,6 +180,11 @@ def run_one_cycle(
             return rec
 
         log.info("Cycle %d: DUT alive in %.1f s", n, boot_t)
+        function.notify_dut(
+            args.ssh_user, args.host, args.port,
+            f"Power cycle test in progress - cycle {n}/{_total}. Do not use.",
+            dry_run=args.dry_run,
+        )
     else:
         log.info("Cycle %d: liveness check disabled — sleeping %d s for boot", n, 30)
         time.sleep(30)     # Blind wait when no-check is used
@@ -401,8 +406,8 @@ def main() -> int:
             detected = function.detect_dut_os(args.host, args.port, args.ssh_user)
             args.dut_os = detected if detected != "unknown" else config.DUT_OS
 
-    shutdown_cmd = args.ssh_cmd or config._OS_SHUTDOWN_CMD.get(
-                      args.dut_os, config._OS_SHUTDOWN_CMD["windows"])
+    shutdown_cmd = args.ssh_cmd or config._OS_SHUTDOWN_CMD.get(args.dut_os,
+                                                                "shutdown /s /t 5")
 
     # Shutdown coordinator (constructed once; reused every cycle)
     shutdown_coord = ShutdownCoordinator(

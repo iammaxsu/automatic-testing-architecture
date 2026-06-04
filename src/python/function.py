@@ -144,6 +144,46 @@ def init_dut(
     return False, "dead"
 
 
+
+# ---------- DUT notification ----------
+
+def notify_dut(
+    ssh_user: str,
+    host: str,
+    port: int,
+    message: str,
+    timeout: int = 5,
+    dry_run: bool = False,
+) -> None:
+    """Send a msg.exe popup to the DUT's interactive desktop after boot.
+
+    Called after each successful boot to alert anyone sitting at the machine
+    that a test is in progress.  Fails silently: msg.exe may be absent on some
+    Windows editions, or there may be no logged-in user — the test must not be
+    blocked by a notification failure.
+    """
+    if dry_run or not ssh_user or not host:
+        return
+    log = logging.getLogger("function")
+    try:
+        subprocess.run(
+            [
+                "ssh",
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "BatchMode=yes",
+                "-o", f"ConnectTimeout={timeout}",
+                "-p", str(port),
+                f"{ssh_user}@{host}",
+                f"msg * {message}",
+            ],
+            timeout=timeout + 2,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as exc:
+        log.debug("notify_dut: msg.exe failed (non-fatal): %s", exc)
+
+
 # ---------- Counter ----------
 
 def read_count(path: str = _COUNTER_FILE) -> int:
