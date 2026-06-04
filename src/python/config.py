@@ -78,9 +78,37 @@ SHUTDOWN_SSH_USER = ""      # CLI: --ssh-user   SSH login for graceful OS shutdo
                             #   ATX force-off remains the fallback in both modes.
 
 # ---------- Safety ----------
-MAX_CONSECUTIVE_FAILS = 3   # Abort the run after N consecutive failed cycles (0 = never)
+# Two-phase consecutive-failure policy (FWK030):
+#
+#   Phase 1 — EARLY: no PASS has occurred yet.
+#     If the first EARLY_FAIL_THRESHOLD consecutive cycles all fail, abort the
+#     run immediately. At this point failure is almost certainly a configuration
+#     error (wrong host, DUT offline, bad credentials) rather than a real
+#     hardware defect. Continuing would produce meaningless data.
+#     Set to 0 to disable early-abort entirely.
+#
+#   Phase 2 — MID-RUN: at least one PASS has occurred.
+#     Consecutive failures do NOT abort the run by default (MAX_CONSECUTIVE_FAILS = 0).
+#     A real hardware defect must be characterised across the full N cycles, not
+#     stopped mid-way; the failure-rate and distribution charts are only meaningful
+#     over the full run.
+#     Set MAX_CONSECUTIVE_FAILS > 0 only if you want a hard mid-run abort limit.
+#
+EARLY_FAIL_THRESHOLD  = 3   # CLI: --early-fail-threshold
+                             #   Abort before first PASS if N consecutive cycles fail.
+MAX_CONSECUTIVE_FAILS = 0   # CLI: --max-consecutive-fails
+                             #   Abort mid-run after N consecutive fails (0 = never).
+
 WARMUP_CYCLES         = 1   # CLI: --warmup   Uncounted init cycles before the counted
                             #   test (absorbs unknown initial DUT state). 0 = skip.
+
+# ---------- Reboot test init (reboot.py) ----------
+INIT_WAIT_SEC = 0           # CLI: --init-wait
+                            #   Seconds to wait for DUT to become SSH-reachable before
+                            #   starting the test. 0 = fail immediately if DUT is offline.
+                            #   Set > 0 when starting reboot.py right after power_cycle.py
+                            #   (DUT is powered off; needs time to be powered on and boot)
+                            #   or when DUT might still be at BIOS/POST.
 
 # ---------- Reboot test (reboot.py) ----------
 # ---------- DUT operating system ----------

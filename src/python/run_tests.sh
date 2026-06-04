@@ -40,6 +40,8 @@ Common options:
   --dut-os OS              auto|windows|linux     (default: auto)
   --boot-timeout N         max seconds to wait for DUT boot (default: 120)
   --off N                  off/settle wait between cycles in seconds
+  --early-fail-threshold N abort if first N cycles all fail before any PASS (default: 3)
+  --max-consecutive-fails N abort after N consecutive mid-run failures; 0 = never (default: 0)
   --no-check               disable liveness checks
   --dry-run                simulate without touching GPIO or SSH
   --new-session            force new sessions; do not resume incomplete ones
@@ -48,6 +50,11 @@ Power cycle only:
   --type ATX|AT            PSU type           (default: ATX)
   --pin N                  GPIO board pin number
   --on N                   DUT on-time per cycle in seconds
+  --leave-on               skip shutdown on last cycle; leave DUT on for reboot phase
+
+Reboot only:
+  --init-wait N            seconds to wait for DUT to come online before starting;
+                           use when running after power_cycle (default: 0)
 EOF
 }
 
@@ -65,9 +72,13 @@ OPT_ON=""
 OPT_OFF=""
 OPT_TYPE=""
 OPT_PIN=""
+OPT_EARLY_FAIL_THRESHOLD=""
+OPT_MAX_CONSEC_FAILS=""
 OPT_NO_CHECK=0
 OPT_DRY_RUN=0
 OPT_NEW_SESSION=0
+OPT_LEAVE_ON=0
+OPT_INIT_WAIT=""
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 
@@ -85,9 +96,13 @@ while [[ $# -gt 0 ]]; do
         --off)            OPT_OFF="$2";           shift 2 ;;
         --type)           OPT_TYPE="$2";          shift 2 ;;
         --pin)            OPT_PIN="$2";           shift 2 ;;
-        --no-check)       OPT_NO_CHECK=1;         shift   ;;
-        --dry-run)        OPT_DRY_RUN=1;          shift   ;;
-        --new-session)    OPT_NEW_SESSION=1;       shift   ;;
+        --early-fail-threshold)  OPT_EARLY_FAIL_THRESHOLD="$2"; shift 2 ;;
+        --max-consecutive-fails) OPT_MAX_CONSEC_FAILS="$2";    shift 2 ;;
+        --leave-on)       OPT_LEAVE_ON=1;          shift   ;;
+        --init-wait)      OPT_INIT_WAIT="$2";      shift 2 ;;
+        --no-check)       OPT_NO_CHECK=1;           shift   ;;
+        --dry-run)        OPT_DRY_RUN=1;            shift   ;;
+        --new-session)    OPT_NEW_SESSION=1;         shift   ;;
         --help|-h)        usage; exit 0 ;;
         *) echo "ERROR: Unknown option: $1" >&2; exit 1 ;;
     esac
@@ -104,15 +119,17 @@ fi
 # These arguments are forwarded to both sub-scripts when they apply.
 
 COMMON_ARGS=()
-[[ -n "$OPT_HOST"         ]] && COMMON_ARGS+=(--host         "$OPT_HOST")
-[[ -n "$OPT_SSH_USER"     ]] && COMMON_ARGS+=(--ssh-user     "$OPT_SSH_USER")
-[[ -n "$OPT_PORT"         ]] && COMMON_ARGS+=(--port         "$OPT_PORT")
-[[ -n "$OPT_DUT_OS"       ]] && COMMON_ARGS+=(--dut-os       "$OPT_DUT_OS")
-[[ -n "$OPT_BOOT_TIMEOUT" ]] && COMMON_ARGS+=(--boot-timeout "$OPT_BOOT_TIMEOUT")
-[[ -n "$OPT_OFF"          ]] && COMMON_ARGS+=(--off          "$OPT_OFF")
-[[ "$OPT_NO_CHECK"    -eq 1 ]] && COMMON_ARGS+=(--no-check)
-[[ "$OPT_DRY_RUN"     -eq 1 ]] && COMMON_ARGS+=(--dry-run)
-[[ "$OPT_NEW_SESSION" -eq 1 ]] && COMMON_ARGS+=(--new-session)
+[[ -n "$OPT_HOST"                ]] && COMMON_ARGS+=(--host                 "$OPT_HOST")
+[[ -n "$OPT_SSH_USER"            ]] && COMMON_ARGS+=(--ssh-user             "$OPT_SSH_USER")
+[[ -n "$OPT_PORT"                ]] && COMMON_ARGS+=(--port                 "$OPT_PORT")
+[[ -n "$OPT_DUT_OS"              ]] && COMMON_ARGS+=(--dut-os               "$OPT_DUT_OS")
+[[ -n "$OPT_BOOT_TIMEOUT"        ]] && COMMON_ARGS+=(--boot-timeout         "$OPT_BOOT_TIMEOUT")
+[[ -n "$OPT_OFF"                 ]] && COMMON_ARGS+=(--off                  "$OPT_OFF")
+[[ -n "$OPT_EARLY_FAIL_THRESHOLD" ]] && COMMON_ARGS+=(--early-fail-threshold "$OPT_EARLY_FAIL_THRESHOLD")
+[[ -n "$OPT_MAX_CONSEC_FAILS"    ]] && COMMON_ARGS+=(--max-consecutive-fails "$OPT_MAX_CONSEC_FAILS")
+[[ "$OPT_NO_CHECK"    -eq 1      ]] && COMMON_ARGS+=(--no-check)
+[[ "$OPT_DRY_RUN"     -eq 1      ]] && COMMON_ARGS+=(--dry-run)
+[[ "$OPT_NEW_SESSION" -eq 1      ]] && COMMON_ARGS+=(--new-session)
 
 # ── State tracking ────────────────────────────────────────────────────────────
 
@@ -133,6 +150,8 @@ if [[ "$OPT_POWER_CYCLES" -gt 0 ]]; then
     [[ -n "$OPT_ON"   ]] && PC_ARGS+=(--on   "$OPT_ON")
     [[ -n "$OPT_TYPE" ]] && PC_ARGS+=(--type "$OPT_TYPE")
     [[ -n "$OPT_PIN"  ]] && PC_ARGS+=(--pin  "$OPT_PIN")
+    # --leave-on: skip shutdown on last cycle so DUT is on when reboot phase starts
+    [[ "$OPT_LEAVE_ON" -eq 1 && "$OPT_REBOOT_CYCLES" -gt 0 ]] && PC_ARGS+=(--leave-on)
 
     set +e
     python3 "$SCRIPT_DIR/power_cycle.py" "${PC_ARGS[@]}"
@@ -154,6 +173,7 @@ if [[ "$OPT_REBOOT_CYCLES" -gt 0 ]]; then
 
     RB_OUT="$OPT_OUT/reboot"
     RB_ARGS=("${COMMON_ARGS[@]}" --cycles "$OPT_REBOOT_CYCLES" --out "$RB_OUT")
+    [[ -n "$OPT_INIT_WAIT" ]] && RB_ARGS+=(--init-wait "$OPT_INIT_WAIT")
 
     set +e
     python3 "$SCRIPT_DIR/reboot.py" "${RB_ARGS[@]}"

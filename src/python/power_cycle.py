@@ -104,10 +104,17 @@ def parse_args() -> argparse.Namespace:
                    dest="ssh_cmd",
                    help="Shutdown command to run over SSH "
                         "(default: OS-appropriate command selected by --dut-os)")
+    p.add_argument("--early-fail-threshold", default=config.EARLY_FAIL_THRESHOLD, type=int,
+                   dest="early_fail_threshold",
+                   help="Abort if first N cycles all fail before any PASS; 0 = never "
+                        "(default: %(default)s)")
     p.add_argument("--max-consecutive-fails", default=config.MAX_CONSECUTIVE_FAILS, type=int,
                    dest="max_consecutive_fails",
-                   help="Abort after N consecutive failed cycles; 0 = never abort "
+                   help="Abort after N consecutive mid-run failures; 0 = never abort "
                         "(default: %(default)s)")
+    p.add_argument("--leave-on", action="store_true", dest="leave_on",
+                   help="Skip the shutdown step on the last cycle, leaving the DUT powered on. "
+                        "Use before running reboot.py so it finds the DUT already online.")
     p.add_argument("--new-session", action="store_true", dest="new_session",
                    help="Force a new session even if an incomplete one exists (LOG023)")
     return p.parse_args()
@@ -123,6 +130,7 @@ def run_one_cycle(
     shutdown_coord: ShutdownCoordinator = None,
     total: int = 0,                 # total cycles in this phase (for log label)
     is_warmup: bool = False,
+    leave_on: bool = False,         # skip shutdown on this cycle (--leave-on on last cycle)
 ) -> dict:
     """Execute one power cycle and return a cycle-record dict."""
     rec = {
@@ -200,6 +208,11 @@ def run_one_cycle(
         return rec
 
     # ── 4. Shutdown (SSH -> ATX soft -> force-off -> time-based) ─────────
+    if leave_on:
+        log.info("Cycle %d: PASS (--leave-on: skipping shutdown, DUT left powered on)", n)
+        rec["verdict"] = PASS
+        return rec
+
     rec["t_power_off"] = function.now_iso()
     sd = shutdown_coord.request()
     rec["shutdown_method"]   = sd["method"]
@@ -432,6 +445,8 @@ def main() -> int:
         log.info("=== Warmup complete — starting counted cycle(s) ===")
 
     consecutive_fails = 0
+    has_had_success   = any(c.get("verdict") == PASS
+                            for c in result.get("cycles", []))
     last_n = start_n - 1
 
     try:
@@ -440,28 +455,36 @@ def main() -> int:
                 log.info("Stop requested — exiting loop after cycle %d", n - 1)
                 break
 
-            rec = run_one_cycle(n, args, relay, checker, shutdown_coord, total=m)
+            is_last = (n == m) and not _stop_requested
+            rec = run_one_cycle(n, args, relay, checker, shutdown_coord, total=m,
+                                leave_on=(args.leave_on and is_last))
             result["cycles"].append(rec)
             last_n = n
 
-            # Track consecutive failures
             if rec["verdict"] == PASS:
+                has_had_success   = True
                 consecutive_fails = 0
             else:
                 consecutive_fails += 1
-                if args.max_consecutive_fails > 0:
-                    log.warning(
-                        "Consecutive fails: %d / %d",
-                        consecutive_fails,
-                        args.max_consecutive_fails,
-                    )
-                if (args.max_consecutive_fails > 0
-                        and consecutive_fails >= args.max_consecutive_fails):
-                    log.error(
-                        "Reached %d consecutive failures — aborting test.",
-                        args.max_consecutive_fails,
-                    )
-                    break
+                if not has_had_success:
+                    # Early phase: no PASS yet — likely a config/setup problem.
+                    if (args.early_fail_threshold > 0
+                            and consecutive_fails >= args.early_fail_threshold):
+                        log.error(
+                            "First %d cycles all failed before any PASS — aborting. "
+                            "Check relay wiring, DUT host, and GPIO pin.",
+                            args.early_fail_threshold)
+                        break
+                else:
+                    # Mid-run: hardware under test — only abort if explicitly configured.
+                    if (args.max_consecutive_fails > 0
+                            and consecutive_fails >= args.max_consecutive_fails):
+                        log.warning("Consecutive fails: %d / %d",
+                                    consecutive_fails, args.max_consecutive_fails)
+                        log.error(
+                            "Reached %d consecutive mid-run failures — aborting test.",
+                            args.max_consecutive_fails)
+                        break
 
             # Persist JSON after every cycle (atomic write)
             result["summary"] = _build_summary(result["cycles"], m)

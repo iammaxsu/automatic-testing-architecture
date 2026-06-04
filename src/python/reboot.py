@@ -86,10 +86,18 @@ def parse_args() -> argparse.Namespace:
                    dest="ssh_cmd",
                    help="Reboot command to run over SSH "
                         "(default: OS-appropriate command selected by --dut-os)")
+    p.add_argument("--early-fail-threshold", default=config.EARLY_FAIL_THRESHOLD, type=int,
+                   dest="early_fail_threshold",
+                   help="Abort if first N cycles all fail before any PASS; 0 = never "
+                        "(default: %(default)s)")
     p.add_argument("--max-consecutive-fails", default=config.MAX_CONSECUTIVE_FAILS, type=int,
                    dest="max_consecutive_fails",
-                   help="Abort after N consecutive failed cycles; 0 = never abort "
+                   help="Abort after N consecutive mid-run failures; 0 = never abort "
                         "(default: %(default)s)")
+    p.add_argument("--init-wait",     default=config.INIT_WAIT_SEC, type=int,
+                   dest="init_wait",
+                   help="Seconds to wait for DUT to become reachable before starting; "
+                        "0 = fail immediately if offline (default: %(default)s)")
     p.add_argument("--new-session",   action="store_true", dest="new_session",
                    help="Force a new session even if an incomplete one exists (LOG023)")
     return p.parse_args()
@@ -343,22 +351,36 @@ def main() -> int:
     elif not args.host:
         log.warning("DUT_HOST is not set — liveness checks disabled")
 
-    # ── Pre-start DUT liveness check ─────────────────────────────────────────────
-    # Reboot test requires the DUT to be reachable BEFORE the first cycle.
-    # Fail immediately with a clear diagnostic rather than burning
-    # --max-consecutive-fails cycles on SSH_ERROR.
+    # ── Pre-start DUT liveness check (FWK030 / PWR013) ───────────────────────────
+    # Reboot test requires the DUT to be SSH-reachable before the first cycle.
+    # If the DUT is offline, either fail immediately (--init-wait 0) or wait up
+    # to --init-wait seconds for it to come online (handles post-power_cycle boot
+    # and DUT stuck at BIOS/POST).
     if checker and not args.dry_run and not resuming:
         log.info("Pre-start check: probing DUT at %s:%d ...", args.host, args.port)
-        if not checker.is_alive():
+        if checker.is_alive():
+            log.info("Pre-start check: DUT is reachable — starting test.")
+        elif args.init_wait > 0:
+            log.info("DUT is not yet reachable — waiting up to %ds for it to come online "
+                     "(--init-wait %d) ...", args.init_wait, args.init_wait)
+            alive, wait_t = checker.wait_until_alive(args.init_wait)
+            if alive:
+                log.info("DUT came online after %.1f s — starting test.", wait_t)
+            else:
+                log.error("DUT did not come online within %ds — cannot start reboot test.",
+                          args.init_wait)
+                log.error("Check that the DUT is powered on and SSH is running.")
+                return 1
+        else:
             log.error("DUT is not reachable at %s:%d — cannot start reboot test.",
                       args.host, args.port)
             log.error("Reboot test requires the DUT to be online before the first cycle.")
             log.error("Common causes:")
-            log.error("  * Ran after power_cycle test: power_cycle ends with the DUT powered OFF.")
-            log.error("    Power the DUT on manually, then re-run reboot.py.")
+            log.error("  * Ran after power_cycle: power_cycle ends with the DUT powered OFF.")
+            log.error("    Use --init-wait 120 to wait for DUT to boot, or power it on first.")
+            log.error("  * DUT still at BIOS/POST — use --init-wait to wait for full boot.")
             log.error("  * Wrong --host / --port, or SSH not running on the DUT.")
             return 1
-        log.info("Pre-start check: DUT is reachable — starting test.")
 
     if resuming:
         result = function.read_json(str(json_path)) or _new_result(args, session_id, m)
@@ -369,6 +391,8 @@ def main() -> int:
         result = _new_result(args, session_id, m)
 
     consecutive_fails = 0
+    has_had_success   = any(c.get("verdict") == PASS
+                            for c in result.get("cycles", []))
     last_n = start_n - 1
 
     for n in range(start_n, m + 1):
@@ -381,14 +405,26 @@ def main() -> int:
         last_n = n
 
         if rec["verdict"] == PASS:
+            has_had_success   = True
             consecutive_fails = 0
         else:
             consecutive_fails += 1
-            if args.max_consecutive_fails > 0:
-                log.warning("Consecutive fails: %d / %d",
-                            consecutive_fails, args.max_consecutive_fails)
-                if consecutive_fails >= args.max_consecutive_fails:
-                    log.error("Reached %d consecutive failures — aborting.",
+            if not has_had_success:
+                # Early phase: no PASS yet — likely a config/connectivity problem.
+                if (args.early_fail_threshold > 0
+                        and consecutive_fails >= args.early_fail_threshold):
+                    log.error(
+                        "First %d cycles all failed before any PASS — aborting. "
+                        "Check host, SSH credentials, and DUT state.",
+                        args.early_fail_threshold)
+                    break
+            else:
+                # Mid-run phase: hardware under test — only abort if explicitly configured.
+                if (args.max_consecutive_fails > 0
+                        and consecutive_fails >= args.max_consecutive_fails):
+                    log.warning("Consecutive fails: %d / %d",
+                                consecutive_fails, args.max_consecutive_fails)
+                    log.error("Reached %d consecutive mid-run failures — aborting.",
                               args.max_consecutive_fails)
                     break
 
