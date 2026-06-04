@@ -207,16 +207,17 @@ def notify_dut(
         attempt = 0
         while time.monotonic() < deadline:
             rc, out = _ssh("query session")
+            log.debug("notify_dut: query session rc=%d out=%r", rc, out)
             if rc == 0 and "Active" in out:
                 _ssh(f"msg * {message}")
-                log.debug("notify_dut: msg sent (attempt %d)", attempt + 1)
+                log.info("notify_dut: msg sent on attempt %d", attempt + 1)
                 return
             attempt += 1
-            log.debug("notify_dut: no Active session yet (attempt %d), retry in %.0fs",
-                      attempt, retry_interval)
+            log.info("notify_dut: no Active session yet (attempt %d/%d), retry in %.0fs",
+                     attempt, int(max_wait / retry_interval), retry_interval)
             time.sleep(min(retry_interval, deadline - time.monotonic()))
 
-        log.debug("notify_dut: no Active session within %ds — skipping", max_wait)
+        log.warning("notify_dut: no Active session within %ds — notification skipped", max_wait)
 
     t = threading.Thread(target=_worker, daemon=True, name="notify-dut")
     t.start()
