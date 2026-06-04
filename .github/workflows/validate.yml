@@ -1,0 +1,48 @@
+name: validate
+
+# Fast, hardware-free validation that runs on GitHub's hosted runners.
+# Catches broken Python/shell before code ever reaches the Pi or vserver.
+# No self-hosted runner and no DUT are required.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compile all Python sources
+        run: |
+          cd src/python
+          python -m py_compile *.py
+
+      - name: Shell syntax check
+        run: |
+          bash -n src/python/run_tests.sh
+          bash -n src/python/stop_tests.sh
+          for f in src/bash-shell/*.sh; do
+            echo "checking $f"
+            bash -n "$f"
+          done
+
+      - name: Dry-run the composite runner (no hardware, no SSH)
+        run: |
+          src/python/run_tests.sh \
+            --host 10.0.0.137 --ssh-user ci \
+            --power-cycles 0 --reboot-cycles 2 \
+            --no-check --dry-run \
+            --out "$GITHUB_WORKSPACE/ci-dryrun"
+
+      - name: Confirm STATUS.md is regenerated from the canonical sources (FWK028)
+        run: |
+          python scripts/stats.py > /tmp/STATUS.md
+          if ! diff -q STATUS.md /tmp/STATUS.md >/dev/null; then
+            echo "::warning::STATUS.md differs from scripts/stats.py output — run 'make stats' and commit."
+          fi
