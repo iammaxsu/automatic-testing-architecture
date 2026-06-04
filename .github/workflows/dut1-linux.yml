@@ -1,0 +1,70 @@
+name: DUT1 Linux tests (vserver/ansible)
+
+# Runs bash-shell test scripts against DUT1 (Linux) via Ansible, orchestrated
+# from the vserver. Requires a self-hosted runner on the vserver labelled "vserver".
+#
+# Flow:
+#   1. Sync updated src/bash-shell/*.sh -> vserver's scripts/ dir
+#   2. ansible-playbook deploy   (copies scripts to DUT1)
+#   3. ansible-playbook run      (executes selected test on DUT1, fetches logs)
+#   4. Upload fetched logs as a build artifact
+#
+# No GitHub Secrets are needed: the runner uses the vserver's local ansible.cfg
+# and existing SSH keys.
+
+on:
+  workflow_dispatch:
+    inputs:
+      test:
+        description: "Test to run"
+        type: choice
+        options: [disk, net, both]
+        default: disk
+      loops:
+        description: "Number of test loops (bLoops)"
+        default: "1"
+
+concurrency:
+  group: dut1-hardware
+  cancel-in-progress: false
+
+env:
+  ANSIBLE_DIR: /home/maxsu/Downloads/test-automation_ansible
+
+jobs:
+  run:
+    runs-on: [self-hosted, vserver]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync updated bash scripts to ansible scripts dir
+        # rsync without --delete: test_warning_daemon.sh and other vserver-local
+        # scripts are left untouched.
+        run: |
+          rsync -av src/bash-shell/*.sh "$ANSIBLE_DIR/scripts/"
+
+      - name: Deploy scripts to DUT1
+        working-directory: ${{ env.ANSIBLE_DIR }}
+        run: ansible-playbook playbooks/01-deploy.yml
+
+      - name: Run disk test
+        if: inputs.test == 'disk' || inputs.test == 'both'
+        working-directory: ${{ env.ANSIBLE_DIR }}
+        run: |
+          ansible-playbook playbooks/02-run-disk-test.yml \
+            -e bLoops=${{ inputs.loops }}
+
+      - name: Run net test
+        if: inputs.test == 'net' || inputs.test == 'both'
+        working-directory: ${{ env.ANSIBLE_DIR }}
+        run: |
+          ansible-playbook playbooks/03-run-net-test.yml \
+            -e bLoops=${{ inputs.loops }}
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dut1-logs-${{ inputs.test }}
+          path: /home/maxsu/Downloads/test-automation_ansible/**/*.log
+          if-no-files-found: warn

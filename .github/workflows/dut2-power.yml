@@ -1,0 +1,58 @@
+name: DUT2 power tests (Pi)
+
+# Runs the GPIO-driven power_cycle / reboot endurance tests on DUT2 (Windows),
+# orchestrated by the Pi. Requires a self-hosted runner on the Pi labelled "pi".
+#
+# Manual trigger only (Actions tab -> "Run workflow"). The DUT is a single
+# physical resource, so the concurrency group serialises runs: a second
+# dispatch waits for the first to finish rather than fighting over the relay.
+#
+# No GitHub Secret is needed: the Pi already holds the SSH key for DUT2 and
+# drives the relay over local GPIO.
+
+on:
+  workflow_dispatch:
+    inputs:
+      power_cycles:
+        description: "power_cycle iterations (0 = skip phase)"
+        default: "10"
+      reboot_cycles:
+        description: "reboot iterations (0 = skip phase)"
+        default: "10"
+      dut_host:
+        description: "DUT2 IP / hostname"
+        default: "10.0.0.137"
+      ssh_user:
+        description: "SSH user on DUT2 (graceful shutdown / reboot)"
+        default: "nimitz4"
+      psu_type:
+        description: "PSU type: ATX or AT"
+        default: "ATX"
+
+concurrency:
+  group: dut2-hardware
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: [self-hosted, pi]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run composite power/reboot test
+        run: |
+          src/python/run_tests.sh \
+            --host "${{ inputs.dut_host }}" \
+            --ssh-user "${{ inputs.ssh_user }}" \
+            --type "${{ inputs.psu_type }}" \
+            --power-cycles "${{ inputs.power_cycles }}" \
+            --reboot-cycles "${{ inputs.reboot_cycles }}" \
+            --out "$GITHUB_WORKSPACE/logs"
+
+      - name: Upload logs, result.json and HTML reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dut2-power-logs
+          path: logs/**
+          if-no-files-found: warn
