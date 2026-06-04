@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import subprocess
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -152,36 +153,64 @@ def notify_dut(
     host: str,
     port: int,
     message: str,
-    timeout: int = 5,
+    ssh_timeout: int = 5,
     dry_run: bool = False,
+    max_wait: int = 60,
+    retry_interval: float = 10.0,
 ) -> None:
     """Send a msg.exe popup to the DUT's interactive desktop after boot.
 
-    Called after each successful boot to alert anyone sitting at the machine
-    that a test is in progress.  Fails silently: msg.exe may be absent on some
-    Windows editions, or there may be no logged-in user — the test must not be
-    blocked by a notification failure.
+    Runs in a background daemon thread so the test cycle is never blocked.
+    Before sending msg.exe, polls 'query session' until an Active desktop
+    session exists (up to max_wait seconds).  This handles the race where
+    sshd starts before the interactive logon session is ready.
+
+    Fails silently throughout — msg.exe may be absent (Windows Home) or
+    no user may be logged in.
     """
     if dry_run or not ssh_user or not host:
         return
-    log = logging.getLogger("function")
-    try:
-        subprocess.run(
-            [
-                "ssh",
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "BatchMode=yes",
-                "-o", f"ConnectTimeout={timeout}",
-                "-p", str(port),
-                f"{ssh_user}@{host}",
-                f"msg * {message}",
-            ],
-            timeout=timeout + 2,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except Exception as exc:
-        log.debug("notify_dut: msg.exe failed (non-fatal): %s", exc)
+
+    def _worker():
+        log = logging.getLogger("function")
+
+        def _ssh(cmd):
+            try:
+                r = subprocess.run(
+                    [
+                        "ssh",
+                        "-o", "StrictHostKeyChecking=no",
+                        "-o", "BatchMode=yes",
+                        "-o", f"ConnectTimeout={ssh_timeout}",
+                        "-p", str(port),
+                        f"{ssh_user}@{host}",
+                        cmd,
+                    ],
+                    timeout=ssh_timeout + 2,
+                    capture_output=True,
+                    text=True,
+                )
+                return r.returncode, r.stdout
+            except Exception as exc:
+                log.debug("notify_dut SSH error: %s", exc)
+                return -1, ""
+
+        deadline = time.monotonic() + max_wait
+        attempt = 0
+        while time.monotonic() < deadline:
+            rc, out = _ssh("query session")
+            if rc == 0 and "Active" in out:
+                _ssh(f"msg * {message}")
+                log.debug("notify_dut: msg sent (attempt %d)", attempt + 1)
+                return
+            attempt += 1
+            log.debug("notify_dut: no Active session yet (attempt %d), retry in %.0fs",
+                      attempt, retry_interval)
+            time.sleep(min(retry_interval, deadline - time.monotonic()))
+
+        log.debug("notify_dut: no Active session within %ds — skipping", max_wait)
+
+    threading.Thread(target=_worker, daemon=True, name="notify-dut").start()
 
 
 # ---------- Counter ----------
