@@ -157,19 +157,26 @@ def notify_dut(
     dry_run: bool = False,
     max_wait: int = 60,
     retry_interval: float = 10.0,
-) -> None:
+) -> threading.Thread | None:
     """Send a msg.exe popup to the DUT's interactive desktop after boot.
 
-    Runs in a background daemon thread so the test cycle is never blocked.
+    Runs in a background daemon thread.  Returns the Thread object so the
+    caller can optionally join() it before starting the next action.
+
+    power_cycle.py: ignore the return value — ON_TIME (90 s) provides
+      enough buffer; no need to block the test.
+    reboot.py: join(timeout=N) before the next reboot command, otherwise
+      the shutdown races ahead of the notification delivery.
+
     Before sending msg.exe, polls 'query session' until an Active desktop
     session exists (up to max_wait seconds).  This handles the race where
     sshd starts before the interactive logon session is ready.
 
     Fails silently throughout — msg.exe may be absent (Windows Home) or
-    no user may be logged in.
+    no user may be logged in.  Returns None when dry_run or no ssh_user.
     """
     if dry_run or not ssh_user or not host:
-        return
+        return None
 
     def _worker():
         log = logging.getLogger("function")
@@ -210,7 +217,9 @@ def notify_dut(
 
         log.debug("notify_dut: no Active session within %ds — skipping", max_wait)
 
-    threading.Thread(target=_worker, daemon=True, name="notify-dut").start()
+    t = threading.Thread(target=_worker, daemon=True, name="notify-dut")
+    t.start()
+    return t
 
 
 # ---------- Counter ----------
