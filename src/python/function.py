@@ -1,5 +1,4 @@
 # function.py — shared helpers (counter, timing, logging setup)
-from __future__ import annotations
 import json
 import logging
 import os
@@ -8,6 +7,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 _COUNTER_FILE = "counter.log"
 
@@ -158,7 +158,7 @@ def notify_dut(
     dry_run: bool = False,
     max_wait: int = 60,
     retry_interval: float = 10.0,
-) -> threading.Thread | None:
+) -> Optional[threading.Thread]:
     """Send a msg.exe popup to the DUT's interactive desktop after boot.
 
     Runs in a background daemon thread.  Returns the Thread object so the
