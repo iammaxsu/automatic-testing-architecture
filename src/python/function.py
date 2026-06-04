@@ -1,4 +1,5 @@
 # function.py — shared helpers (counter, timing, logging setup)
+from __future__ import annotations
 import json
 import logging
 import os
