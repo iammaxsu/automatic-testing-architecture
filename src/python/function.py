@@ -46,6 +46,104 @@ def detect_dut_os(host: str, port: int, ssh_user: str, timeout: int = 10) -> str
         return "unknown"
 
 
+# ---------- DUT initialisation (FWK031) ----------
+
+def init_dut(
+    checker,                       # LivenessChecker | None
+    relay,                         # RelayController | None
+    power_type: str = "ATX",       # "ATX" or "AT"
+    *,
+    boot_timeout: float = 120,
+    off_time: float = 60,
+    short_press_sec: float = 0.5,
+    force_off_sec: float = 5.0,
+    init_wait: float = 0,
+    dry_run: bool = False,
+) -> tuple:
+    """Bring the DUT to a testable (alive) state before a test begins (FWK031).
+
+    Escalation chain — stops at the first step that leaves the DUT responding:
+
+      Step 1  is_up() (ping OR SSH)        → already responding → done.
+      Step 2  GPIO power-on press          → handles "DUT is OFF" (common after
+                                             power_cycle, which ends powered off).
+      Step 3  GPIO force-off + power-on     → handles "DUT is HUNG, not just off".
+              (force-off → wait off_time → power-on)
+
+    No SSH is used here: a DUT that fails Step 1 responds to neither ping nor
+    SSH, so an SSH reboot could not work. Recovery is purely via GPIO/relay.
+
+    When no relay is available (relay is None — GPIO pin unset), the only
+    remedy is to wait up to init_wait seconds for a DUT that is powered but
+    still booting (BIOS/POST). init_wait == 0 means fail immediately.
+
+    Returns (ok, method) where method is one of:
+      "no-check", "dry-run", "already-up", "wait", "power-on", "power-cycle",
+      "no-relay", "failed-wait", "dead".
+    """
+    log = logging.getLogger("function")
+
+    if dry_run:
+        log.info("init_dut: [DRY-RUN] skipping DUT state check/recovery")
+        return True, "dry-run"
+
+    if checker is None:
+        log.info("init_dut: liveness checks disabled — assuming DUT is ready")
+        return True, "no-check"
+
+    # ── Step 1: is the DUT already responding? ────────────────────────────────
+    log.info("init_dut: checking whether DUT is already up (ping OR SSH) ...")
+    if checker.is_up():
+        log.info("init_dut: DUT is responding — already in a testable state")
+        return True, "already-up"
+
+    # DUT responds to neither ping nor SSH: it is off or hung.
+    if relay is None:
+        if init_wait > 0:
+            log.info("init_dut: DUT offline and no relay configured — waiting up to "
+                     "%ds in case it is still booting ...", init_wait)
+            ok, _ = checker.wait_until_alive(init_wait)
+            if ok:
+                log.info("init_dut: DUT came online while waiting")
+                return True, "wait"
+            log.error("init_dut: DUT still offline after %ds and no relay to recover it",
+                      init_wait)
+            return False, "failed-wait"
+        log.error("init_dut: DUT offline, no relay configured (GPIO pin unset), and "
+                  "init_wait is 0 — cannot recover.")
+        return False, "no-relay"
+
+    # ── Step 2: gentle — power-on press (DUT is OFF) ──────────────────────────
+    log.info("init_dut: DUT offline — issuing power-on (%s) ...", power_type)
+    if power_type == "ATX":
+        relay.atx_press(short_press_sec)
+    else:
+        relay.at_power_on()
+    ok, t = checker.wait_until_alive(boot_timeout)
+    if ok:
+        log.info("init_dut: DUT came up %.1fs after power-on press", t)
+        return True, "power-on"
+
+    # ── Step 3: hard — force a full power cycle (DUT is HUNG) ─────────────────
+    log.warning("init_dut: DUT still offline after power-on — forcing a full power cycle")
+    if power_type == "ATX":
+        relay.atx_force_off(force_off_sec)
+    else:
+        relay.at_power_off()
+    time.sleep(off_time)
+    if power_type == "ATX":
+        relay.atx_press(short_press_sec)
+    else:
+        relay.at_power_on()
+    ok, t = checker.wait_until_alive(boot_timeout)
+    if ok:
+        log.info("init_dut: DUT came up %.1fs after forced power cycle", t)
+        return True, "power-cycle"
+
+    log.error("init_dut: DUT did not come up after a forced power cycle — DUT may be dead")
+    return False, "dead"
+
+
 # ---------- Counter ----------
 
 def read_count(path: str = _COUNTER_FILE) -> int:

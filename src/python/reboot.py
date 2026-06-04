@@ -17,17 +17,18 @@
 #   --ssh-cmd COMMAND         reboot command to run over SSH (default: "sudo reboot")
 #   --new-session             force a new session instead of resuming an incomplete one (LOG023)
 #
-# Init phase options (PWR013) — normalise DUT state before the first cycle:
-#   --pin     N               GPIO BOARD pin for init-phase power-on (default: None = disabled)
-#   --type    ATX|AT          PSU type used for init-phase power-on (default: from config.py)
-#   --init-wait SECONDS       seconds to poll SSH when DUT is physically ON but not yet
-#                             reachable (BIOS/POST, slow boot); 0 = fail immediately
+# Init phase options (FWK031/PWR013) — normalise DUT state before the first cycle:
+#   --pin     N               GPIO BOARD pin for power recovery (default: config.GPIO_PIN)
+#   --type    ATX|AT          PSU type for power recovery (default: from config.py)
+#   --init-wait SECONDS       GPIO-unavailable fallback only: wait for a powered-but-
+#                             booting DUT; 0 = fail immediately
 #
-# Init behaviour:
-#   DUT online on start              → begin first cycle immediately
-#   DUT offline + --pin set          → GPIO power-on press, wait up to --boot-timeout
-#   DUT offline + --init-wait N      → poll SSH for up to N seconds (DUT physically on)
-#   DUT offline, no --pin, no wait   → abort with diagnostic error
+# Init behaviour (function.init_dut escalation chain):
+#   DUT responds (ping OR SSH)       → begin first cycle immediately
+#   DUT offline                      → GPIO power-on press, wait up to --boot-timeout
+#   still offline                    → GPIO force-off + power-on (DUT was hung)
+#   still offline                    → abort (DUT may be dead)
+#   no GPIO pin + --init-wait N      → wait up to N s for a still-booting DUT
 #
 # Verdicts per cycle:
 #   PASS      — DUT came back online within BOOT_TIMEOUT after reboot command
@@ -107,20 +108,18 @@ def parse_args() -> argparse.Namespace:
                    dest="max_consecutive_fails",
                    help="Abort after N consecutive mid-run failures; 0 = never abort "
                         "(default: %(default)s)")
-    # ── Init phase (PWR013): normalise DUT state before the first cycle ────────
-    p.add_argument("--pin",       default=config.INIT_GPIO_PIN, type=int,
-                   help="GPIO BOARD pin for init-phase power-on. "
-                        "When DUT is offline at start, issues one power-on press and "
-                        "waits up to --boot-timeout for SSH. "
-                        "Default: None (no GPIO init).")
+    # ── Init phase (FWK031/PWR013): normalise DUT state before the first cycle ─
+    p.add_argument("--pin",       default=config.GPIO_PIN, type=int,
+                   help="GPIO BOARD pin for init-phase power recovery (default: %(default)s). "
+                        "If the DUT is offline at start, init_dut() uses this pin to power "
+                        "it on (and, if needed, force a power cycle). Same pin as power_cycle.")
     p.add_argument("--type",      default=config.POWER_TYPE, choices=["ATX", "AT"],
-                   help="PSU type for init-phase power-on (ATX = momentary press, "
+                   help="PSU type for init-phase power recovery (ATX = momentary press, "
                         "AT = maintained relay). Default: %(default)s")
     p.add_argument("--init-wait", default=config.INIT_WAIT_SEC, type=int,
                    dest="init_wait",
-                   help="Seconds to poll SSH when DUT is physically ON but not yet "
-                        "reachable (BIOS/POST, slow boot). 0 = fail immediately if offline. "
-                        "Ignored when --pin is set (GPIO power-on uses --boot-timeout instead). "
+                   help="Fallback only when GPIO is unavailable: seconds to wait for a "
+                        "powered-but-still-booting DUT. 0 = fail immediately. "
                         "(default: %(default)s)")
     p.add_argument("--new-session",   action="store_true", dest="new_session",
                    help="Force a new session even if an incomplete one exists (LOG023)")
@@ -357,7 +356,7 @@ def main() -> int:
     log.info("  Boot TO : %ds",  args.boot_timeout)
     log.info("  SSH user: %s",   args.ssh_user or "(none)")
     log.info("  SSH cmd : %s",   args.ssh_cmd)
-    log.info("  Init    : pin=%s  type=%s  init-wait=%ds",
+    log.info("  Init    : pin=%s  type=%s  init-wait=%ds (GPIO fallback)",
              args.pin if args.pin else "None", args.type, args.init_wait)
     log.info("  Log     : %s",   log_path)
     log.info("  JSON    : %s",   json_path)
@@ -377,60 +376,37 @@ def main() -> int:
     elif not args.host:
         log.warning("DUT_HOST is not set — liveness checks disabled")
 
-    # ── Pre-start DUT state normalisation (PWR013) ───────────────────────────────
-    # Reboot test requires SSH to be reachable before the first cycle.
-    # Three cases are handled:
-    #   1. DUT already online    → proceed immediately.
-    #   2. DUT offline + --pin   → GPIO power-on press, wait up to --boot-timeout.
-    #   3. DUT offline + --init-wait > 0 → poll SSH (DUT physically on, not yet ready).
-    #   4. DUT offline, no remedy → abort with diagnostic.
-    if checker and not args.dry_run and not resuming:
-        log.info("Init: probing DUT at %s:%d ...", args.host, args.port)
-        if checker.is_alive():
-            log.info("Init: DUT is reachable — starting test.")
-        elif args.pin:
-            log.info("Init: DUT is offline — issuing GPIO power-on (pin=%d type=%s) ...",
-                     args.pin, args.type)
-            _relay = RelayController(
+    # ── Init: bring DUT to a testable state before the first cycle (FWK031) ──────
+    # init_dut() escalates only as far as needed: already-up → power-on press →
+    # forced power cycle. Skipped when resuming (DUT state already established).
+    if not resuming:
+        relay = None
+        if args.pin:
+            relay = RelayController(
                 pin=args.pin,
                 active_low=config.RELAY_ACTIVE_LOW,
                 mode=config.GPIO_MODE,
                 dry_run=args.dry_run,
             )
-            try:
-                if args.type == "ATX":
-                    _relay.atx_press(config.ATX_SHORT_PRESS_SEC)
-                else:
-                    _relay.at_power_on()
-            finally:
-                _relay.cleanup()
-            log.info("Init: power-on sent — waiting up to %ds for DUT to boot ...",
-                     args.boot_timeout)
-            alive, wait_t = checker.wait_until_alive(args.boot_timeout)
-            if alive:
-                log.info("Init: DUT came online after %.1f s — starting test.", wait_t)
-            else:
-                log.error("Init: DUT did not come online within %ds after GPIO power-on.",
-                          args.boot_timeout)
-                log.error("Check --pin (%d), --type (%s), and DUT hardware.", args.pin, args.type)
-                return 1
-        elif args.init_wait > 0:
-            log.info("Init: DUT not yet reachable — waiting up to %ds (BIOS/POST/slow boot) ...",
-                     args.init_wait)
-            alive, wait_t = checker.wait_until_alive(args.init_wait)
-            if alive:
-                log.info("Init: DUT came online after %.1f s — starting test.", wait_t)
-            else:
-                log.error("Init: DUT did not come online within %ds.", args.init_wait)
-                log.error("Check that the DUT is powered on and SSH is running.")
-                return 1
-        else:
-            log.error("Init: DUT is not reachable at %s:%d — cannot start reboot test.",
-                      args.host, args.port)
-            log.error("Options:")
-            log.error("  --pin N [--type ATX|AT]   GPIO power-on (DUT is physically OFF)")
-            log.error("  --init-wait N              poll SSH up to N s (DUT is ON, SSH not ready)")
+        try:
+            ok, method = function.init_dut(
+                checker,
+                relay,
+                args.type,
+                boot_timeout=args.boot_timeout,
+                off_time=args.off_time,
+                short_press_sec=config.ATX_SHORT_PRESS_SEC,
+                force_off_sec=config.ATX_LONG_PRESS_SEC,
+                init_wait=args.init_wait,
+                dry_run=args.dry_run,
+            )
+        finally:
+            if relay is not None:
+                relay.cleanup()
+        if not ok:
+            log.error("Init failed (method=%s) — cannot start reboot test.", method)
             return 1
+        log.info("Init OK (method=%s) — starting test.", method)
 
     if resuming:
         result = function.read_json(str(json_path)) or _new_result(args, session_id, m)

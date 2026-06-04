@@ -46,19 +46,19 @@ Common options:
   --dry-run                simulate without touching GPIO or SSH
   --new-session            force new sessions; do not resume incomplete ones
 
-Power cycle / reboot init (GPIO):
-  --type ATX|AT            PSU type (default: ATX)
-  --pin N                  GPIO board pin number (used by power_cycle for all cycles;
-                           used by reboot for the init power-on if DUT is offline)
+GPIO / power control (both phases):
+  --type ATX|AT            PSU type (default: from config.py)
+  --pin N                  GPIO board pin (default: config.GPIO_PIN). Used by
+                           power_cycle for every cycle, and by reboot's init to
+                           recover the DUT if it is offline at start (FWK031).
 
 Power cycle only:
   --on N                   DUT on-time per cycle in seconds
 
 Reboot init only:
-  --init-wait N            seconds to poll SSH when DUT is physically ON but SSH not
-                           ready (BIOS/POST, slow boot); 0 = fail immediately (default: 0)
-                           Note: when --pin is set, --boot-timeout governs the GPIO
-                           power-on wait; --init-wait is for the no-GPIO SSH-poll case.
+  --init-wait N            GPIO-unavailable fallback: seconds to wait for a powered-
+                           but-still-booting DUT; 0 = fail immediately (default: 0).
+                           Ignored when a GPIO pin is available (GPIO recovery is used).
 EOF
 }
 

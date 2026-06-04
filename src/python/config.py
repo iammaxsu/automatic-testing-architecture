@@ -102,24 +102,20 @@ MAX_CONSECUTIVE_FAILS = 0   # CLI: --max-consecutive-fails
 WARMUP_CYCLES         = 1   # CLI: --warmup   Uncounted init cycles before the counted
                             #   test (absorbs unknown initial DUT state). 0 = skip.
 
-# ---------- Reboot test init (reboot.py) ----------
-# Two situations are handled (PWR013):
-#   1. DUT is physically ON but SSH not yet ready (BIOS/POST, slow boot):
-#      --init-wait N  polls SSH for up to N seconds before the first cycle.
-#   2. DUT is physically OFF (e.g. after power_cycle.py):
-#      --pin N + --type ATX|AT  issues one power-on press, then waits up to
-#      --boot-timeout seconds for SSH to become reachable.
-#      INIT_GPIO_PIN = None means no GPIO init; fail immediately if DUT is offline.
-INIT_GPIO_PIN = None        # CLI: --pin   GPIO BOARD pin for init-phase power-on.
-                            #   None = no GPIO init (fail if DUT offline and no --init-wait).
-                            #   Set to the same pin used in power_cycle.py when running
-                            #   the composite test (power_cycle → reboot).
+# ---------- DUT init / state normalisation (FWK031) ----------
+# Before its first cycle, each test brings the DUT to a testable (alive) state
+# via function.init_dut(), which escalates only as far as needed:
+#   Step 1  DUT responds to ping OR SSH      → already testable, no action.
+#   Step 2  GPIO power-on press (uses GPIO_PIN / POWER_TYPE) → handles DUT-is-OFF.
+#   Step 3  GPIO force-off + power-on        → handles DUT-is-HUNG.
+# The GPIO pin for recovery is GPIO_PIN (above) — the same relay used by
+# power_cycle.py. No separate init pin is needed.
 INIT_WAIT_SEC = 0           # CLI: --init-wait
-                            #   Seconds to wait (SSH poll) for DUT to become reachable before
-                            #   starting. 0 = fail immediately if DUT is offline.
-                            #   Use when DUT is physically ON but SSH not ready (BIOS/POST).
-                            #   When --pin is set, --boot-timeout governs the GPIO power-on
-                            #   wait instead; --init-wait is for the SSH-only case.
+                            #   GPIO-unavailable fallback ONLY. When no relay/pin is
+                            #   configured and the DUT is offline, wait up to this many
+                            #   seconds for a powered-but-still-booting DUT (BIOS/POST).
+                            #   0 = fail immediately. Ignored when a GPIO pin is available
+                            #   (GPIO power recovery is used instead).
 
 # ---------- Reboot test (reboot.py) ----------
 # ---------- DUT operating system ----------
