@@ -16,7 +16,11 @@
       6. Sets power scheme: no sleep / no hibernate, power button = Shut down
       7. Disables Windows Update automatic reboot
       8. (Optional) Configures auto-logon for the test user account
-      9. (Optional) Registers Task Scheduler tasks (dev_detect.ps1 + reboot.ps1) at startup
+      9. Registers Task Scheduler tasks (dev_detect.ps1 + reboot.ps1) at startup.
+         reboot.ps1 and dev_detect.ps1 are auto-detected when they sit in the
+         same folder as setup_dut.ps1 (the normal layout), so plain
+         '.\setup_dut.ps1' registers them with no arguments.  Pass
+         -RebootScript / -DevDetectScript only to override the location.
      10. (Optional) Configures PowerShell as the default SSH shell for Ansible
      11. Installs Python 3 and downloads report.py so reboot.ps1 can auto-generate HTML reports
 
@@ -45,10 +49,22 @@
 
 .PARAMETER DevDetectScript
     Full path on this machine to dev_detect.ps1.
-    When specified, a Task Scheduler task named "DUT-DevDetect" is registered
-    to run the script automatically at every startup.
-    The task runs as SYSTEM  -  no user login is required.
-    Leave empty (default) to skip Task Scheduler setup.
+    Leave empty (default) and the script is auto-detected next to setup_dut.ps1;
+    pass this only to register a copy that lives elsewhere.
+    A Task Scheduler task named "DUT-DevDetect" is registered to run the script
+    automatically at every startup.  The task runs as SYSTEM  -  no user login is
+    required.  If no dev_detect.ps1 is found (neither here nor passed), the task
+    is skipped.
+
+.PARAMETER RebootScript
+    Full path on this machine to reboot.ps1.
+    Leave empty (default) and the script is auto-detected next to setup_dut.ps1;
+    pass this only to register a copy that lives elsewhere.
+    A Task Scheduler task named "DUT-Reboot" is registered to run
+    'reboot.ps1 -Resume' at every startup (as SYSTEM).  -Resume only continues an
+    in-progress reboot test and otherwise exits silently, so the always-enabled
+    task never disturbs a normal boot or a Pi-controlled test (BUG0026).
+    If no reboot.ps1 is found (neither here nor passed), the task is skipped.
 
 .PARAMETER DevDetectStartupDelaySec
     Seconds to wait after boot before running dev_detect.ps1 (default: 30).
@@ -70,7 +86,8 @@
     In Ansible inventory set: ansible_connection=ssh ansible_shell_type=powershell
 
 .EXAMPLE
-    # Minimal: SSH + firewall + power settings only
+    # Zero-argument run: SSH + firewall + power settings, AND both startup tasks
+    # (reboot.ps1 / dev_detect.ps1 are auto-detected in this same folder).
     .\setup_dut.ps1
 
 .EXAMPLE
@@ -134,7 +151,7 @@ if (-not $_isAdmin) {
 
 # -- Version & shared library --------------------------------------------------
 
-$_script_ver                = '00.00.15'
+$_script_ver                = '00.00.16'
 $_requires_function_ps1_api = '00.00.01'
 
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -150,6 +167,31 @@ if ($script:_function_ps1_api -lt $_requires_function_ps1_api) {
 }
 
 Write-Host "setup_dut.ps1 v$_script_ver  (function.ps1 API $($script:_function_ps1_api))"
+
+
+# -- Auto-detect co-located test scripts --------------------------------------
+# Goal: '.\setup_dut.ps1' with NO arguments should fully configure the DUT,
+# including the startup tasks - the operator should not have to type paths.
+# setup_dut.ps1, reboot.ps1 and dev_detect.ps1 ship in the SAME folder (they are
+# deployed together by USB copy, scp, or Ansible), so when a *Script parameter is
+# left empty we look for the script right next to this one ($_script_root).
+# A path the operator passes explicitly always wins; auto-detection only fills a
+# blank.  If the sibling file is not found, the corresponding task is skipped
+# exactly as before (no error).
+if ($RebootScript -eq "") {
+    $_siblingReboot = Join-Path $_script_root 'reboot.ps1'
+    if (Test-Path $_siblingReboot) {
+        $RebootScript = $_siblingReboot
+        Write-Host "         Auto-detected reboot.ps1 : $_siblingReboot" -ForegroundColor DarkGray
+    }
+}
+if ($DevDetectScript -eq "") {
+    $_siblingDevDetect = Join-Path $_script_root 'dev_detect.ps1'
+    if (Test-Path $_siblingDevDetect) {
+        $DevDetectScript = $_siblingDevDetect
+        Write-Host "         Auto-detected dev_detect.ps1 : $_siblingDevDetect" -ForegroundColor DarkGray
+    }
+}
 
 
 # -- 1. PowerShell execution policy -------------------------------------------
@@ -406,8 +448,9 @@ if ($DevDetectScript -ne "") {
         Write-Host "         Script : $((Resolve-Path -LiteralPath $DevDetectScript).Path)"
     }
 } else {
-    Write-Skip "DUT-DevDetect not configured (no -DevDetectScript supplied)"
-    Write-Host "         Pass -DevDetectScript with the full path to dev_detect.ps1 to register the startup task."
+    Write-Skip "DUT-DevDetect not configured (dev_detect.ps1 not found next to setup_dut.ps1)"
+    Write-Host "         Place dev_detect.ps1 in the same folder as setup_dut.ps1, or pass"
+    Write-Host "         -DevDetectScript with its full path, to register the startup task."
 }
 
 # 9b. reboot.ps1
@@ -429,8 +472,9 @@ if ($RebootScript -ne "") {
         Write-Host "                   otherwise, so it never disturbs a normal boot or a Pi-controlled test."
     }
 } else {
-    Write-Skip "DUT-Reboot not configured (no -RebootScript supplied)"
-    Write-Host "         Pass -RebootScript with the full path to reboot.ps1 to register the startup task."
+    Write-Skip "DUT-Reboot not configured (reboot.ps1 not found next to setup_dut.ps1)"
+    Write-Host "         Place reboot.ps1 in the same folder as setup_dut.ps1, or pass"
+    Write-Host "         -RebootScript with its full path, to register the startup task."
 }
 
 
