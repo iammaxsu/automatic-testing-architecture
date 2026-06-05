@@ -92,7 +92,7 @@ $ErrorActionPreference = 'Stop'
 
 # -- Version & defaults --------------------------------------------------------
 
-$_script_ver                = '00.00.12'
+$_script_ver                = '00.00.13'
 $_requires_function_ps1_api = '00.00.01'
 $_default_cycles            = 1000   # used when run with no -Cycles and no test in progress
 
@@ -448,7 +448,7 @@ if ($resuming) {
 
     $statusVal = 'running'
     if ($complete) { $statusVal = 'complete' }
-    $newSession = @{
+    $updatedSession = @{
         session_id     = $sessionId
         test           = 'reboot'
         m              = $m
@@ -458,7 +458,7 @@ if ($resuming) {
         updated_at     = $ts
         last_reboot_at = $null
     }
-    Write-SessionJson -Data $newSession
+    Write-SessionJson -Data $updatedSession
 
     if ($complete) {
         $summary = "SESSION_COMPLETE: $sessionId  n=$n/$m  t=$ts"
@@ -475,7 +475,7 @@ if ($resuming) {
     Invoke-ReportPy -SessionId $sessionId
     Notify-User "Reboot test: cycle $n / $m PASS - continuing..."
 
-    Invoke-RebootWithCountdown -Session $newSession
+    Invoke-RebootWithCountdown -Session $updatedSession
 }
 else {
     # Fresh start: show session info (interactive run), then reboot.
