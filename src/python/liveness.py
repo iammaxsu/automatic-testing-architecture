@@ -63,8 +63,22 @@ class LivenessChecker:
             return False
 
     def is_alive(self) -> bool:
-        """Return True only when ping AND TCP both succeed."""
+        """Return True only when ping AND TCP both succeed.
+
+        Used to confirm a *full* boot (network up AND SSH accepting) before a
+        test starts issuing commands. Contrast with is_up().
+        """
         return self.ping() and self.tcp_check()
+
+    def is_up(self) -> bool:
+        """Return True when EITHER ping OR TCP responds.
+
+        Used by init_dut() to decide whether the DUT needs intervention: if the
+        DUT responds to anything at all it is powered and reachable, so leave it
+        alone. Only when neither responds is the DUT considered down (off or
+        hung) and a GPIO recovery escalation is warranted.
+        """
+        return self.ping() or self.tcp_check()
 
     def is_reachable(self) -> bool:
         """Return True if ping succeeds (regardless of TCP)."""

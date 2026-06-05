@@ -16,9 +16,18 @@
       6. Sets power scheme: no sleep / no hibernate, power button = Shut down
       7. Disables Windows Update automatic reboot
       8. (Optional) Configures auto-logon for the test user account
-      9. (Optional) Registers Task Scheduler tasks (dev_detect.ps1 + reboot.ps1) at startup
+      9. Registers Task Scheduler tasks (dev_detect.ps1 + reboot.ps1) at startup.
+         reboot.ps1 and dev_detect.ps1 are auto-detected when they sit in the
+         same folder as setup_dut.ps1 (the normal layout), so plain
+         '.\setup_dut.ps1' registers them with no arguments.  Pass
+         -RebootScript / -DevDetectScript only to override the location.
      10. (Optional) Configures PowerShell as the default SSH shell for Ansible
      11. Installs Python 3 and downloads report.py so reboot.ps1 can auto-generate HTML reports
+
+    SSH authentication summary:
+      - Blank-password account  : steps 3 + 5 allow password-free SSH login out of the box.
+      - Password-protected account: pass -PiSshPublicKey with the Pi's public key; the key is
+        installed in administrators_authorized_keys so SSH never prompts for a password.
 
     This script is intentionally idempotent: running it multiple times is safe.
 
@@ -40,14 +49,35 @@
 
 .PARAMETER DevDetectScript
     Full path on this machine to dev_detect.ps1.
-    When specified, a Task Scheduler task named "DUT-DevDetect" is registered
-    to run the script automatically at every startup.
-    The task runs as SYSTEM  -  no user login is required.
-    Leave empty (default) to skip Task Scheduler setup.
+    Leave empty (default) and the script is auto-detected next to setup_dut.ps1;
+    pass this only to register a copy that lives elsewhere.
+    A Task Scheduler task named "DUT-DevDetect" is registered to run the script
+    automatically at every startup.  The task runs as SYSTEM  -  no user login is
+    required.  If no dev_detect.ps1 is found (neither here nor passed), the task
+    is skipped.
+
+.PARAMETER RebootScript
+    Full path on this machine to reboot.ps1.
+    Leave empty (default) and the script is auto-detected next to setup_dut.ps1;
+    pass this only to register a copy that lives elsewhere.
+    A Task Scheduler task named "DUT-Reboot" is registered to run
+    'reboot.ps1 -Resume' at every startup (as SYSTEM).  -Resume only continues an
+    in-progress reboot test and otherwise exits silently, so the always-enabled
+    task never disturbs a normal boot or a Pi-controlled test (BUG0026).
+    If no reboot.ps1 is found (neither here nor passed), the task is skipped.
 
 .PARAMETER DevDetectStartupDelaySec
     Seconds to wait after boot before running dev_detect.ps1 (default: 30).
     Increase if your hardware takes longer to fully enumerate devices.
+
+.PARAMETER PiSshPublicKey
+    The SSH public key of the Raspberry Pi controller (contents of ~/.ssh/id_rsa.pub
+    or ~/.ssh/id_ed25519.pub on the Pi).
+    When provided, the key is appended to C:\ProgramData\ssh\administrators_authorized_keys
+    so the Pi can SSH into this DUT without any password, regardless of whether the
+    Windows account has a password set.
+    Obtain the key on the Pi with: cat ~/.ssh/id_ed25519.pub
+    (or id_rsa.pub if using RSA keys)
 
 .PARAMETER AnsibleSSH
     When specified, configures PowerShell as the default shell for SSH connections
@@ -56,16 +86,17 @@
     In Ansible inventory set: ansible_connection=ssh ansible_shell_type=powershell
 
 .EXAMPLE
-    # Minimal: SSH + firewall + power settings only
+    # Zero-argument run: SSH + firewall + power settings, AND both startup tasks
+    # (reboot.ps1 / dev_detect.ps1 are auto-detected in this same folder).
     .\setup_dut.ps1
 
 .EXAMPLE
-    # With auto-logon for a test account called "testuser"
-    .\setup_dut.ps1 -TestUser "testuser" -TestPassword "mypassword"
+    # Blank-password account (no SSH key needed - steps 3+5 already allow it)
+    .\setup_dut.ps1 -TestUser "testuser" -TestPassword ""
 
 .EXAMPLE
-    # Auto-logon with a passwordless account
-    .\setup_dut.ps1 -TestUser "testuser" -TestPassword ""
+    # Password-protected account: install Pi SSH key for passwordless login
+    .\setup_dut.ps1 -TestUser "testuser" -PiSshPublicKey "ssh-ed25519 AAAA...key... pi@raspberrypi"
 
 .EXAMPLE
     # Full setup including device-detection task at startup
@@ -86,6 +117,7 @@
 param(
     [string]$TestUser                 = "",
     [string]$TestPassword             = "",
+    [string]$PiSshPublicKey           = "",
     [string]$DevDetectScript          = "",
     [int]   $DevDetectStartupDelaySec = 30,
     [string]$RebootScript             = "",
@@ -96,9 +128,30 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# -- 0. Administrator check (FWK033) -------------------------------------------
+# MUST be the first executable action, before any other output, so an operator
+# who launched a non-elevated shell sees a single clear error instead of a wall
+# of step messages with silently-skipped admin-only operations.  #Requires above
+# is a backstop; this explicit IsInRole check is reliable across local and SSH.
+$_isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+    [Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $_isAdmin) {
+    Write-Host ""
+    Write-Host ("=" * 60) -ForegroundColor Red
+    Write-Host "  ERROR: Administrator privileges required." -ForegroundColor Red
+    Write-Host ("=" * 60) -ForegroundColor Red
+    Write-Host "  setup_dut.ps1 configures the test environment and MUST run" -ForegroundColor Yellow
+    Write-Host "  elevated.  NOTHING has been changed." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  Local : right-click PowerShell -> 'Run as Administrator'" -ForegroundColor Yellow
+    Write-Host "  SSH   : log in as an account in the Administrators group" -ForegroundColor Yellow
+    Write-Host ""
+    exit 1
+}
+
 # -- Version & shared library --------------------------------------------------
 
-$_script_ver                = '00.00.13'
+$_script_ver                = '00.00.16'
 $_requires_function_ps1_api = '00.00.01'
 
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -114,6 +167,31 @@ if ($script:_function_ps1_api -lt $_requires_function_ps1_api) {
 }
 
 Write-Host "setup_dut.ps1 v$_script_ver  (function.ps1 API $($script:_function_ps1_api))"
+
+
+# -- Auto-detect co-located test scripts --------------------------------------
+# Goal: '.\setup_dut.ps1' with NO arguments should fully configure the DUT,
+# including the startup tasks - the operator should not have to type paths.
+# setup_dut.ps1, reboot.ps1 and dev_detect.ps1 ship in the SAME folder (they are
+# deployed together by USB copy, scp, or Ansible), so when a *Script parameter is
+# left empty we look for the script right next to this one ($_script_root).
+# A path the operator passes explicitly always wins; auto-detection only fills a
+# blank.  If the sibling file is not found, the corresponding task is skipped
+# exactly as before (no error).
+if ($RebootScript -eq "") {
+    $_siblingReboot = Join-Path $_script_root 'reboot.ps1'
+    if (Test-Path $_siblingReboot) {
+        $RebootScript = $_siblingReboot
+        Write-Host "         Auto-detected reboot.ps1 : $_siblingReboot" -ForegroundColor DarkGray
+    }
+}
+if ($DevDetectScript -eq "") {
+    $_siblingDevDetect = Join-Path $_script_root 'dev_detect.ps1'
+    if (Test-Path $_siblingDevDetect) {
+        $DevDetectScript = $_siblingDevDetect
+        Write-Host "         Auto-detected dev_detect.ps1 : $_siblingDevDetect" -ForegroundColor DarkGray
+    }
+}
 
 
 # -- 1. PowerShell execution policy -------------------------------------------
@@ -174,6 +252,44 @@ if (-not (Test-Path $sshConfigPath)) {
     $content | Set-Content -Path $sshConfigPath -Encoding UTF8
     Restart-Service sshd
     Write-OK "sshd restarted with new configuration"
+}
+
+
+# -- 3b. SSH key: install Pi public key for passwordless login (optional) ------
+#
+# For blank-password accounts, steps 3 + 5 (PermitEmptyPasswords + LimitBlankPasswordUse)
+# already allow the Pi to SSH in without any credential.  This step is only needed when
+# the Windows account has a password.
+#
+# Windows OpenSSH uses administrators_authorized_keys (not ~/.ssh/authorized_keys) for
+# accounts in the Administrators group.  The file needs strict ACL (SYSTEM + Admins only)
+# or sshd ignores it.
+
+if ($PiSshPublicKey -ne "") {
+    $authDir  = "C:\ProgramData\ssh"
+    $authFile = Join-Path $authDir "administrators_authorized_keys"
+
+    if (-not (Test-Path $authDir)) { New-Item -Path $authDir -ItemType Directory -Force | Out-Null }
+
+    # Append the key only if it is not already present (idempotent).
+    $existing = @()
+    if (Test-Path $authFile) { $existing = @(Get-Content $authFile) }
+    if ($existing -notcontains $PiSshPublicKey) {
+        Add-Content -Path $authFile -Value $PiSshPublicKey -Encoding UTF8
+        Write-OK "Pi SSH public key appended to $authFile"
+    } else {
+        Write-Skip "Pi SSH public key already present in $authFile"
+    }
+
+    # Strict ACL: remove inherited permissions, grant SYSTEM and Administrators full control.
+    # Without this sshd (running as SYSTEM) silently ignores the file.
+    icacls $authFile /inheritance:r /grant "SYSTEM:(F)" /grant "Administrators:(F)" 2>$null | Out-Null
+    Write-OK "administrators_authorized_keys ACL fixed (SYSTEM + Administrators only)"
+    Write-Host "         Test from the Pi: ssh $TestUser@$($env:COMPUTERNAME)"
+} else {
+    Write-Skip "SSH key install skipped (no -PiSshPublicKey supplied)"
+    Write-Host "         If the account has no password, steps 3+5 already allow passwordless SSH."
+    Write-Host "         If it has a password, pass -PiSshPublicKey `"<content of ~/.ssh/id_ed25519.pub>`""
 }
 
 
@@ -281,13 +397,16 @@ function Register-StartupTask {
         [string]$TaskName,
         [string]$Description,
         [string]$ScriptPath,
-        [int]   $DelaySec
+        [int]   $DelaySec,
+        [string]$ScriptArgs = ""    # extra args appended after -File "<script>" (e.g. -Resume)
     )
     $absScript = (Resolve-Path -LiteralPath $ScriptPath).Path
     $workDir   = Split-Path -Parent $absScript
+    $argLine   = "-ExecutionPolicy Bypass -NonInteractive -WindowStyle Hidden -File `"$absScript`""
+    if ($ScriptArgs -ne "") { $argLine = "$argLine $ScriptArgs" }
     $action    = New-ScheduledTaskAction `
         -Execute          "powershell.exe" `
-        -Argument         "-ExecutionPolicy Bypass -NonInteractive -WindowStyle Hidden -File `"$absScript`"" `
+        -Argument         $argLine `
         -WorkingDirectory $workDir
     $trigger       = New-ScheduledTaskTrigger -AtStartup
     $trigger.Delay = "PT${DelaySec}S"
@@ -299,6 +418,11 @@ function Register-StartupTask {
         -UserId    "SYSTEM" `
         -LogonType ServiceAccount `
         -RunLevel  Highest
+    # The task is registered ENABLED and stays enabled permanently.  Each test
+    # script decides for itself whether to act: reboot.ps1 is invoked with
+    # -Resume, which resumes a running session and otherwise exits silently, so
+    # the always-enabled task never disturbs a normal boot or a Pi-controlled
+    # test (BUG0026).
     Register-ScheduledTask `
         -TaskName    $TaskName `
         -Description $Description `
@@ -324,8 +448,9 @@ if ($DevDetectScript -ne "") {
         Write-Host "         Script : $((Resolve-Path -LiteralPath $DevDetectScript).Path)"
     }
 } else {
-    Write-Skip "DUT-DevDetect not configured (no -DevDetectScript supplied)"
-    Write-Host "         Pass -DevDetectScript with the full path to dev_detect.ps1 to register the startup task."
+    Write-Skip "DUT-DevDetect not configured (dev_detect.ps1 not found next to setup_dut.ps1)"
+    Write-Host "         Place dev_detect.ps1 in the same folder as setup_dut.ps1, or pass"
+    Write-Host "         -DevDetectScript with its full path, to register the startup task."
 }
 
 # 9b. reboot.ps1
@@ -336,16 +461,20 @@ if ($RebootScript -ne "") {
     } else {
         Register-StartupTask `
             -TaskName    "DUT-Reboot" `
-            -Description "Runs reboot.ps1 at startup to continue an in-progress reboot endurance test" `
+            -Description "Runs 'reboot.ps1 -Resume' at startup to continue an in-progress reboot endurance test" `
             -ScriptPath  $RebootScript `
-            -DelaySec    $RebootStartupDelaySec
+            -DelaySec    $RebootStartupDelaySec `
+            -ScriptArgs  "-Resume"
         Write-OK "Task 'DUT-Reboot' registered (startup + ${RebootStartupDelaySec}s delay, runs as SYSTEM)"
-        Write-Host "         Script : $((Resolve-Path -LiteralPath $RebootScript).Path)"
-        Write-Host "         NOTE   : reboot.ps1 exits silently when no test is in progress."
+        Write-Host "         Script  : $((Resolve-Path -LiteralPath $RebootScript).Path)"
+        Write-Host "         Action  : reboot.ps1 -Resume"
+        Write-Host "         NOTE    : -Resume only continues an in-progress test; it exits silently"
+        Write-Host "                   otherwise, so it never disturbs a normal boot or a Pi-controlled test."
     }
 } else {
-    Write-Skip "DUT-Reboot not configured (no -RebootScript supplied)"
-    Write-Host "         Pass -RebootScript with the full path to reboot.ps1 to register the startup task."
+    Write-Skip "DUT-Reboot not configured (reboot.ps1 not found next to setup_dut.ps1)"
+    Write-Host "         Place reboot.ps1 in the same folder as setup_dut.ps1, or pass"
+    Write-Host "         -RebootScript with its full path, to register the startup task."
 }
 
 
@@ -517,9 +646,14 @@ if ($DevDetectScript -ne "" -and (Test-Path $DevDetectScript)) {
     Write-Host "  Task Scheduler    : DUT-DevDetect not configured"
 }
 if ($RebootScript -ne "" -and (Test-Path $RebootScript)) {
-    Write-Host "  Task Scheduler    : DUT-Reboot    (startup + ${RebootStartupDelaySec}s, as SYSTEM)"
+    Write-Host "  Task Scheduler    : DUT-Reboot    (startup + ${RebootStartupDelaySec}s, as SYSTEM, runs 'reboot.ps1 -Resume')"
 } else {
     Write-Host "  Task Scheduler    : DUT-Reboot    not configured"
+}
+if ($PiSshPublicKey -ne "") {
+    Write-Host "  Pi SSH key        : installed (administrators_authorized_keys)"
+} else {
+    Write-Host "  Pi SSH key        : not installed (ok if account has no password)"
 }
 if ($AnsibleSSH) {
     Write-Host "  Ansible SSH       : DefaultShell = PowerShell 5.1"

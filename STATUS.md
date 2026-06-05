@@ -1,32 +1,32 @@
 # Project Status
 
-_Generated 2026-06-03 03:57 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-06-05 08:16 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
-**Total:** 125
+**Total:** 134
 
 ### By priority
 
 | Priority | Count |
 | --- | --- |
-| Must | 110 |
-| Should | 13 |
+| Must | 118 |
+| Should | 14 |
 | — | 2 |
 
 ### By status
 
 | Status | Count |
 | --- | --- |
-| proposed | 106 |
+| proposed | 108 |
 | implementing | 3 |
-| implemented | 16 |
+| implemented | 23 |
 
 ```mermaid
 pie showData title Requirements by status
-    "proposed" : 106
+    "proposed" : 108
     "implementing" : 3
-    "implemented" : 16
+    "implemented" : 23
 ```
 
 ### By section
@@ -38,11 +38,11 @@ pie showData title Requirements by status
 | DOC | 4 | 0 | 4 |
 | DSK | 10 | 0 | 8 |
 | FUN | 7 | 0 | 6 |
-| FWK | 27 | 0 | 26 |
+| FWK | 34 | 0 | 28 |
 | LOG | 24 | 0 | 24 |
 | NET | 13 | 0 | 13 |
-| PWR | 12 | 0 | 2 |
-| SET | 5 | 0 | 4 |
+| PWR | 13 | 0 | 2 |
+| SET | 6 | 0 | 4 |
 | SLP | 5 | 0 | 5 |
 
 ### Must-priority requirements not yet implemented
@@ -103,6 +103,8 @@ pie showData title Requirements by status
 | [FWK025](requirements/FWK025.md) | proposed | Script Self-Elevation to Root |
 | [FWK026](requirements/FWK026.md) | proposed | Output File Ownership Restoration |
 | [FWK027](requirements/FWK027.md) | proposed | No Silent State Mutation in Helper Functions |
+| [FWK032](requirements/FWK032.md) | proposed | In-Test DUT User Notification |
+| [FWK033](requirements/FWK033.md) | proposed | Privilege Precondition Check |
 | [LOG001](requirements/LOG001.md) | proposed | Logs Directory Creation |
 | [LOG002](requirements/LOG002.md) | proposed | All Test Output in logs/ |
 | [LOG003](requirements/LOG003.md) | proposed | Log Filename Includes Test Name |
@@ -148,20 +150,20 @@ pie showData title Requirements by status
 
 ## Bugs
 
-**Total:** 24
+**Total:** 27
 
 ### By status
 
 | Status | Count |
 | --- | --- |
-| open | 13 |
-| closed | 9 |
+| open | 15 |
+| closed | 10 |
 | invalid | 2 |
 
 ```mermaid
 pie showData title Bugs by status
-    "open" : 13
-    "closed" : 9
+    "open" : 15
+    "closed" : 10
     "invalid" : 2
 ```
 
@@ -171,6 +173,7 @@ pie showData title Bugs by status
 | --- | --- |
 | Ubuntu 26.04 LTS | 14 |
 | Ubuntu 24.04 LTS | 10 |
+| Windows 11 | 3 |
 
 ### Open bugs (oldest first)
 
@@ -189,6 +192,8 @@ pie showData title Bugs by status
 | [BUG0020](bugs/open/BUG0020-sleep-test-not-yet-integrated-or-verified.md) | 2026-05-08 | open | sleep_test not yet integrated or verified |
 | [BUG0022](bugs/open/BUG0022-the-notification-is-misleading.md) | 2026-05-14 | open | The notification is misleading |
 | [BUG0023](bugs/open/BUG0023-two-log-dir-echo-statements-joined-on-one-line-in-.md) | 2026-05-14 | open | Two log_dir echo statements joined on one line in function.sh |
+| [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | 2026-06-05 | open | power_cycle.py msg.exe notification not shown on DUT during test |
+| [BUG0026](bugs/open/BUG0026-dut-reboot-task-fires-during-python-tests.md) | 2026-06-05 | open | DUT-Reboot Task Scheduler task fires during Pi-controlled Python tests |
 
 ## Traceability
 
@@ -203,6 +208,9 @@ pie showData title Bugs by status
 | FWK026 | [BUG0002](bugs/closed/BUG0002-cannot-open-dev-detect-sh-html-report.md) | closed |
 | FWK026 | [BUG0014](bugs/closed/BUG0014-root-requirement-of-detection-scripts-not-formalis.md) | closed |
 | FWK027 | [BUG0019](bugs/closed/BUG0019-result-json-metadata-corruption-session-id-unknown.md) | closed |
+| FWK032 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
+| FWK032 | [BUG0026](bugs/open/BUG0026-dut-reboot-task-fires-during-python-tests.md) | open |
+| FWK034 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
 | LOG008 | [BUG0004](bugs/open/BUG0004-fio-log-filenames-missing-timestamp-and-result.md) | open |
 | LOG012 | [BUG0024](bugs/closed/BUG0024-extract-bw-fails-on-slow-disks-no-data-0-0-mib-s-f.md) | closed |
 | LOG012 | [BUG0004](bugs/open/BUG0004-fio-log-filenames-missing-timestamp-and-result.md) | open |
@@ -219,6 +227,13 @@ pie showData title Bugs by status
 | LOG022 | [BUG0019](bugs/closed/BUG0019-result-json-metadata-corruption-session-id-unknown.md) | closed |
 | NET011 | [BUG0015](bugs/open/BUG0015-net-test-sh-consumes-the-ssh-lifeline-nic.md) | open |
 | NET012 | [BUG0015](bugs/open/BUG0015-net-test-sh-consumes-the-ssh-lifeline-nic.md) | open |
+| PWR009 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
+| PWR011 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
+| PWR011 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
+| PWR011 | [BUG0026](bugs/open/BUG0026-dut-reboot-task-fires-during-python-tests.md) | open |
+| PWR012 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
+| PWR012 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
+| PWR012 | [BUG0026](bugs/open/BUG0026-dut-reboot-task-fires-during-python-tests.md) | open |
 | SLP001 | [BUG0020](bugs/open/BUG0020-sleep-test-not-yet-integrated-or-verified.md) | open |
 | SLP004 | [BUG0020](bugs/open/BUG0020-sleep-test-not-yet-integrated-or-verified.md) | open |
 | SLP005 | [BUG0020](bugs/open/BUG0020-sleep-test-not-yet-integrated-or-verified.md) | open |
@@ -233,6 +248,10 @@ _(may indicate untested code paths — worth a review)_
 | [DSK009](requirements/DSK009.md) | implemented | fio Engine and Write-Consistency Flags Aligned with KDiskMark v3.2.0 |
 | [FUN007](requirements/FUN007.md) | implemented | Windows PowerShell Shared Function Library |
 | [FWK002](requirements/FWK002.md) | implemented | Cross-Language Naming Conventions |
+| [FWK028](requirements/FWK028.md) | implemented | Machine-Readable Canonical Form First |
+| [FWK029](requirements/FWK029.md) | implemented | Emergency Stop Safety Mechanism |
+| [FWK030](requirements/FWK030.md) | implemented | Two-Phase Consecutive-Failure Stop Policy |
+| [FWK031](requirements/FWK031.md) | implemented | DUT Self-Initialisation Before Test Execution |
 | [PWR001](requirements/PWR001.md) | implemented | AT and ATX PSU Type Selection |
 | [PWR002](requirements/PWR002.md) | implemented | GPIO Relay Abstraction |
 | [PWR003](requirements/PWR003.md) | implemented | Network-Based DUT Liveness Detection |
@@ -240,7 +259,8 @@ _(may indicate untested code paths — worth a review)_
 | [PWR005](requirements/PWR005.md) | implemented | Structured result.json Output (LOG015 Compliance) |
 | [PWR007](requirements/PWR007.md) | implemented | Safety Controls: Consecutive Fail Abort and Graceful Stop |
 | [PWR008](requirements/PWR008.md) | implemented | Power Cycle Test Warmup and Initial-State Normalization |
-| [PWR009](requirements/PWR009.md) | implemented | Multi-Strategy DUT Shutdown |
 | [PWR010](requirements/PWR010.md) | implemented | Cycle Phase Timing Model and Parameter Defaults |
+| [PWR013](requirements/PWR013.md) | implemented | Reboot Test Initial State Normalisation |
 | [SET005](requirements/SET005.md) | implemented | Windows DUT Pre-test Bootstrap Script |
+| [SET006](requirements/SET006.md) | implemented | Dual-Layer Configuration: config.py as Default Reference |
 

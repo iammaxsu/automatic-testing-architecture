@@ -78,17 +78,68 @@ SHUTDOWN_SSH_USER = ""      # CLI: --ssh-user   SSH login for graceful OS shutdo
                             #   ATX force-off remains the fallback in both modes.
 
 # ---------- Safety ----------
-MAX_CONSECUTIVE_FAILS = 3   # Abort the run after N consecutive failed cycles (0 = never)
+# Two-phase consecutive-failure policy (FWK030):
+#
+#   Phase 1 — EARLY: no PASS has occurred yet.
+#     If the first EARLY_FAIL_THRESHOLD consecutive cycles all fail, abort the
+#     run immediately. At this point failure is almost certainly a configuration
+#     error (wrong host, DUT offline, bad credentials) rather than a real
+#     hardware defect. Continuing would produce meaningless data.
+#     Set to 0 to disable early-abort entirely.
+#
+#   Phase 2 — MID-RUN: at least one PASS has occurred.
+#     Consecutive failures do NOT abort the run by default (MAX_CONSECUTIVE_FAILS = 0).
+#     A real hardware defect must be characterised across the full N cycles, not
+#     stopped mid-way; the failure-rate and distribution charts are only meaningful
+#     over the full run.
+#     Set MAX_CONSECUTIVE_FAILS > 0 only if you want a hard mid-run abort limit.
+#
+EARLY_FAIL_THRESHOLD  = 3   # CLI: --early-fail-threshold
+                             #   Abort before first PASS if N consecutive cycles fail.
+MAX_CONSECUTIVE_FAILS = 0   # CLI: --max-consecutive-fails
+                             #   Abort mid-run after N consecutive fails (0 = never).
+
 WARMUP_CYCLES         = 1   # CLI: --warmup   Uncounted init cycles before the counted
                             #   test (absorbs unknown initial DUT state). 0 = skip.
 
+# ---------- DUT init / state normalisation (FWK031) ----------
+# Before its first cycle, each test brings the DUT to a testable (alive) state
+# via function.init_dut(), which escalates only as far as needed:
+#   Step 1  DUT responds to ping OR SSH      → already testable, no action.
+#   Step 2  GPIO power-on press (uses GPIO_PIN / POWER_TYPE) → handles DUT-is-OFF.
+#   Step 3  GPIO force-off + power-on        → handles DUT-is-HUNG.
+# The GPIO pin for recovery is GPIO_PIN (above) — the same relay used by
+# power_cycle.py. No separate init pin is needed.
+INIT_WAIT_SEC = 0           # CLI: --init-wait
+                            #   GPIO-unavailable fallback ONLY. When no relay/pin is
+                            #   configured and the DUT is offline, wait up to this many
+                            #   seconds for a powered-but-still-booting DUT (BIOS/POST).
+                            #   0 = fail immediately. Ignored when a GPIO pin is available
+                            #   (GPIO power recovery is used instead).
+
 # ---------- Reboot test (reboot.py) ----------
-REBOOT_SSH_CMD    = "sudo reboot"   # Command sent over SSH to reboot the DUT.
-                                    #   Linux: "sudo reboot"
-                                    #   Windows (if sshd is installed): "shutdown /r /t 5"
-REBOOT_SETTLE_SEC = 5               # Seconds to wait after SSH reboot command before
-                                    #   starting to poll for the DUT going offline.
-                                    #   Gives the OS time to begin its reboot sequence.
+# ---------- DUT operating system ----------
+# CLI: --dut-os   Set to "windows" or "linux" to match the DUT.
+# This selects the correct default SSH commands for reboot and graceful shutdown.
+# Override the individual commands at runtime with --ssh-cmd if needed.
+DUT_OS = "windows"
+
+# OS-specific SSH command defaults.  Not intended to be set directly;
+# scripts derive their defaults from these dicts using DUT_OS or --dut-os.
+_OS_REBOOT_CMD = {
+    "windows": "shutdown /r /t 0",     # immediate restart via Windows shutdown utility
+    "linux":   "sudo reboot",           # requires NOPASSWD for /sbin/reboot in sudoers
+}
+_OS_SHUTDOWN_CMD = {
+    "windows": "shutdown /s /t 5",     # graceful shutdown, 5-s countdown
+    "linux":   "sudo shutdown -h now",  # requires NOPASSWD for /sbin/shutdown in sudoers
+}
+
+# ---------- Reboot test (reboot.py) ----------
+REBOOT_SSH_CMD    = _OS_REBOOT_CMD[DUT_OS]  # derived from DUT_OS; override with --ssh-cmd
+REBOOT_SETTLE_SEC = 5                        # Seconds to wait after SSH reboot command before
+                                             #   starting to poll for the DUT going offline.
+                                             #   Gives the OS time to begin its reboot sequence.
 
 # ---------- Output ----------
 LOG_DIR    = "./logs"       # CLI: --out      Where to write result.json and .log

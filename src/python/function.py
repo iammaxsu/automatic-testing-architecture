@@ -2,11 +2,226 @@
 import json
 import logging
 import os
+import subprocess
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 _COUNTER_FILE = "counter.log"
+
+
+# ---------- DUT OS detection ----------
+
+def detect_dut_os(host: str, port: int, ssh_user: str, timeout: int = 10) -> str:
+    """Probe the DUT via SSH to determine its OS.
+
+    Sends 'uname -s':
+      Linux  → exits 0, stdout contains "Linux"  → returns "linux"
+      Windows cmd.exe / PowerShell → uname not found, exit ≠ 0 → returns "windows"
+
+    Returns "linux", "windows", or "unknown" (SSH unreachable or unexpected output).
+    Never raises.
+    """
+    log = logging.getLogger("function")
+    cmd = [
+        "ssh",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "BatchMode=yes",
+        "-o", f"ConnectTimeout={timeout}",
+        "-p", str(port),
+        f"{ssh_user}@{host}",
+        "uname -s",
+    ]
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout + 5
+        )
+        if result.returncode == 0 and "Linux" in result.stdout:
+            log.info("DUT OS detected: linux (uname -s → %s)", result.stdout.strip())
+            return "linux"
+        log.info("DUT OS detected: windows (uname -s exit %d)", result.returncode)
+        return "windows"
+    except Exception as exc:
+        log.warning("DUT OS detection failed: %s — using config default", exc)
+        return "unknown"
+
+
+# ---------- DUT initialisation (FWK031) ----------
+
+def init_dut(
+    checker,                       # LivenessChecker | None
+    relay,                         # RelayController | None
+    power_type: str = "ATX",       # "ATX" or "AT"
+    *,
+    boot_timeout: float = 120,
+    off_time: float = 60,
+    short_press_sec: float = 0.5,
+    force_off_sec: float = 5.0,
+    init_wait: float = 0,
+    dry_run: bool = False,
+) -> tuple:
+    """Bring the DUT to a testable (alive) state before a test begins (FWK031).
+
+    Escalation chain — stops at the first step that leaves the DUT responding:
+
+      Step 1  is_up() (ping OR SSH)        → already responding → done.
+      Step 2  GPIO power-on press          → handles "DUT is OFF" (common after
+                                             power_cycle, which ends powered off).
+      Step 3  GPIO force-off + power-on     → handles "DUT is HUNG, not just off".
+              (force-off → wait off_time → power-on)
+
+    No SSH is used here: a DUT that fails Step 1 responds to neither ping nor
+    SSH, so an SSH reboot could not work. Recovery is purely via GPIO/relay.
+
+    When no relay is available (relay is None — GPIO pin unset), the only
+    remedy is to wait up to init_wait seconds for a DUT that is powered but
+    still booting (BIOS/POST). init_wait == 0 means fail immediately.
+
+    Returns (ok, method) where method is one of:
+      "no-check", "dry-run", "already-up", "wait", "power-on", "power-cycle",
+      "no-relay", "failed-wait", "dead".
+    """
+    log = logging.getLogger("function")
+
+    if dry_run:
+        log.info("init_dut: [DRY-RUN] skipping DUT state check/recovery")
+        return True, "dry-run"
+
+    if checker is None:
+        log.info("init_dut: liveness checks disabled — assuming DUT is ready")
+        return True, "no-check"
+
+    # ── Step 1: is the DUT already responding? ────────────────────────────────
+    log.info("init_dut: checking whether DUT is already up (ping OR SSH) ...")
+    if checker.is_up():
+        log.info("init_dut: DUT is responding — already in a testable state")
+        return True, "already-up"
+
+    # DUT responds to neither ping nor SSH: it is off or hung.
+    if relay is None:
+        if init_wait > 0:
+            log.info("init_dut: DUT offline and no relay configured — waiting up to "
+                     "%ds in case it is still booting ...", init_wait)
+            ok, _ = checker.wait_until_alive(init_wait)
+            if ok:
+                log.info("init_dut: DUT came online while waiting")
+                return True, "wait"
+            log.error("init_dut: DUT still offline after %ds and no relay to recover it",
+                      init_wait)
+            return False, "failed-wait"
+        log.error("init_dut: DUT offline, no relay configured (GPIO pin unset), and "
+                  "init_wait is 0 — cannot recover.")
+        return False, "no-relay"
+
+    # ── Step 2: gentle — power-on press (DUT is OFF) ──────────────────────────
+    log.info("init_dut: DUT offline — issuing power-on (%s) ...", power_type)
+    if power_type == "ATX":
+        relay.atx_press(short_press_sec)
+    else:
+        relay.at_power_on()
+    ok, t = checker.wait_until_alive(boot_timeout)
+    if ok:
+        log.info("init_dut: DUT came up %.1fs after power-on press", t)
+        return True, "power-on"
+
+    # ── Step 3: hard — force a full power cycle (DUT is HUNG) ─────────────────
+    log.warning("init_dut: DUT still offline after power-on — forcing a full power cycle")
+    if power_type == "ATX":
+        relay.atx_force_off(force_off_sec)
+    else:
+        relay.at_power_off()
+    time.sleep(off_time)
+    if power_type == "ATX":
+        relay.atx_press(short_press_sec)
+    else:
+        relay.at_power_on()
+    ok, t = checker.wait_until_alive(boot_timeout)
+    if ok:
+        log.info("init_dut: DUT came up %.1fs after forced power cycle", t)
+        return True, "power-cycle"
+
+    log.error("init_dut: DUT did not come up after a forced power cycle — DUT may be dead")
+    return False, "dead"
+
+
+
+# ---------- DUT notification ----------
+
+def notify_dut(
+    ssh_user: str,
+    host: str,
+    port: int,
+    message: str,
+    ssh_timeout: int = 5,
+    dry_run: bool = False,
+    max_wait: int = 60,
+    retry_interval: float = 10.0,
+) -> Optional[threading.Thread]:
+    """Send a msg.exe popup to the DUT's interactive desktop after boot.
+
+    Runs in a background daemon thread.  Returns the Thread object so the
+    caller can optionally join() it before starting the next action.
+
+    power_cycle.py: ignore the return value — ON_TIME (90 s) provides
+      enough buffer; no need to block the test.
+    reboot.py: join(timeout=N) before the next reboot command, otherwise
+      the shutdown races ahead of the notification delivery.
+
+    Before sending msg.exe, polls 'query session' until an Active desktop
+    session exists (up to max_wait seconds).  This handles the race where
+    sshd starts before the interactive logon session is ready.
+
+    Fails silently throughout — msg.exe may be absent (Windows Home) or
+    no user may be logged in.  Returns None when dry_run or no ssh_user.
+    """
+    if dry_run or not ssh_user or not host:
+        return None
+
+    def _worker():
+        log = logging.getLogger("function")
+
+        def _ssh(cmd):
+            try:
+                r = subprocess.run(
+                    [
+                        "ssh",
+                        "-o", "StrictHostKeyChecking=no",
+                        "-o", "BatchMode=yes",
+                        "-o", f"ConnectTimeout={ssh_timeout}",
+                        "-p", str(port),
+                        f"{ssh_user}@{host}",
+                        cmd,
+                    ],
+                    timeout=ssh_timeout + 2,
+                    capture_output=True,
+                    text=True,
+                )
+                return r.returncode, r.stdout
+            except Exception as exc:
+                log.debug("notify_dut SSH error: %s", exc)
+                return -1, ""
+
+        deadline = time.monotonic() + max_wait
+        attempt = 0
+        while time.monotonic() < deadline:
+            rc, out = _ssh("query session")
+            log.debug("notify_dut: query session rc=%d out=%r", rc, out)
+            if rc == 0 and "Active" in out:
+                _ssh(f"msg * {message}")
+                log.info("notify_dut: msg sent on attempt %d", attempt + 1)
+                return
+            attempt += 1
+            log.info("notify_dut: no Active session yet (attempt %d/%d), retry in %.0fs",
+                     attempt, int(max_wait / retry_interval), retry_interval)
+            time.sleep(min(retry_interval, deadline - time.monotonic()))
+
+        log.warning("notify_dut: no Active session within %ds — notification skipped", max_wait)
+
+    t = threading.Thread(target=_worker, daemon=True, name="notify-dut")
+    t.start()
+    return t
 
 
 # ---------- Counter ----------

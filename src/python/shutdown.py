@@ -49,6 +49,7 @@ class ShutdownCoordinator:
         ssh_timeout_sec: int = 10,
         dead_timeout_sec: int = config.DEAD_TIMEOUT_SEC,
         time_based_delay_sec: int = config.OFF_TIME_SEC,
+        ssh_cmd: str = "",                             # empty = derive from config.DUT_OS
     ):
         self.relay                = relay
         self.checker              = checker
@@ -59,6 +60,8 @@ class ShutdownCoordinator:
         self.ssh_timeout_sec      = ssh_timeout_sec
         self.dead_timeout_sec     = dead_timeout_sec
         self.time_based_delay_sec = time_based_delay_sec
+        self.ssh_cmd              = ssh_cmd or config._OS_SHUTDOWN_CMD.get(
+                                        config.DUT_OS, "shutdown /s /t 5")
 
     # ------------------------------------------------------------------
     # Public API
@@ -108,8 +111,8 @@ class ShutdownCoordinator:
 
     def _try_ssh(self):
         """
-        Issue 'shutdown /s /t 5' via SSH, then wait for DUT to go offline.
-        Returns (success, elapsed_sec).
+        Issue the OS-appropriate shutdown command via SSH, then wait for the DUT
+        to go offline.  Returns (success, elapsed_sec).
         """
         cmd = [
             "ssh",
@@ -118,7 +121,7 @@ class ShutdownCoordinator:
             "-o", f"ConnectTimeout={self.ssh_timeout_sec}",
             "-p", str(self.ssh_port),
             f"{self.ssh_user}@{self.ssh_host}",
-            "shutdown /s /t 5",
+            self.ssh_cmd,
         ]
         log.info("SSH shutdown: %s@%s", self.ssh_user, self.ssh_host)
         try:
