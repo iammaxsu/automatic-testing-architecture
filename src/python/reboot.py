@@ -202,6 +202,15 @@ def run_one_cycle(
     log.info("─── Cycle %d / %d ───────────────────────────────", n, total)
 
     # ── 1. Issue SSH reboot ────────────────────────────────────────────────
+    # Pre-check: SSH returns exit 255 for both "reboot initiated" and "connection
+    # refused (DUT powered off)".  Verify DUT is pingable before sending the
+    # command so we don't misread a dead DUT as a successful reboot.
+    if checker and not args.dry_run and not checker.ping():
+        rec["notes"] = "DUT not reachable before reboot command (ping failed)"
+        rec["verdict"] = SSH_ERROR
+        log.warning("Cycle %d: SSH_ERROR — DUT not pingable before reboot", n)
+        return rec
+
     rec["t_reboot_cmd"] = function.now_iso()
     ok = _ssh_reboot(args)
     if not ok:
@@ -386,37 +395,37 @@ def main() -> int:
     elif not args.host:
         log.warning("DUT_HOST is not set — liveness checks disabled")
 
-    # ── Init: bring DUT to a testable state before the first cycle (FWK031) ──────
-    # init_dut() escalates only as far as needed: already-up → power-on press →
-    # forced power cycle. Skipped when resuming (DUT state already established).
-    if not resuming:
-        relay = None
-        if args.pin:
-            relay = RelayController(
-                pin=args.pin,
-                active_low=config.RELAY_ACTIVE_LOW,
-                mode=config.GPIO_MODE,
-                dry_run=args.dry_run,
-            )
-        try:
-            ok, method = function.init_dut(
-                checker,
-                relay,
-                args.type,
-                boot_timeout=args.boot_timeout,
-                off_time=args.off_time,
-                short_press_sec=config.ATX_SHORT_PRESS_SEC,
-                force_off_sec=config.ATX_LONG_PRESS_SEC,
-                init_wait=args.init_wait,
-                dry_run=args.dry_run,
-            )
-        finally:
-            if relay is not None:
-                relay.cleanup()
-        if not ok:
-            log.error("Init failed (method=%s) — cannot start reboot test.", method)
-            return 1
-        log.info("Init OK (method=%s) — starting test.", method)
+    # ── Init: bring DUT to a testable state (FWK031) ─────────────────────────────
+    # Always runs — even on resume — because the previous test phase may have
+    # left the DUT powered off (e.g. power_cycle ends with DUT off).
+    # init_dut() is cheap when DUT is already up ("already-up" returns immediately).
+    relay = None
+    if args.pin:
+        relay = RelayController(
+            pin=args.pin,
+            active_low=config.RELAY_ACTIVE_LOW,
+            mode=config.GPIO_MODE,
+            dry_run=args.dry_run,
+        )
+    try:
+        ok, method = function.init_dut(
+            checker,
+            relay,
+            args.type,
+            boot_timeout=args.boot_timeout,
+            off_time=args.off_time,
+            short_press_sec=config.ATX_SHORT_PRESS_SEC,
+            force_off_sec=config.ATX_LONG_PRESS_SEC,
+            init_wait=args.init_wait,
+            dry_run=args.dry_run,
+        )
+    finally:
+        if relay is not None:
+            relay.cleanup()
+    if not ok:
+        log.error("Init failed (method=%s) — cannot start reboot test.", method)
+        return 1
+    log.info("Init OK (method=%s) — starting test.", method)
 
     if resuming:
         result = function.read_json(str(json_path)) or _new_result(args, session_id, m)
