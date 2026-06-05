@@ -17,6 +17,19 @@
 #   --ssh-cmd COMMAND         reboot command to run over SSH (default: "sudo reboot")
 #   --new-session             force a new session instead of resuming an incomplete one (LOG023)
 #
+# Init phase options (FWK031/PWR013) — normalise DUT state before the first cycle:
+#   --pin     N               GPIO BOARD pin for power recovery (default: config.GPIO_PIN)
+#   --type    ATX|AT          PSU type for power recovery (default: from config.py)
+#   --init-wait SECONDS       GPIO-unavailable fallback only: wait for a powered-but-
+#                             booting DUT; 0 = fail immediately
+#
+# Init behaviour (function.init_dut escalation chain):
+#   DUT responds (ping OR SSH)       → begin first cycle immediately
+#   DUT offline                      → GPIO power-on press, wait up to --boot-timeout
+#   still offline                    → GPIO force-off + power-on (DUT was hung)
+#   still offline                    → abort (DUT may be dead)
+#   no GPIO pin + --init-wait N      → wait up to N s for a still-booting DUT
+#
 # Verdicts per cycle:
 #   PASS      — DUT came back online within BOOT_TIMEOUT after reboot command
 #   NO_BOOT   — DUT did not come back online within BOOT_TIMEOUT
@@ -34,6 +47,7 @@ from pathlib import Path
 import config
 import function
 from liveness import LivenessChecker
+from relay import RelayController
 from report import generate_report
 
 log = logging.getLogger("reboot")
@@ -86,6 +100,27 @@ def parse_args() -> argparse.Namespace:
                    dest="ssh_cmd",
                    help="Reboot command to run over SSH "
                         "(default: OS-appropriate command selected by --dut-os)")
+    p.add_argument("--early-fail-threshold", default=config.EARLY_FAIL_THRESHOLD, type=int,
+                   dest="early_fail_threshold",
+                   help="Abort if first N cycles all fail before any PASS; 0 = never "
+                        "(default: %(default)s)")
+    p.add_argument("--max-consecutive-fails", default=config.MAX_CONSECUTIVE_FAILS, type=int,
+                   dest="max_consecutive_fails",
+                   help="Abort after N consecutive mid-run failures; 0 = never abort "
+                        "(default: %(default)s)")
+    # ── Init phase (FWK031/PWR013): normalise DUT state before the first cycle ─
+    p.add_argument("--pin",       default=config.GPIO_PIN, type=int,
+                   help="GPIO BOARD pin for init-phase power recovery (default: %(default)s). "
+                        "If the DUT is offline at start, init_dut() uses this pin to power "
+                        "it on (and, if needed, force a power cycle). Same pin as power_cycle.")
+    p.add_argument("--type",      default=config.POWER_TYPE, choices=["ATX", "AT"],
+                   help="PSU type for init-phase power recovery (ATX = momentary press, "
+                        "AT = maintained relay). Default: %(default)s")
+    p.add_argument("--init-wait", default=config.INIT_WAIT_SEC, type=int,
+                   dest="init_wait",
+                   help="Fallback only when GPIO is unavailable: seconds to wait for a "
+                        "powered-but-still-booting DUT. 0 = fail immediately. "
+                        "(default: %(default)s)")
     p.add_argument("--new-session",   action="store_true", dest="new_session",
                    help="Force a new session even if an incomplete one exists (LOG023)")
     return p.parse_args()
@@ -167,6 +202,15 @@ def run_one_cycle(
     log.info("─── Cycle %d / %d ───────────────────────────────", n, total)
 
     # ── 1. Issue SSH reboot ────────────────────────────────────────────────
+    # Pre-check: SSH returns exit 255 for both "reboot initiated" and "connection
+    # refused (DUT powered off)".  Verify DUT is pingable before sending the
+    # command so we don't misread a dead DUT as a successful reboot.
+    if checker and not args.dry_run and not checker.ping():
+        rec["notes"] = "DUT not reachable before reboot command (ping failed)"
+        rec["verdict"] = SSH_ERROR
+        log.warning("Cycle %d: SSH_ERROR — DUT not pingable before reboot", n)
+        return rec
+
     rec["t_reboot_cmd"] = function.now_iso()
     ok = _ssh_reboot(args)
     if not ok:
@@ -205,6 +249,16 @@ def run_one_cycle(
             return rec
 
         log.info("Cycle %d: DUT back online in %.1f s", n, boot_t)
+        _t = function.notify_dut(
+            args.ssh_user, args.host, args.port,
+            f"Reboot test in progress - cycle {n}/{total}. Do not use.",
+            dry_run=args.dry_run,
+        )
+        # Join the notification thread before starting the next reboot: without
+        # this, the next shutdown /r /t 0 races ahead and the DUT is already
+        # rebooting before msg.exe delivers the popup.
+        if _t is not None:
+            _t.join(timeout=30)
     else:
         rec["t_online"] = function.now_iso()
         log.info("Cycle %d: liveness check disabled", n)
@@ -321,6 +375,8 @@ def main() -> int:
     log.info("  Boot TO : %ds",  args.boot_timeout)
     log.info("  SSH user: %s",   args.ssh_user or "(none)")
     log.info("  SSH cmd : %s",   args.ssh_cmd)
+    log.info("  Init    : pin=%s  type=%s  init-wait=%ds (GPIO fallback)",
+             args.pin if args.pin else "None", args.type, args.init_wait)
     log.info("  Log     : %s",   log_path)
     log.info("  JSON    : %s",   json_path)
 
@@ -339,6 +395,38 @@ def main() -> int:
     elif not args.host:
         log.warning("DUT_HOST is not set — liveness checks disabled")
 
+    # ── Init: bring DUT to a testable state (FWK031) ─────────────────────────────
+    # Always runs — even on resume — because the previous test phase may have
+    # left the DUT powered off (e.g. power_cycle ends with DUT off).
+    # init_dut() is cheap when DUT is already up ("already-up" returns immediately).
+    relay = None
+    if args.pin:
+        relay = RelayController(
+            pin=args.pin,
+            active_low=config.RELAY_ACTIVE_LOW,
+            mode=config.GPIO_MODE,
+            dry_run=args.dry_run,
+        )
+    try:
+        ok, method = function.init_dut(
+            checker,
+            relay,
+            args.type,
+            boot_timeout=args.boot_timeout,
+            off_time=args.off_time,
+            short_press_sec=config.ATX_SHORT_PRESS_SEC,
+            force_off_sec=config.ATX_LONG_PRESS_SEC,
+            init_wait=args.init_wait,
+            dry_run=args.dry_run,
+        )
+    finally:
+        if relay is not None:
+            relay.cleanup()
+    if not ok:
+        log.error("Init failed (method=%s) — cannot start reboot test.", method)
+        return 1
+    log.info("Init OK (method=%s) — starting test.", method)
+
     if resuming:
         result = function.read_json(str(json_path)) or _new_result(args, session_id, m)
         result["cycles"] = result.get("cycles", [])[: session["n"]]
@@ -348,6 +436,8 @@ def main() -> int:
         result = _new_result(args, session_id, m)
 
     consecutive_fails = 0
+    has_had_success   = any(c.get("verdict") == PASS
+                            for c in result.get("cycles", []))
     last_n = start_n - 1
 
     for n in range(start_n, m + 1):
@@ -360,16 +450,28 @@ def main() -> int:
         last_n = n
 
         if rec["verdict"] == PASS:
+            has_had_success   = True
             consecutive_fails = 0
         else:
             consecutive_fails += 1
-            log.warning("Consecutive fails: %d / %d",
-                        consecutive_fails, config.MAX_CONSECUTIVE_FAILS)
-            if (config.MAX_CONSECUTIVE_FAILS > 0
-                    and consecutive_fails >= config.MAX_CONSECUTIVE_FAILS):
-                log.error("Reached %d consecutive failures — aborting.",
-                          config.MAX_CONSECUTIVE_FAILS)
-                break
+            if not has_had_success:
+                # Early phase: no PASS yet — likely a config/connectivity problem.
+                if (args.early_fail_threshold > 0
+                        and consecutive_fails >= args.early_fail_threshold):
+                    log.error(
+                        "First %d cycles all failed before any PASS — aborting. "
+                        "Check host, SSH credentials, and DUT state.",
+                        args.early_fail_threshold)
+                    break
+            else:
+                # Mid-run phase: hardware under test — only abort if explicitly configured.
+                if (args.max_consecutive_fails > 0
+                        and consecutive_fails >= args.max_consecutive_fails):
+                    log.warning("Consecutive fails: %d / %d",
+                                consecutive_fails, args.max_consecutive_fails)
+                    log.error("Reached %d consecutive mid-run failures — aborting.",
+                              args.max_consecutive_fails)
+                    break
 
         result["summary"] = _build_summary(result["cycles"], m)
         result["overall_verdict"] = "RUNNING"
