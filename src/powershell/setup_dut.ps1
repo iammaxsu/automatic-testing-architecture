@@ -111,9 +111,30 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# -- 0. Administrator check (FWK033) -------------------------------------------
+# MUST be the first executable action, before any other output, so an operator
+# who launched a non-elevated shell sees a single clear error instead of a wall
+# of step messages with silently-skipped admin-only operations.  #Requires above
+# is a backstop; this explicit IsInRole check is reliable across local and SSH.
+$_isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+    [Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $_isAdmin) {
+    Write-Host ""
+    Write-Host ("=" * 60) -ForegroundColor Red
+    Write-Host "  ERROR: Administrator privileges required." -ForegroundColor Red
+    Write-Host ("=" * 60) -ForegroundColor Red
+    Write-Host "  setup_dut.ps1 configures the test environment and MUST run" -ForegroundColor Yellow
+    Write-Host "  elevated.  NOTHING has been changed." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  Local : right-click PowerShell -> 'Run as Administrator'" -ForegroundColor Yellow
+    Write-Host "  SSH   : log in as an account in the Administrators group" -ForegroundColor Yellow
+    Write-Host ""
+    exit 1
+}
+
 # -- Version & shared library --------------------------------------------------
 
-$_script_ver                = '00.00.14'
+$_script_ver                = '00.00.15'
 $_requires_function_ps1_api = '00.00.01'
 
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -334,13 +355,16 @@ function Register-StartupTask {
         [string]$TaskName,
         [string]$Description,
         [string]$ScriptPath,
-        [int]   $DelaySec
+        [int]   $DelaySec,
+        [string]$ScriptArgs = ""    # extra args appended after -File "<script>" (e.g. -Resume)
     )
     $absScript = (Resolve-Path -LiteralPath $ScriptPath).Path
     $workDir   = Split-Path -Parent $absScript
+    $argLine   = "-ExecutionPolicy Bypass -NonInteractive -WindowStyle Hidden -File `"$absScript`""
+    if ($ScriptArgs -ne "") { $argLine = "$argLine $ScriptArgs" }
     $action    = New-ScheduledTaskAction `
         -Execute          "powershell.exe" `
-        -Argument         "-ExecutionPolicy Bypass -NonInteractive -WindowStyle Hidden -File `"$absScript`"" `
+        -Argument         $argLine `
         -WorkingDirectory $workDir
     $trigger       = New-ScheduledTaskTrigger -AtStartup
     $trigger.Delay = "PT${DelaySec}S"
@@ -352,6 +376,11 @@ function Register-StartupTask {
         -UserId    "SYSTEM" `
         -LogonType ServiceAccount `
         -RunLevel  Highest
+    # The task is registered ENABLED and stays enabled permanently.  Each test
+    # script decides for itself whether to act: reboot.ps1 is invoked with
+    # -Resume, which resumes a running session and otherwise exits silently, so
+    # the always-enabled task never disturbs a normal boot or a Pi-controlled
+    # test (BUG0026).
     Register-ScheduledTask `
         -TaskName    $TaskName `
         -Description $Description `
@@ -360,10 +389,6 @@ function Register-StartupTask {
         -Settings    $settings `
         -Principal   $principal `
         -Force | Out-Null
-    # Register disabled: the task must be explicitly enabled by the test script
-    # before it fires.  This prevents Task Scheduler from auto-triggering the
-    # script during unrelated tests (e.g. Pi-controlled power_cycle.py / reboot.py).
-    Disable-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Out-Null
 }
 
 # 9a. dev_detect.ps1
@@ -393,14 +418,15 @@ if ($RebootScript -ne "") {
     } else {
         Register-StartupTask `
             -TaskName    "DUT-Reboot" `
-            -Description "Runs reboot.ps1 at startup to continue an in-progress reboot endurance test" `
+            -Description "Runs 'reboot.ps1 -Resume' at startup to continue an in-progress reboot endurance test" `
             -ScriptPath  $RebootScript `
-            -DelaySec    $RebootStartupDelaySec
-        Write-OK "Task 'DUT-Reboot' registered (startup + ${RebootStartupDelaySec}s delay, runs as SYSTEM, DISABLED)"
+            -DelaySec    $RebootStartupDelaySec `
+            -ScriptArgs  "-Resume"
+        Write-OK "Task 'DUT-Reboot' registered (startup + ${RebootStartupDelaySec}s delay, runs as SYSTEM)"
         Write-Host "         Script  : $((Resolve-Path -LiteralPath $RebootScript).Path)"
-        Write-Host "         NOTE    : Task is registered DISABLED.  reboot.ps1 enables it automatically"
-        Write-Host "                   when a test starts, and disables it again when the test completes"
-        Write-Host "                   or is stopped.  This prevents interference with Pi-controlled tests."
+        Write-Host "         Action  : reboot.ps1 -Resume"
+        Write-Host "         NOTE    : -Resume only continues an in-progress test; it exits silently"
+        Write-Host "                   otherwise, so it never disturbs a normal boot or a Pi-controlled test."
     }
 } else {
     Write-Skip "DUT-Reboot not configured (no -RebootScript supplied)"
@@ -576,7 +602,7 @@ if ($DevDetectScript -ne "" -and (Test-Path $DevDetectScript)) {
     Write-Host "  Task Scheduler    : DUT-DevDetect not configured"
 }
 if ($RebootScript -ne "" -and (Test-Path $RebootScript)) {
-    Write-Host "  Task Scheduler    : DUT-Reboot    (startup + ${RebootStartupDelaySec}s, as SYSTEM, DISABLED until test starts)"
+    Write-Host "  Task Scheduler    : DUT-Reboot    (startup + ${RebootStartupDelaySec}s, as SYSTEM, runs 'reboot.ps1 -Resume')"
 } else {
     Write-Host "  Task Scheduler    : DUT-Reboot    not configured"
 }

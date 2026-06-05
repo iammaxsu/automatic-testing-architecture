@@ -1,16 +1,16 @@
 # Project Status
 
-_Generated 2026-06-05 05:21 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-06-05 07:03 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
-**Total:** 132
+**Total:** 133
 
 ### By priority
 
 | Priority | Count |
 | --- | --- |
-| Must | 117 |
+| Must | 118 |
 | Should | 13 |
 | — | 2 |
 
@@ -18,13 +18,13 @@ _Generated 2026-06-05 05:21 · regenerate with `python scripts/stats.py > STATUS
 
 | Status | Count |
 | --- | --- |
-| proposed | 107 |
+| proposed | 108 |
 | implementing | 3 |
 | implemented | 22 |
 
 ```mermaid
 pie showData title Requirements by status
-    "proposed" : 107
+    "proposed" : 108
     "implementing" : 3
     "implemented" : 22
 ```
@@ -38,7 +38,7 @@ pie showData title Requirements by status
 | DOC | 4 | 0 | 4 |
 | DSK | 10 | 0 | 8 |
 | FUN | 7 | 0 | 6 |
-| FWK | 32 | 0 | 27 |
+| FWK | 33 | 0 | 28 |
 | LOG | 24 | 0 | 24 |
 | NET | 13 | 0 | 13 |
 | PWR | 13 | 0 | 2 |
@@ -104,6 +104,7 @@ pie showData title Requirements by status
 | [FWK026](requirements/FWK026.md) | proposed | Output File Ownership Restoration |
 | [FWK027](requirements/FWK027.md) | proposed | No Silent State Mutation in Helper Functions |
 | [FWK032](requirements/FWK032.md) | proposed | In-Test DUT User Notification |
+| [FWK033](requirements/FWK033.md) | proposed | Privilege Precondition Check |
 | [LOG001](requirements/LOG001.md) | proposed | Logs Directory Creation |
 | [LOG002](requirements/LOG002.md) | proposed | All Test Output in logs/ |
 | [LOG003](requirements/LOG003.md) | proposed | Log Filename Includes Test Name |

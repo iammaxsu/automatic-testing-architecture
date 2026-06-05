@@ -7,20 +7,27 @@
 
   STARTING A TEST
     Run with no arguments to start a new test (uses default cycle count) or
-    to resume an in-progress test after a reboot:
+    to resume an in-progress test:
       .\reboot.ps1              (start default test, or resume if one is running)
-      .\reboot.ps1 -Cycles 100  (start a new test with exactly 100 cycles)
+      .\reboot.ps1 -Cycles 100  (start a 100-cycle test, or resume if one is running)
+
+    A RUNNING SESSION ALWAYS WINS (LOG023).  If a session is already in progress
+    (status=running, n < m), reboot.ps1 resumes it and the stored target m is
+    kept - the -Cycles value is ignored.  To discard the running session and
+    start over, add -NewSession:
+      .\reboot.ps1 -Cycles 50 -NewSession
 
     The machine will reboot after a short countdown. Press Ctrl+C to cancel.
 
   DURING THE TEST
-    Task Scheduler invokes reboot.ps1 on every startup (registered by
-    setup_dut.ps1). Each invocation checks the session file:
+    Task Scheduler invokes 'reboot.ps1 -Resume' on every startup (registered by
+    setup_dut.ps1).  The -Resume entry point ONLY resumes:
       - If a test is in progress (status=running, n < m): record this boot
         (verdict PASS = the DUT booted far enough to run the script), then
         reboot again, or stop if n has reached m.
-      - If no test is running and a stop sentinel exists: exit silently.
-      - Otherwise: start a new session with the default cycle count.
+      - If no test is in progress: exit silently.  -Resume NEVER starts a new
+        test, so a normal boot - or a Pi-controlled power_cycle.py / reboot.py
+        test - is never disturbed (BUG0026).
     After each cycle a msg.exe popup notifies the interactive user.
 
   ARTEFACTS (in logs\)  - FWK028: result.json is the canonical source of truth
@@ -28,7 +35,6 @@
     reboot_<session>.log           human-readable per-cycle log
     REBOOT_STATUS.txt              plain-text progress (rewritten each cycle)
     reboot_session.json            resume bookkeeping (not the result)
-    reboot_stopped.flag            stop sentinel (created by -Stop; deleted by -Cycles N)
 
   HTML REPORT
     The canonical result.json is rendered to HTML by the shared Python
@@ -47,33 +53,37 @@
   STOPPING A TEST
     Use -Stop to cleanly halt any running test:
       .\reboot.ps1 -Stop
-    This disables the DUT-Reboot Task Scheduler task so the next boot does
-    not auto-restart.  To start a new test afterwards, just run -Cycles N.
+    This marks the session stopped (status=stopped) so the scheduled task's
+    -Resume entry point will not pick it up on the next boot.  To start a new
+    test afterwards, run -Cycles N.
 
   RESUMING AFTER POWER LOSS
     The session file retains the last completed cycle. Task Scheduler resumes
-    automatically on the next boot - no manual action needed.
+    automatically on the next boot via 'reboot.ps1 -Resume' - no manual action
+    needed.
 
   RUNNING WITH PYTHON (reboot.py / run_tests.sh)
-    The DUT-Reboot task is registered DISABLED by default (setup_dut.ps1).
-    It is enabled only while a DUT-local reboot.ps1 test is actively running,
-    and disabled again on completion or -Stop.  Pi-controlled tests (reboot.py,
-    power_cycle.py) are therefore safe to run at any time without any manual
-    intervention.
+    The DUT-Reboot task stays registered and enabled permanently, but its
+    -Resume entry point exits silently whenever no DUT-local reboot session is
+    in progress.  Pi-controlled tests (reboot.py, power_cycle.py) are therefore
+    safe to run at any time without any manual intervention (BUG0026).
 
 .EXAMPLE
   .\reboot.ps1
   .\reboot.ps1 -Cycles 50
   .\reboot.ps1 -Cycles 50 -Settle 10
+  .\reboot.ps1 -Cycles 50 -NewSession
   .\reboot.ps1 -DryRun -Cycles 3
   .\reboot.ps1 -Stop
 #>
 
 [CmdletBinding()]
 param(
-    [int]   $Cycles    = 0,     # cycle count; 0 = resume or start default
-    [int]   $Settle    = 30,    # seconds of countdown before each reboot
-    [switch]$Stop,              # cleanly halt any running test and write stop sentinel
+    [int]   $Cycles     = 0,    # target cycle count for a NEW session; ignored when resuming
+    [int]   $Settle     = 30,   # seconds of countdown before each reboot
+    [switch]$Resume,            # Task Scheduler entry point: resume only, never start a new test
+    [switch]$NewSession,        # force a brand-new session even if one is already running
+    [switch]$Stop,              # cleanly halt any running test
     [switch]$DryRun             # skip actual Restart-Computer (for testing)
 )
 
@@ -82,7 +92,7 @@ $ErrorActionPreference = 'Stop'
 
 # -- Version & defaults --------------------------------------------------------
 
-$_script_ver                = '00.00.11'
+$_script_ver                = '00.00.12'
 $_requires_function_ps1_api = '00.00.01'
 $_default_cycles            = 1000   # used when run with no -Cycles and no test in progress
 
@@ -101,9 +111,8 @@ if ($script:_function_ps1_api -lt $_requires_function_ps1_api) {
 $_log_path     = Join-Path $_script_root 'logs'
 if (-not (Test-Path $_log_path)) { New-Item -Path $_log_path -ItemType Directory | Out-Null }
 
-$_session_file    = Join-Path $_log_path 'reboot_session.json'
-$_status_file     = Join-Path $_log_path 'REBOOT_STATUS.txt'
-$_reboot_task_name = 'DUT-Reboot'
+$_session_file = Join-Path $_log_path 'reboot_session.json'
+$_status_file  = Join-Path $_log_path 'REBOOT_STATUS.txt'
 
 # -- Time helpers --------------------------------------------------------------
 
@@ -247,19 +256,6 @@ function Notify-User {
     try { & msg.exe * $Message 2>$null } catch {}
 }
 
-function Set-RebootTaskEnabled {
-    param([bool]$Enabled)
-    # Enable or disable the DUT-Reboot scheduled task so Task Scheduler only fires
-    # while a DUT-local test is actually running.  Fails silently (task may not be
-    # registered, or caller may not have admin rights - neither is fatal).
-    try {
-        $t = Get-ScheduledTask -TaskName $_reboot_task_name -ErrorAction SilentlyContinue
-        if ($null -eq $t) { return }
-        if ($Enabled) { Enable-ScheduledTask  -TaskName $_reboot_task_name -ErrorAction SilentlyContinue | Out-Null }
-        else          { Disable-ScheduledTask -TaskName $_reboot_task_name -ErrorAction SilentlyContinue | Out-Null }
-    } catch {}
-}
-
 function Invoke-ReportPy {
     param([string]$SessionId)
     # Regenerate the HTML report from the canonical result.json after every cycle
@@ -362,21 +358,26 @@ if ($Stop) {
     } else {
         Write-Host "[reboot] No running test to stop." -ForegroundColor Gray
     }
-    Set-RebootTaskEnabled $false
-    Write-Host "[reboot] DUT-Reboot task disabled - next boot will NOT auto-start." -ForegroundColor Gray
+    Write-Host "[reboot] Session marked stopped - the scheduled task will not resume it." -ForegroundColor Gray
     Write-Host "[reboot] Use '.\reboot.ps1 -Cycles N' to start a new test." -ForegroundColor Cyan
     exit 0
 }
 
-# -- Session resolution --------------------------------------------------------
-# Rules (in priority order):
-#   -Cycles N (N > 0)        -> start NEW session; enable DUT-Reboot task
-#   no args, test running    -> resume (Task Scheduler boot trigger; task already enabled)
-#   no args, nothing running -> start new session with default cycle count; enable task
+# -- Session resolution (LOG023) ----------------------------------------------
+# A running session ALWAYS wins: if one exists (status=running, n<m) and
+# -NewSession was not given, resume it and ignore -Cycles (the stored m wins).
+# Only when no running session exists is a new one created.
 #
-# NOTE: the DUT-Reboot task is registered DISABLED.  It is enabled here when a
-# test starts and disabled again on completion or -Stop.  This prevents Task
-# Scheduler from firing during Pi-controlled tests (power_cycle.py / reboot.py).
+# Entry points:
+#   -Resume      Task Scheduler boot trigger.  Resume a running session; if none
+#                exists, exit silently.  NEVER starts a new test.  This keeps the
+#                always-enabled task from interfering with Pi-controlled tests
+#                (power_cycle.py / reboot.py) - see BUG0026.
+#   -Cycles N    Human start.  Resume if a session is running (m unchanged, LOG023),
+#                otherwise start a new N-cycle session.
+#   (no args)    Human start.  Resume if a session is running, otherwise start a
+#                new session with the default cycle count.
+#   -NewSession  Force a brand-new session even if one is already running.
 
 $session  = Read-SessionJson
 $resuming = $false
@@ -385,24 +386,30 @@ $runningExists = ($null -ne $session -and
                   $session.status -eq 'running' -and
                   [int]$session.n -lt [int]$session.m)
 
-if ($Cycles -gt 0) {
-    # Explicit -Cycles N: start fresh and arm Task Scheduler for resume on next boot.
-    Set-RebootTaskEnabled $true
-    $session   = New-RebootSession -Target $Cycles
-    $sessionId = [string]$session.session_id
-    $m         = [int]$session.m
-    $n         = 0
-}
-elseif ($runningExists) {
+if ($runningExists -and -not $NewSession) {
+    # Resume the in-progress session.  -Cycles is ignored: stored m wins (LOG023).
+    if ($Cycles -gt 0 -and $Cycles -ne [int]$session.m) {
+        Write-Host "[reboot] Resuming session (m=$([int]$session.m)); ignoring -Cycles $Cycles. Use -NewSession to start over." -ForegroundColor Yellow
+    }
     $resuming  = $true
     $sessionId = [string]$session.session_id
     $m         = [int]$session.m
     $n         = [int]$session.n
 }
+elseif ($Resume) {
+    # Task Scheduler trigger with no running session: nothing to do.  Exit quietly
+    # so a normal boot (or a Pi-controlled test) is never disturbed.
+    exit 0
+}
+elseif ($Cycles -gt 0) {
+    # Human start with an explicit target and no running session.
+    $session   = New-RebootSession -Target $Cycles
+    $sessionId = [string]$session.session_id
+    $m         = [int]$session.m
+    $n         = 0
+}
 else {
-    # No test in progress - human ran the script interactively.
-    # Start a new test with the default cycle count and arm Task Scheduler.
-    Set-RebootTaskEnabled $true
+    # Human start with no target and no running session: use the default.
     $session   = New-RebootSession -Target $_default_cycles
     $sessionId = [string]$session.session_id
     $m         = [int]$session.m
@@ -460,7 +467,6 @@ if ($resuming) {
         Write-StatusFile "REBOOT TEST COMPLETE`r`nSession  : $sessionId`r`nResult   : PASS ($n / $m cycles)`r`nFinished : $ts`r`nLog      : $_log_path\reboot_$sessionId.log"
         Invoke-ReportPy -SessionId $sessionId
         Notify-User "Reboot test COMPLETE: $n / $m cycles PASS  [$sessionId]"
-        Set-RebootTaskEnabled $false
         exit 0
     }
 

@@ -40,24 +40,38 @@ inconsistent.
 
 ## Fix
 
-Applied in commit that introduces this bug file:
+An initial attempt registered the task **disabled** and had `reboot.ps1` enable it
+on start / disable it on completion (`Set-RebootTaskEnabled`). That was abandoned:
+`Enable/Disable-ScheduledTask` on a SYSTEM/Highest task requires elevation, but
+`reboot.ps1` is run **non-elevated** (over SSH, or a normal local shell), so the
+enable silently failed and the test never resumed.
 
-1. **`setup_dut.ps1`**: `Register-StartupTask` now calls `Disable-ScheduledTask`
-   immediately after registration.  `DUT-Reboot` is registered as **disabled** by
-   default.
-2. **`reboot.ps1`**: A new `Set-RebootTaskEnabled` helper enables the task when a
-   test starts (fresh `-Cycles N` or interactive no-args start) and disables it on
-   completion or `-Stop`.  Task Scheduler therefore only fires while a DUT-local test
-   is actively running.
-3. **`reboot.ps1`**: The `reboot_stopped.flag` sentinel is retired; the scheduled-task
-   enabled state is now the single authoritative signal.
+Final fix — distinguish the human caller from the scheduler by **argument**, not by
+task state. The task stays enabled permanently; the gate is in-script:
+
+1. **`reboot.ps1`**: new `-Resume` entry point. It resumes a running session and
+   otherwise **exits silently — it never starts a new session**. Task Scheduler is
+   the only caller that passes `-Resume`.
+2. **`reboot.ps1`**: session resolution aligned with LOG023 — a running session
+   always wins (resume, stored `m` kept); a new session is created only when none is
+   running. New `-NewSession` flag forces a fresh session.
+3. **`reboot.ps1`**: removed the rogue "start a default 1000-cycle session when
+   nothing is running" branch from the scheduler path; removed the
+   `Set-RebootTaskEnabled` helper and the `reboot_stopped.flag` sentinel.
+4. **`setup_dut.ps1`**: `DUT-Reboot` is registered **enabled** with the action
+   `reboot.ps1 -Resume`.
+
+This keeps `reboot.ps1` runnable non-elevated, resumes correctly, and never disturbs
+a normal boot or a Pi-controlled test.
 
 ## Verification
 
-1. Register the task on a fresh DUT via `setup_dut.ps1 -RebootScript ...`.
-2. Confirm `Get-ScheduledTask DUT-Reboot | Select State` shows `Disabled`.
-3. Run `power_cycle.py --cycles 3 ...` from the Pi; confirm no `reboot_session.json`
-   is created under the PowerShell directory.
-4. Run `reboot.ps1 -Cycles 5`; confirm task becomes `Ready` (enabled) and
-   `reboot_session.json` is created.
-5. After 5 cycles complete, confirm task returns to `Disabled`.
+1. Register the task on a fresh DUT via `setup_dut.ps1 -RebootScript ...`; confirm
+   `(Get-ScheduledTask DUT-Reboot).Actions.Arguments` contains `-Resume`.
+2. Run `power_cycle.py --cycles 3 ...` from the Pi (DUT reboots, task fires
+   `reboot.ps1 -Resume` each boot); confirm **no** `reboot_session.json` is created
+   under the PowerShell directory and no DUT-local reboot loop starts.
+3. Run `reboot.ps1 -Cycles 5` (non-elevated, over SSH); confirm a session is created
+   and the DUT auto-reboots 5 times to completion without re-running the command.
+4. Interrupt mid-test, then run `reboot.ps1` again; confirm it resumes the same
+   `session_id` rather than starting over.
