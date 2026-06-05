@@ -360,6 +360,10 @@ function Register-StartupTask {
         -Settings    $settings `
         -Principal   $principal `
         -Force | Out-Null
+    # Register disabled: the task must be explicitly enabled by the test script
+    # before it fires.  This prevents Task Scheduler from auto-triggering the
+    # script during unrelated tests (e.g. Pi-controlled power_cycle.py / reboot.py).
+    Disable-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Out-Null
 }
 
 # 9a. dev_detect.ps1
@@ -392,9 +396,11 @@ if ($RebootScript -ne "") {
             -Description "Runs reboot.ps1 at startup to continue an in-progress reboot endurance test" `
             -ScriptPath  $RebootScript `
             -DelaySec    $RebootStartupDelaySec
-        Write-OK "Task 'DUT-Reboot' registered (startup + ${RebootStartupDelaySec}s delay, runs as SYSTEM)"
-        Write-Host "         Script : $((Resolve-Path -LiteralPath $RebootScript).Path)"
-        Write-Host "         NOTE   : reboot.ps1 exits silently when no test is in progress."
+        Write-OK "Task 'DUT-Reboot' registered (startup + ${RebootStartupDelaySec}s delay, runs as SYSTEM, DISABLED)"
+        Write-Host "         Script  : $((Resolve-Path -LiteralPath $RebootScript).Path)"
+        Write-Host "         NOTE    : Task is registered DISABLED.  reboot.ps1 enables it automatically"
+        Write-Host "                   when a test starts, and disables it again when the test completes"
+        Write-Host "                   or is stopped.  This prevents interference with Pi-controlled tests."
     }
 } else {
     Write-Skip "DUT-Reboot not configured (no -RebootScript supplied)"
@@ -570,7 +576,7 @@ if ($DevDetectScript -ne "" -and (Test-Path $DevDetectScript)) {
     Write-Host "  Task Scheduler    : DUT-DevDetect not configured"
 }
 if ($RebootScript -ne "" -and (Test-Path $RebootScript)) {
-    Write-Host "  Task Scheduler    : DUT-Reboot    (startup + ${RebootStartupDelaySec}s, as SYSTEM)"
+    Write-Host "  Task Scheduler    : DUT-Reboot    (startup + ${RebootStartupDelaySec}s, as SYSTEM, DISABLED until test starts)"
 } else {
     Write-Host "  Task Scheduler    : DUT-Reboot    not configured"
 }

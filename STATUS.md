@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-06-05 02:49 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-06-05 05:21 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -149,19 +149,19 @@ pie showData title Requirements by status
 
 ## Bugs
 
-**Total:** 25
+**Total:** 26
 
 ### By status
 
 | Status | Count |
 | --- | --- |
-| open | 14 |
+| open | 15 |
 | closed | 9 |
 | invalid | 2 |
 
 ```mermaid
 pie showData title Bugs by status
-    "open" : 14
+    "open" : 15
     "closed" : 9
     "invalid" : 2
 ```
@@ -172,7 +172,7 @@ pie showData title Bugs by status
 | --- | --- |
 | Ubuntu 26.04 LTS | 14 |
 | Ubuntu 24.04 LTS | 10 |
-| Windows 11 | 1 |
+| Windows 11 | 2 |
 
 ### Open bugs (oldest first)
 
@@ -192,6 +192,7 @@ pie showData title Bugs by status
 | [BUG0022](bugs/open/BUG0022-the-notification-is-misleading.md) | 2026-05-14 | open | The notification is misleading |
 | [BUG0023](bugs/open/BUG0023-two-log-dir-echo-statements-joined-on-one-line-in-.md) | 2026-05-14 | open | Two log_dir echo statements joined on one line in function.sh |
 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | 2026-06-05 | open | power_cycle.py msg.exe notification not shown on DUT during test |
+| [BUG0026](bugs/open/BUG0026-dut-reboot-task-fires-during-python-tests.md) | 2026-06-05 | open | DUT-Reboot Task Scheduler task fires during Pi-controlled Python tests |
 
 ## Traceability
 
@@ -206,6 +207,7 @@ pie showData title Bugs by status
 | FWK026 | [BUG0002](bugs/closed/BUG0002-cannot-open-dev-detect-sh-html-report.md) | closed |
 | FWK026 | [BUG0014](bugs/closed/BUG0014-root-requirement-of-detection-scripts-not-formalis.md) | closed |
 | FWK027 | [BUG0019](bugs/closed/BUG0019-result-json-metadata-corruption-session-id-unknown.md) | closed |
+| FWK032 | [BUG0026](bugs/open/BUG0026-dut-reboot-task-fires-during-python-tests.md) | open |
 | LOG008 | [BUG0004](bugs/open/BUG0004-fio-log-filenames-missing-timestamp-and-result.md) | open |
 | LOG012 | [BUG0024](bugs/closed/BUG0024-extract-bw-fails-on-slow-disks-no-data-0-0-mib-s-f.md) | closed |
 | LOG012 | [BUG0004](bugs/open/BUG0004-fio-log-filenames-missing-timestamp-and-result.md) | open |
@@ -224,7 +226,9 @@ pie showData title Bugs by status
 | NET012 | [BUG0015](bugs/open/BUG0015-net-test-sh-consumes-the-ssh-lifeline-nic.md) | open |
 | PWR009 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
 | PWR011 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
+| PWR011 | [BUG0026](bugs/open/BUG0026-dut-reboot-task-fires-during-python-tests.md) | open |
 | PWR012 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
+| PWR012 | [BUG0026](bugs/open/BUG0026-dut-reboot-task-fires-during-python-tests.md) | open |
 | SLP001 | [BUG0020](bugs/open/BUG0020-sleep-test-not-yet-integrated-or-verified.md) | open |
 | SLP004 | [BUG0020](bugs/open/BUG0020-sleep-test-not-yet-integrated-or-verified.md) | open |
 | SLP005 | [BUG0020](bugs/open/BUG0020-sleep-test-not-yet-integrated-or-verified.md) | open |

@@ -45,20 +45,21 @@
     progress it would resume and trigger another reboot.
 
   STOPPING A TEST
-    Use -Stop to cleanly halt any running test and prevent the next boot
-    from auto-restarting:
+    Use -Stop to cleanly halt any running test:
       .\reboot.ps1 -Stop
-    This writes logs\reboot_stopped.flag. To start a new test afterwards,
-    use -Cycles N (which clears the sentinel automatically).
+    This disables the DUT-Reboot Task Scheduler task so the next boot does
+    not auto-restart.  To start a new test afterwards, just run -Cycles N.
 
   RESUMING AFTER POWER LOSS
     The session file retains the last completed cycle. Task Scheduler resumes
     automatically on the next boot - no manual action needed.
 
   RUNNING WITH PYTHON (reboot.py / run_tests.sh)
-    When the Pi controls the DUT via reboot.py, run -Stop first to prevent
-    the DUT's Task Scheduler from auto-starting its own session:
-      ssh user@dut "powershell -File .\reboot.ps1 -Stop"
+    The DUT-Reboot task is registered DISABLED by default (setup_dut.ps1).
+    It is enabled only while a DUT-local reboot.ps1 test is actively running,
+    and disabled again on completion or -Stop.  Pi-controlled tests (reboot.py,
+    power_cycle.py) are therefore safe to run at any time without any manual
+    intervention.
 
 .EXAMPLE
   .\reboot.ps1
@@ -100,9 +101,9 @@ if ($script:_function_ps1_api -lt $_requires_function_ps1_api) {
 $_log_path     = Join-Path $_script_root 'logs'
 if (-not (Test-Path $_log_path)) { New-Item -Path $_log_path -ItemType Directory | Out-Null }
 
-$_session_file = Join-Path $_log_path 'reboot_session.json'
-$_status_file  = Join-Path $_log_path 'REBOOT_STATUS.txt'
-$_stopped_file = Join-Path $_log_path 'reboot_stopped.flag'
+$_session_file    = Join-Path $_log_path 'reboot_session.json'
+$_status_file     = Join-Path $_log_path 'REBOOT_STATUS.txt'
+$_reboot_task_name = 'DUT-Reboot'
 
 # -- Time helpers --------------------------------------------------------------
 
@@ -246,6 +247,19 @@ function Notify-User {
     try { & msg.exe * $Message 2>$null } catch {}
 }
 
+function Set-RebootTaskEnabled {
+    param([bool]$Enabled)
+    # Enable or disable the DUT-Reboot scheduled task so Task Scheduler only fires
+    # while a DUT-local test is actually running.  Fails silently (task may not be
+    # registered, or caller may not have admin rights — neither is fatal).
+    try {
+        $t = Get-ScheduledTask -TaskName $_reboot_task_name -ErrorAction SilentlyContinue
+        if ($null -eq $t) { return }
+        if ($Enabled) { Enable-ScheduledTask  -TaskName $_reboot_task_name -ErrorAction SilentlyContinue | Out-Null }
+        else          { Disable-ScheduledTask -TaskName $_reboot_task_name -ErrorAction SilentlyContinue | Out-Null }
+    } catch {}
+}
+
 function Invoke-ReportPy {
     param([string]$SessionId)
     # Regenerate the HTML report from the canonical result.json after every cycle
@@ -348,21 +362,21 @@ if ($Stop) {
     } else {
         Write-Host "[reboot] No running test to stop." -ForegroundColor Gray
     }
-    Write-Utf8NoBom -Path $_stopped_file -Text (Now-Iso)
-    Write-Host "[reboot] Stop sentinel written: $_stopped_file" -ForegroundColor Gray
-    Write-Host "[reboot] Next boot will NOT auto-start a new test." -ForegroundColor Gray
+    Set-RebootTaskEnabled $false
+    Write-Host "[reboot] DUT-Reboot task disabled — next boot will NOT auto-start." -ForegroundColor Gray
     Write-Host "[reboot] Use '.\reboot.ps1 -Cycles N' to start a new test." -ForegroundColor Cyan
     exit 0
 }
 
 # -- Session resolution --------------------------------------------------------
 # Rules (in priority order):
-#   -Cycles N (N > 0)              -> start NEW session; clear any stop sentinel
-#   no args, test running          -> resume (Task Scheduler boot trigger)
-#   no args, stop sentinel present -> exit silently (test was intentionally stopped)
-#   no args, nothing running       -> start new session with default cycle count
-
-$_stoppedFlagExists = Test-Path $_stopped_file
+#   -Cycles N (N > 0)        -> start NEW session; enable DUT-Reboot task
+#   no args, test running    -> resume (Task Scheduler boot trigger; task already enabled)
+#   no args, nothing running -> start new session with default cycle count; enable task
+#
+# NOTE: the DUT-Reboot task is registered DISABLED.  It is enabled here when a
+# test starts and disabled again on completion or -Stop.  This prevents Task
+# Scheduler from firing during Pi-controlled tests (power_cycle.py / reboot.py).
 
 $session  = Read-SessionJson
 $resuming = $false
@@ -372,8 +386,8 @@ $runningExists = ($null -ne $session -and
                   [int]$session.n -lt [int]$session.m)
 
 if ($Cycles -gt 0) {
-    # Explicit -Cycles N: clear any stop sentinel and start fresh.
-    if ($_stoppedFlagExists) { Remove-Item $_stopped_file -Force }
+    # Explicit -Cycles N: start fresh and arm Task Scheduler for resume on next boot.
+    Set-RebootTaskEnabled $true
     $session   = New-RebootSession -Target $Cycles
     $sessionId = [string]$session.session_id
     $m         = [int]$session.m
@@ -385,12 +399,10 @@ elseif ($runningExists) {
     $m         = [int]$session.m
     $n         = [int]$session.n
 }
-elseif ($_stoppedFlagExists) {
-    # Test was explicitly stopped — do not auto-restart.
-    exit 0
-}
 else {
-    # No test in progress and no stop sentinel — start new with default cycles.
+    # No test in progress — human ran the script interactively.
+    # Start a new test with the default cycle count and arm Task Scheduler.
+    Set-RebootTaskEnabled $true
     $session   = New-RebootSession -Target $_default_cycles
     $sessionId = [string]$session.session_id
     $m         = [int]$session.m
@@ -448,6 +460,7 @@ if ($resuming) {
         Write-StatusFile "REBOOT TEST COMPLETE`r`nSession  : $sessionId`r`nResult   : PASS ($n / $m cycles)`r`nFinished : $ts`r`nLog      : $_log_path\reboot_$sessionId.log"
         Invoke-ReportPy -SessionId $sessionId
         Notify-User "Reboot test COMPLETE: $n / $m cycles PASS  [$sessionId]"
+        Set-RebootTaskEnabled $false
         exit 0
     }
 
