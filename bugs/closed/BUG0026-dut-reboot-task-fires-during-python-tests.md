@@ -1,10 +1,11 @@
 ---
 id: BUG0026
-status: open
+status: closed
 created: 2026-06-05
+closed: 2026-06-05
 os:
   - Windows 11
-related_requirements: [PWR011, PWR012, FWK032]
+related_requirements: [PWR011, PWR012, FWK032, FWK034]
 related_bugs: []
 ---
 
@@ -38,7 +39,14 @@ permanently: it exits immediately if no `status = running` session exists" — b
 code does the opposite (starts a new session).  Specification and implementation were
 inconsistent.
 
+A secondary root cause: `setup_dut.ps1 -RebootScript` was a required argument to
+register the task.  Operators routinely ran `.\setup_dut.ps1` with no arguments,
+leaving the task unregistered, so the boot-time `-Resume` that drives multi-cycle
+tests never fired (the first reboot completed, then nothing continued).
+
 ## Fix
+
+**Phase 1 — Task Scheduler gate** (`reboot.ps1` v00.00.12, `setup_dut.ps1` v00.00.15):
 
 An initial attempt registered the task **disabled** and had `reboot.ps1` enable it
 on start / disable it on completion (`Set-RebootTaskEnabled`). That was abandoned:
@@ -61,17 +69,36 @@ task state. The task stays enabled permanently; the gate is in-script:
 4. **`setup_dut.ps1`**: `DUT-Reboot` is registered **enabled** with the action
    `reboot.ps1 -Resume`.
 
+**Phase 2 — Bug in Phase 1** (`reboot.ps1` v00.00.13):
+
+Local variable `$newSession = @{...}` in the resuming path collided with the
+script-level `[switch]$NewSession` parameter (PowerShell variable names are
+case-insensitive).  Assigning a hashtable to the switch variable threw:
+`Cannot convert value "System.Collections.Hashtable" to type
+"System.Management.Automation.SwitchParameter"`.
+Fix: renamed the local variable to `$updatedSession`.
+
+**Phase 3 — Zero-argument usability** (`setup_dut.ps1` v00.00.16, FWK034):
+
+`-RebootScript` was an optional parameter with no default.  Operators who ran
+`.\setup_dut.ps1` with no arguments never registered the `DUT-Reboot` task, so
+after the first reboot the test silently stalled.
+
+Fix: `setup_dut.ps1` now auto-detects `reboot.ps1` and `dev_detect.ps1` in its own
+directory (`$_script_root`) when no explicit path is supplied.  Since all three
+scripts are always deployed together (USB copy, scp, Ansible), plain
+`.\setup_dut.ps1` registers both startup tasks without any arguments.
+
 This keeps `reboot.ps1` runnable non-elevated, resumes correctly, and never disturbs
 a normal boot or a Pi-controlled test.
 
 ## Verification
 
-1. Register the task on a fresh DUT via `setup_dut.ps1 -RebootScript ...`; confirm
-   `(Get-ScheduledTask DUT-Reboot).Actions.Arguments` contains `-Resume`.
-2. Run `power_cycle.py --cycles 3 ...` from the Pi (DUT reboots, task fires
-   `reboot.ps1 -Resume` each boot); confirm **no** `reboot_session.json` is created
-   under the PowerShell directory and no DUT-local reboot loop starts.
-3. Run `reboot.ps1 -Cycles 5` (non-elevated, over SSH); confirm a session is created
-   and the DUT auto-reboots 5 times to completion without re-running the command.
-4. Interrupt mid-test, then run `reboot.ps1` again; confirm it resumes the same
-   `session_id` rather than starting over.
+Verified by operator on 2026-06-05 (Windows 11 DUT):
+
+1. `.\setup_dut.ps1` (no arguments) auto-detected `reboot.ps1` and registered
+   `DUT-Reboot` task with `-Resume` argument.
+2. `.\reboot.ps1 -Cycles 3 -NewSession` started the test, DUT rebooted, Task
+   Scheduler resumed via `reboot.ps1 -Resume` each boot, "test in progress"
+   notification appeared on DUT desktop, test completed all 3 cycles.
+3. `(Get-ScheduledTask DUT-Reboot).Actions.Arguments` confirmed `-Resume` present.

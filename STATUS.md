@@ -1,17 +1,17 @@
 # Project Status
 
-_Generated 2026-06-05 07:03 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-06-05 08:16 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
-**Total:** 133
+**Total:** 134
 
 ### By priority
 
 | Priority | Count |
 | --- | --- |
 | Must | 118 |
-| Should | 13 |
+| Should | 14 |
 | — | 2 |
 
 ### By status
@@ -20,13 +20,13 @@ _Generated 2026-06-05 07:03 · regenerate with `python scripts/stats.py > STATUS
 | --- | --- |
 | proposed | 108 |
 | implementing | 3 |
-| implemented | 22 |
+| implemented | 23 |
 
 ```mermaid
 pie showData title Requirements by status
     "proposed" : 108
     "implementing" : 3
-    "implemented" : 22
+    "implemented" : 23
 ```
 
 ### By section
@@ -38,7 +38,7 @@ pie showData title Requirements by status
 | DOC | 4 | 0 | 4 |
 | DSK | 10 | 0 | 8 |
 | FUN | 7 | 0 | 6 |
-| FWK | 33 | 0 | 28 |
+| FWK | 34 | 0 | 28 |
 | LOG | 24 | 0 | 24 |
 | NET | 13 | 0 | 13 |
 | PWR | 13 | 0 | 2 |
@@ -150,20 +150,20 @@ pie showData title Requirements by status
 
 ## Bugs
 
-**Total:** 26
+**Total:** 27
 
 ### By status
 
 | Status | Count |
 | --- | --- |
 | open | 15 |
-| closed | 9 |
+| closed | 10 |
 | invalid | 2 |
 
 ```mermaid
 pie showData title Bugs by status
     "open" : 15
-    "closed" : 9
+    "closed" : 10
     "invalid" : 2
 ```
 
@@ -173,7 +173,7 @@ pie showData title Bugs by status
 | --- | --- |
 | Ubuntu 26.04 LTS | 14 |
 | Ubuntu 24.04 LTS | 10 |
-| Windows 11 | 2 |
+| Windows 11 | 3 |
 
 ### Open bugs (oldest first)
 
@@ -208,7 +208,9 @@ pie showData title Bugs by status
 | FWK026 | [BUG0002](bugs/closed/BUG0002-cannot-open-dev-detect-sh-html-report.md) | closed |
 | FWK026 | [BUG0014](bugs/closed/BUG0014-root-requirement-of-detection-scripts-not-formalis.md) | closed |
 | FWK027 | [BUG0019](bugs/closed/BUG0019-result-json-metadata-corruption-session-id-unknown.md) | closed |
+| FWK032 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
 | FWK032 | [BUG0026](bugs/open/BUG0026-dut-reboot-task-fires-during-python-tests.md) | open |
+| FWK034 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
 | LOG008 | [BUG0004](bugs/open/BUG0004-fio-log-filenames-missing-timestamp-and-result.md) | open |
 | LOG012 | [BUG0024](bugs/closed/BUG0024-extract-bw-fails-on-slow-disks-no-data-0-0-mib-s-f.md) | closed |
 | LOG012 | [BUG0004](bugs/open/BUG0004-fio-log-filenames-missing-timestamp-and-result.md) | open |
@@ -226,8 +228,10 @@ pie showData title Bugs by status
 | NET011 | [BUG0015](bugs/open/BUG0015-net-test-sh-consumes-the-ssh-lifeline-nic.md) | open |
 | NET012 | [BUG0015](bugs/open/BUG0015-net-test-sh-consumes-the-ssh-lifeline-nic.md) | open |
 | PWR009 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
+| PWR011 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
 | PWR011 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
 | PWR011 | [BUG0026](bugs/open/BUG0026-dut-reboot-task-fires-during-python-tests.md) | open |
+| PWR012 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
 | PWR012 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
 | PWR012 | [BUG0026](bugs/open/BUG0026-dut-reboot-task-fires-during-python-tests.md) | open |
 | SLP001 | [BUG0020](bugs/open/BUG0020-sleep-test-not-yet-integrated-or-verified.md) | open |
