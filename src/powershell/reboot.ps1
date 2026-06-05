@@ -251,7 +251,7 @@ function Set-RebootTaskEnabled {
     param([bool]$Enabled)
     # Enable or disable the DUT-Reboot scheduled task so Task Scheduler only fires
     # while a DUT-local test is actually running.  Fails silently (task may not be
-    # registered, or caller may not have admin rights — neither is fatal).
+    # registered, or caller may not have admin rights - neither is fatal).
     try {
         $t = Get-ScheduledTask -TaskName $_reboot_task_name -ErrorAction SilentlyContinue
         if ($null -eq $t) { return }
@@ -363,7 +363,7 @@ if ($Stop) {
         Write-Host "[reboot] No running test to stop." -ForegroundColor Gray
     }
     Set-RebootTaskEnabled $false
-    Write-Host "[reboot] DUT-Reboot task disabled — next boot will NOT auto-start." -ForegroundColor Gray
+    Write-Host "[reboot] DUT-Reboot task disabled - next boot will NOT auto-start." -ForegroundColor Gray
     Write-Host "[reboot] Use '.\reboot.ps1 -Cycles N' to start a new test." -ForegroundColor Cyan
     exit 0
 }
@@ -400,7 +400,7 @@ elseif ($runningExists) {
     $n         = [int]$session.n
 }
 else {
-    # No test in progress — human ran the script interactively.
+    # No test in progress - human ran the script interactively.
     # Start a new test with the default cycle count and arm Task Scheduler.
     Set-RebootTaskEnabled $true
     $session   = New-RebootSession -Target $_default_cycles
