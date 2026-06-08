@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-06-08 03:38 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-06-08 03:44 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -174,6 +174,7 @@ pie showData title Bugs by status
 | Ubuntu 26.04 LTS | 14 |
 | Ubuntu 24.04 LTS | 10 |
 | Windows 11 | 3 |
+| Windows 11 (English / en-US) | 1 |
 | Windows 11 (Traditional Chinese / zh-TW) | 1 |
 
 ### Open bugs (oldest first)

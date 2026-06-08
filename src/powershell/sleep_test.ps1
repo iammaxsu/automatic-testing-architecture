@@ -73,7 +73,7 @@ $ErrorActionPreference = 'Stop'
 
 # -- Version & hard defaults ---------------------------------------------------
 
-$_script_ver = '00.00.02'
+$_script_ver = '00.00.03'
 
 # Hard defaults (used only when neither a parameter nor the config file supplies a value).
 $_def_cycles     = 1000
@@ -169,14 +169,16 @@ public static class SleepNative {
     public static extern bool CloseHandle(IntPtr h);
     [DllImport("powrprof.dll", SetLastError=true)]
     public static extern bool SetSuspendState(bool hibernate, bool force, bool wakeupEventsDisabled);
-    // Locale-independent capability probes (avoid parsing localized `powercfg /a` text - BUG: it
-    // never matched on non-English Windows because the section headers are translated).
+    // Locale-INDEPENDENT capability query.  CallNtPowerInformation(SystemPowerCapabilities=4)
+    // fills a SYSTEM_POWER_CAPABILITIES struct of plain BOOLEAN/BYTE fields - no strings, so it
+    // is identical on English, Traditional Chinese, or any other Windows UI language.  We read
+    // it as a raw byte buffer and pick out the fields we need by their fixed offsets:
+    //   [3]=SystemS1 [4]=SystemS2 [5]=SystemS3 [6]=SystemS4(hibernate) [8]=HiberFilePresent
+    //   [20]=AoAc (Always On Always Connected = S0 Low Power Idle / Modern Standby).
+    // (This replaces parsing `powercfg /a`, whose section headers are translated per locale.)
     [DllImport("powrprof.dll")]
-    [return: MarshalAs(UnmanagedType.U1)]
-    public static extern bool IsPwrSuspendAllowed();
-    [DllImport("powrprof.dll")]
-    [return: MarshalAs(UnmanagedType.U1)]
-    public static extern bool IsPwrHibernateAllowed();
+    public static extern uint CallNtPowerInformation(int InformationLevel, IntPtr lpInputBuffer,
+        uint nInputBufferSize, byte[] lpOutputBuffer, uint nOutputBufferSize);
 }
 '@
 }
@@ -200,21 +202,42 @@ function Enable-Hibernate {
     catch { Write-Warning "Could not enable hibernation (admin required): $($_.Exception.Message)" }
 }
 
-# Detect supported sleep states via locale-independent Win32 capability probes
-# (powrprof.dll IsPwrSuspendAllowed / IsPwrHibernateAllowed).  `powercfg /a`
-# text-parsing was tried first but its section headers are localized - on a
-# non-English Windows (e.g. Traditional Chinese) the English regexes never
-# matched, so zero states were ever detected.  These two APIs report exactly
-# what the test cares about: whether S3 sleep and S4 hibernate are available
-# AND enabled, with no language dependency.
+# Query SYSTEM_POWER_CAPABILITIES (CallNtPowerInformation) and return a hashtable
+# of plain booleans.  This is fully locale-independent - it reads a binary struct,
+# never the translated text of `powercfg /a` - and we synthesise our OWN canonical
+# English labels from it, so a report says "S3: not supported" identically on an
+# English or a Traditional Chinese DUT.
+function Get-SleepCapabilities {
+    $cap = [ordered]@{ S1=$false; S2=$false; S3=$false; S4=$false; HiberFile=$false; S0=$false; ok=$false }
+    try {
+        $buf = New-Object byte[] 256
+        $SystemPowerCapabilities = 4
+        $rc = [SleepNative]::CallNtPowerInformation($SystemPowerCapabilities, [IntPtr]::Zero, 0, $buf, [uint32]$buf.Length)
+        if ($rc -eq 0) {
+            $cap.S1        = ($buf[3]  -ne 0)
+            $cap.S2        = ($buf[4]  -ne 0)
+            $cap.S3        = ($buf[5]  -ne 0)
+            $cap.S4        = ($buf[6]  -ne 0)
+            $cap.HiberFile = ($buf[8]  -ne 0)
+            $cap.S0        = ($buf[20] -ne 0)
+            $cap.ok        = $true
+        }
+    } catch {}
+    return $cap
+}
+
+# Return the states this test can actually DRIVE (via SetSuspendState): S3 and/or
+# S4.  S0 Modern Standby is reported by -Detect for information but is not in this
+# list - it is entered by system idle, not by an explicit suspend call.
 #
-# NOTE: returns via the comma operator (,$states.ToArray()) to defeat
-# PowerShell's pipeline unwrapping - `return $emptyArray` would otherwise
-# collapse to $null, and $null.Count throws under Set-StrictMode.
+# NOTE: returns via the comma operator (,$array) to defeat PowerShell's pipeline
+# unwrapping - `return $emptyArray` would otherwise collapse to $null, and
+# $null.Count throws under Set-StrictMode.
 function Get-SupportedSleepStates {
+    $cap = Get-SleepCapabilities
     $states = New-Object System.Collections.Generic.List[string]
-    try { if ([SleepNative]::IsPwrSuspendAllowed())   { $states.Add('S3') } } catch {}
-    try { if ([SleepNative]::IsPwrHibernateAllowed()) { $states.Add('S4') } } catch {}
+    if ($cap.S3) { $states.Add('S3') }
+    if ($cap.S4) { $states.Add('S4') }
     return ,$states.ToArray()
 }
 
@@ -267,14 +290,35 @@ function Invoke-SleepOnce {
 
 # -- Detect-only mode ----------------------------------------------------------
 
+$caps      = Get-SleepCapabilities
 $supported = Get-SupportedSleepStates
-Write-Host ("         Supported sleep states: " + ($(if ($supported.Count) { $supported -join ', ' } else { '(none detected)' }))) -ForegroundColor DarkGray
+Write-Host ("         Testable sleep states: " + ($(if ($supported.Count) { $supported -join ', ' } else { '(none - S3 and S4 both unavailable)' }))) -ForegroundColor DarkGray
 
 if ($Detect) {
+    function Show-Cap { param([string]$Label, [bool]$Val)
+        $txt = if ($Val) { 'supported' } else { 'not supported' }
+        $col = if ($Val) { 'Green' }     else { 'DarkGray' }
+        Write-Host ("  {0,-26} {1}" -f $Label, $txt) -ForegroundColor $col
+    }
     Write-Host ""
-    Write-Host "Supported sleep states on this DUT:"
-    if ($supported.Count -eq 0) { Write-Host "  (none detected)" }
-    else { $supported | ForEach-Object { Write-Host "  $_" } }
+    Write-Host "Sleep capabilities on this DUT (canonical, locale-independent):"
+    Show-Cap 'S3 (Standby)'              $caps.S3
+    Show-Cap 'S4 (Hibernate)'           $caps.S4
+    Show-Cap 'S1 (Standby)'             $caps.S1
+    Show-Cap 'S2 (Standby)'             $caps.S2
+    Show-Cap 'S0 (Modern Standby)'      $caps.S0
+    Write-Host ""
+    if ($supported.Count -eq 0) {
+        Write-Host "This test drives S3/S4 via SetSuspendState; neither is available here," -ForegroundColor Yellow
+        if ($caps.S0) {
+            Write-Host "but the DUT supports S0 Modern Standby (entered by idle, not by an explicit" -ForegroundColor Yellow
+            Write-Host "suspend call) - the S3/S4 endurance test cannot run on this DUT." -ForegroundColor Yellow
+        } else {
+            Write-Host "so the S3/S4 endurance test cannot run on this DUT." -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host ("Testable states (auto): " + ($supported -join ', '))
+    }
     exit 0
 }
 
