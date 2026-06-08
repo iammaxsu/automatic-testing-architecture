@@ -73,7 +73,7 @@ $ErrorActionPreference = 'Stop'
 
 # -- Version & hard defaults ---------------------------------------------------
 
-$_script_ver = '00.00.01'
+$_script_ver = '00.00.02'
 
 # Hard defaults (used only when neither a parameter nor the config file supplies a value).
 $_def_cycles     = 1000
@@ -169,6 +169,14 @@ public static class SleepNative {
     public static extern bool CloseHandle(IntPtr h);
     [DllImport("powrprof.dll", SetLastError=true)]
     public static extern bool SetSuspendState(bool hibernate, bool force, bool wakeupEventsDisabled);
+    // Locale-independent capability probes (avoid parsing localized `powercfg /a` text - BUG: it
+    // never matched on non-English Windows because the section headers are translated).
+    [DllImport("powrprof.dll")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    public static extern bool IsPwrSuspendAllowed();
+    [DllImport("powrprof.dll")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    public static extern bool IsPwrHibernateAllowed();
 }
 '@
 }
@@ -192,38 +200,34 @@ function Enable-Hibernate {
     catch { Write-Warning "Could not enable hibernation (admin required): $($_.Exception.Message)" }
 }
 
-# Parse `powercfg /a` -> array of supported states among S1/S2/S3/S4/S0.
+# Detect supported sleep states via locale-independent Win32 capability probes
+# (powrprof.dll IsPwrSuspendAllowed / IsPwrHibernateAllowed).  `powercfg /a`
+# text-parsing was tried first but its section headers are localized - on a
+# non-English Windows (e.g. Traditional Chinese) the English regexes never
+# matched, so zero states were ever detected.  These two APIs report exactly
+# what the test cares about: whether S3 sleep and S4 hibernate are available
+# AND enabled, with no language dependency.
+#
+# NOTE: returns via the comma operator (,$states.ToArray()) to defeat
+# PowerShell's pipeline unwrapping - `return $emptyArray` would otherwise
+# collapse to $null, and $null.Count throws under Set-StrictMode.
 function Get-SupportedSleepStates {
-    $out = (& powercfg /a) 2>$null
-    $text = ($out -join "`n")
     $states = New-Object System.Collections.Generic.List[string]
-    # Only consider the "available" section (stop at the "not available" header).
-    $lines = $text -split "`n"
-    $inAvail = $false
-    foreach ($ln in $lines) {
-        if ($ln -match 'are available on this system') { $inAvail = $true;  continue }
-        if ($ln -match 'are not available')            { $inAvail = $false; continue }
-        if (-not $inAvail) { continue }
-        if ($ln -match '\(S3\)')              { if (-not $states.Contains('S3')) { $states.Add('S3') } }
-        elseif ($ln -match 'Hibernate')       { if (-not $states.Contains('S4')) { $states.Add('S4') } }
-        elseif ($ln -match '\(S1\)')          { if (-not $states.Contains('S1')) { $states.Add('S1') } }
-        elseif ($ln -match '\(S2\)')          { if (-not $states.Contains('S2')) { $states.Add('S2') } }
-        elseif ($ln -match 'S0 Low Power Idle'){ if (-not $states.Contains('S0')) { $states.Add('S0') } }
-    }
-    return $states.ToArray()
+    try { if ([SleepNative]::IsPwrSuspendAllowed())   { $states.Add('S3') } } catch {}
+    try { if ([SleepNative]::IsPwrHibernateAllowed()) { $states.Add('S4') } } catch {}
+    return ,$states.ToArray()
 }
 
 # Resolve the requested -State selection against what the system supports.
+# Returns via the comma operator - see the note on Get-SupportedSleepStates;
+# an empty result must stay an empty array, not collapse to $null, because
+# callers check $resolved.Count under Set-StrictMode.
 function Resolve-States {
     param([string]$Requested, [string[]]$Supported)
     if ($Requested -ieq 'auto') {
-        # auto: every supported state among S3/S4 (the states this test targets).
-        $sel = @($Supported | Where-Object { $_ -in @('S3','S4') })
-        if ($sel.Count -eq 0) {
-            # No S3/S4 - fall back to any available sleep (e.g. S0 modern standby).
-            $sel = @($Supported | Where-Object { $_ -in @('S0','S1','S2') })
-        }
-        return $sel
+        # auto: every supported state among S3/S4 - the only states
+        # Get-SupportedSleepStates probes for (this test's whole scope).
+        return ,@($Supported | Where-Object { $_ -in @('S3','S4') })
     }
     $want = @($Requested -split '[,\s]+' | Where-Object { $_ -ne '' } | ForEach-Object { $_.ToUpper() })
     $sel  = @()
@@ -231,7 +235,7 @@ function Resolve-States {
         if ($Supported -contains $w) { $sel += $w }
         else { Write-Warning "Requested sleep state '$w' is NOT supported on this system - skipping." }
     }
-    return $sel
+    return ,$sel
 }
 
 # Perform exactly one sleep+wake.  Returns when the RTC wake brings the DUT back.

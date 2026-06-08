@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-06-08 02:06 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-06-08 03:38 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -148,19 +148,21 @@ pie showData title Requirements by status
 
 ## Bugs
 
-**Total:** 27
+**Total:** 28
 
 ### By status
 
 | Status | Count |
 | --- | --- |
 | open | 15 |
+| resolved | 1 |
 | closed | 10 |
 | invalid | 2 |
 
 ```mermaid
 pie showData title Bugs by status
     "open" : 15
+    "resolved" : 1
     "closed" : 10
     "invalid" : 2
 ```
@@ -172,6 +174,7 @@ pie showData title Bugs by status
 | Ubuntu 26.04 LTS | 14 |
 | Ubuntu 24.04 LTS | 10 |
 | Windows 11 | 3 |
+| Windows 11 (Traditional Chinese / zh-TW) | 1 |
 
 ### Open bugs (oldest first)
 
@@ -232,6 +235,8 @@ pie showData title Bugs by status
 | PWR012 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
 | PWR012 | [BUG0027](bugs/open/BUG0027-reboot-py-boot-time-sec-measurement-defect.md) | open |
 | SLP001 | [BUG0020](bugs/open/BUG0020-sleep-test-not-yet-integrated-or-verified.md) | open |
+| SLP002 | [BUG0028](bugs/closed/BUG0028-sleep-test-detect-crashes-on-localized-windows.md) | resolved |
+| SLP003 | [BUG0028](bugs/closed/BUG0028-sleep-test-detect-crashes-on-localized-windows.md) | resolved |
 | SLP004 | [BUG0020](bugs/open/BUG0020-sleep-test-not-yet-integrated-or-verified.md) | open |
 | SLP005 | [BUG0020](bugs/open/BUG0020-sleep-test-not-yet-integrated-or-verified.md) | open |
 
