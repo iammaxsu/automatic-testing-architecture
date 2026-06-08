@@ -32,8 +32,8 @@
     entry point the Pi-controlled sleep_test.py invokes over SSH:
       .\sleep_test.ps1 -OneShot -State S3 -WakeAfter 10
 
-  CONFIGURATION (two methods, parameters win)
-    1. Config file  : sleep_config.ps1 next to this script (or -ConfigFile PATH).
+  CONFIGURATION (two methods, parameters win)  - SET001
+    1. Config file  : config.ps1 next to this script (or -ConfigFile PATH).
     2. Parameters   : -Cycles, -State, -PreDelay, -WakeAfter (override the file).
 
   ARTEFACTS (in logs\)  - FWK028: result.json is the canonical source of truth
@@ -65,7 +65,7 @@ param(
     [switch] $NewSession,           # discard a running session and start fresh
     [switch] $Stop,                 # mark any running session stopped
     [switch] $DryRun,               # skip the actual suspend (logic test only)
-    [string] $ConfigFile = ''       # path to sleep_config.ps1 (default: next to this script)
+    [string] $ConfigFile = ''       # path to config.ps1 (default: next to this script)
 )
 
 Set-StrictMode -Version Latest
@@ -87,9 +87,11 @@ $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Write-Host "sleep_test.ps1 v$_script_ver" -ForegroundColor Cyan
 
 # -- Config file (method 1) ----------------------------------------------------
-# Load side-effect-free defaults from sleep_config.ps1; parameters override below.
+# Load side-effect-free defaults from the shared config.ps1 (SET001); the
+# $_sleep_* variables defined there feed Get-ConfigValue below.  Parameters
+# passed on the command line override these values.
 
-if ($ConfigFile -eq '') { $ConfigFile = Join-Path $_script_root 'sleep_config.ps1' }
+if ($ConfigFile -eq '') { $ConfigFile = Join-Path $_script_root 'config.ps1' }
 if (Test-Path $ConfigFile) {
     try {
         . $ConfigFile

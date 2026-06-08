@@ -5,7 +5,7 @@
 
 .DESCRIPTION
   - Ensures a "logs" folder beside this script.
-  - Loads config.ps1 if present beside this script (for $_date2 / $_newcount).
+  - Loads the shared settings file config.ps1 if present beside this script (SET001).
   - Runs five hardware checks and compares against golden reference files.
   - First run initialises each golden file from the current machine values.
   - Subsequent runs compare current values to goldens; deviations = FAIL.
@@ -50,7 +50,7 @@ if (-not (Test-Path $_log_path)) {
     New-Item -Path $_log_path -ItemType Directory | Out-Null
 }
 
-# Optional: load config.ps1 beside this script (provides $_date2 / $_newcount)
+# Optional: load the shared settings file (config.ps1, SET001) if present.
 $_cfg = Resolve-FirstExisting -Paths @( (Join-Path $_script_root 'config.ps1') )
 if ($_cfg) { . $_cfg }
 
