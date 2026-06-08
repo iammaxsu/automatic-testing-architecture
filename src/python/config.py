@@ -141,6 +141,33 @@ REBOOT_SETTLE_SEC = 5                        # Seconds to wait after SSH reboot 
                                              #   starting to poll for the DUT going offline.
                                              #   Gives the OS time to begin its reboot sequence.
 
+# ---------- Sleep / suspend test (sleep_test.py) ----------
+# sleep_test.py is the Pi-controlled (control-node) sleep-wake endurance test.
+# It mirrors reboot.py: it does NOT put the DUT to sleep itself (a sleeping DUT
+# has no network), it SSH-invokes the DUT-local helper (sleep_test.ps1 -OneShot)
+# which arms a software RTC wake timer and then suspends; the Pi then confirms
+# the transition purely by network liveness (offline = slept, back online = woke).
+#
+# One cycle (loop) per SLP002/SLP003:
+#   1. DUT sits in Windows for SLEEP_PRE_DELAY_SEC seconds (settle / soak).
+#   2. SSH-invoke the DUT helper: arm a wake timer for SLEEP_WAKE_AFTER_SEC s,
+#      then enter the chosen sleep state (S3 = sleep, S4 = hibernate).
+#   3. Wait for the DUT to go offline  (entered sleep)  - capped by SLEEP_DEAD_TIMEOUT_SEC.
+#   4. Wait for the DUT to come back online (RTC woke it) - capped by SLEEP_WAKE_TIMEOUT_SEC.
+#   Verdict: PASS only if it both slept and woke within the timeouts.
+SLEEP_CYCLES            = 1000  # CLI: --cycles   Counted sleep-wake cycles PER sleep state.
+SLEEP_STATES           = "auto" # CLI: --states   "auto" (test every supported state among
+                                #   S3/S4), or an explicit comma list e.g. "S3", "S4", "S3,S4".
+SLEEP_PRE_DELAY_SEC    = 30     # CLI: --pre-delay   Phase 1: seconds in Windows before sleeping.
+SLEEP_WAKE_AFTER_SEC   = 10     # CLI: --wake-after  RTC wake timer: seconds asleep before wake.
+SLEEP_DEAD_TIMEOUT_SEC = 60     # UPPER LIMIT: max wait for the DUT to go offline after the sleep
+                                #   command; exceeding it -> NO_SLEEP (the DUT never suspended).
+SLEEP_WAKE_TIMEOUT_SEC = 120    # CLI: --wake-timeout   UPPER LIMIT: max wait for the DUT to come
+                                #   back online after it slept; exceeding it -> NO_WAKE (stuck asleep).
+# Remote path of the DUT-local helper that arms the wake timer and suspends.
+# Invoked over SSH as: powershell -ExecutionPolicy Bypass -File <this> -OneShot -State <S> -WakeAfter <n>
+SLEEP_REMOTE_HELPER    = r"C:\TestAutomation\sleep_test.ps1"  # CLI: --remote-helper
+
 # ---------- Output ----------
 LOG_DIR    = "./logs"       # CLI: --out      Where to write result.json and .log
 REPORT_DIR = "./logs"       # CLI: --report   Where to write _report.html (may differ from LOG_DIR)
