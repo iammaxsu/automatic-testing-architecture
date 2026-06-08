@@ -73,7 +73,7 @@ $ErrorActionPreference = 'Stop'
 
 # -- Version & hard defaults ---------------------------------------------------
 
-$_script_ver = '00.00.03'
+$_script_ver = '00.00.04'
 
 # Hard defaults (used only when neither a parameter nor the config file supplies a value).
 $_def_cycles     = 1000
@@ -203,32 +203,28 @@ function Enable-Hibernate {
 }
 
 # Query SYSTEM_POWER_CAPABILITIES (CallNtPowerInformation) and return a hashtable
-# of plain booleans.  This is fully locale-independent - it reads a binary struct,
-# never the translated text of `powercfg /a` - and we synthesise our OWN canonical
-# English labels from it, so a report says "S3: not supported" identically on an
-# English or a Traditional Chinese DUT.
+# of plain booleans for the two states this test is in scope for (S3, S4 - per
+# SLP002/SLP003; S5 is covered by the power-cycle/reboot tests, not here). This
+# is fully locale-independent - it reads a binary struct, never the translated
+# text of `powercfg /a` - and we synthesise our OWN canonical English labels
+# from it, so a report says "S3: not supported" identically on an English or a
+# Traditional Chinese DUT.
 function Get-SleepCapabilities {
-    $cap = [ordered]@{ S1=$false; S2=$false; S3=$false; S4=$false; HiberFile=$false; S0=$false; ok=$false }
+    $cap = [ordered]@{ S3=$false; S4=$false }
     try {
         $buf = New-Object byte[] 256
         $SystemPowerCapabilities = 4
         $rc = [SleepNative]::CallNtPowerInformation($SystemPowerCapabilities, [IntPtr]::Zero, 0, $buf, [uint32]$buf.Length)
         if ($rc -eq 0) {
-            $cap.S1        = ($buf[3]  -ne 0)
-            $cap.S2        = ($buf[4]  -ne 0)
-            $cap.S3        = ($buf[5]  -ne 0)
-            $cap.S4        = ($buf[6]  -ne 0)
-            $cap.HiberFile = ($buf[8]  -ne 0)
-            $cap.S0        = ($buf[20] -ne 0)
-            $cap.ok        = $true
+            $cap.S3 = ($buf[5] -ne 0)   # SystemS3
+            $cap.S4 = ($buf[6] -ne 0)   # SystemS4 (hibernate)
         }
     } catch {}
     return $cap
 }
 
-# Return the states this test can actually DRIVE (via SetSuspendState): S3 and/or
-# S4.  S0 Modern Standby is reported by -Detect for information but is not in this
-# list - it is entered by system idle, not by an explicit suspend call.
+# Return the in-scope states this DUT supports: S3 and/or S4 (the test's whole
+# scope per SLP002/SLP003 - see Get-SleepCapabilities).
 #
 # NOTE: returns via the comma operator (,$array) to defeat PowerShell's pipeline
 # unwrapping - `return $emptyArray` would otherwise collapse to $null, and
@@ -289,6 +285,9 @@ function Invoke-SleepOnce {
 }
 
 # -- Detect-only mode ----------------------------------------------------------
+# Scope (per SLP002/SLP003): this test covers S3 and S4 only. S5 (full
+# shutdown/power-off) is covered by the power-cycle/reboot tests, not here;
+# other ACPI states (S0/S1/S2) are out of scope and intentionally not surfaced.
 
 $caps      = Get-SleepCapabilities
 $supported = Get-SupportedSleepStates
@@ -298,24 +297,17 @@ if ($Detect) {
     function Show-Cap { param([string]$Label, [bool]$Val)
         $txt = if ($Val) { 'supported' } else { 'not supported' }
         $col = if ($Val) { 'Green' }     else { 'DarkGray' }
-        Write-Host ("  {0,-26} {1}" -f $Label, $txt) -ForegroundColor $col
+        Write-Host ("  {0,-20} {1}" -f $Label, $txt) -ForegroundColor $col
     }
     Write-Host ""
     Write-Host "Sleep capabilities on this DUT (canonical, locale-independent):"
-    Show-Cap 'S3 (Standby)'              $caps.S3
-    Show-Cap 'S4 (Hibernate)'           $caps.S4
-    Show-Cap 'S1 (Standby)'             $caps.S1
-    Show-Cap 'S2 (Standby)'             $caps.S2
-    Show-Cap 'S0 (Modern Standby)'      $caps.S0
+    Show-Cap 'S3 (Standby)'   $caps.S3
+    Show-Cap 'S4 (Hibernate)' $caps.S4
     Write-Host ""
     if ($supported.Count -eq 0) {
-        Write-Host "This test drives S3/S4 via SetSuspendState; neither is available here," -ForegroundColor Yellow
-        if ($caps.S0) {
-            Write-Host "but the DUT supports S0 Modern Standby (entered by idle, not by an explicit" -ForegroundColor Yellow
-            Write-Host "suspend call) - the S3/S4 endurance test cannot run on this DUT." -ForegroundColor Yellow
-        } else {
-            Write-Host "so the S3/S4 endurance test cannot run on this DUT." -ForegroundColor Yellow
-        }
+        Write-Host "Neither S3 nor S4 is available on this DUT - the sleep/wake" -ForegroundColor Yellow
+        Write-Host "endurance test cannot run here. (S5 is covered separately by" -ForegroundColor Yellow
+        Write-Host "the power-cycle/reboot tests, not by this tool.)" -ForegroundColor Yellow
     } else {
         Write-Host ("Testable states (auto): " + ($supported -join ', '))
     }
