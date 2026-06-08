@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-06-05 08:16 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-06-08 01:37 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -18,15 +18,15 @@ _Generated 2026-06-05 08:16 · regenerate with `python scripts/stats.py > STATUS
 
 | Status | Count |
 | --- | --- |
-| proposed | 108 |
+| proposed | 106 |
 | implementing | 3 |
-| implemented | 23 |
+| implemented | 25 |
 
 ```mermaid
 pie showData title Requirements by status
-    "proposed" : 108
+    "proposed" : 106
     "implementing" : 3
-    "implemented" : 23
+    "implemented" : 25
 ```
 
 ### By section
@@ -41,7 +41,7 @@ pie showData title Requirements by status
 | FWK | 34 | 0 | 28 |
 | LOG | 24 | 0 | 24 |
 | NET | 13 | 0 | 13 |
-| PWR | 13 | 0 | 2 |
+| PWR | 13 | 0 | 0 |
 | SET | 6 | 0 | 4 |
 | SLP | 5 | 0 | 5 |
 
@@ -136,8 +136,6 @@ pie showData title Requirements by status
 | [NET008](requirements/NET008.md) | proposed | Verdict Assignment per Test Item |
 | [NET011](requirements/NET011.md) | implementing | NIC Include/Exclude Lists |
 | [NET013](requirements/NET013.md) | proposed | iperf3 Log Filename Convention |
-| [PWR011](requirements/PWR011.md) | proposed | DUT-Local Reboot Test (`reboot.ps1`) |
-| [PWR012](requirements/PWR012.md) | proposed | Pi-Side Reboot Test (`reboot.py`) |
 | [SET001](requirements/SET001.md) | proposed | Tunable Parameters in config Only |
 | [SET002](requirements/SET002.md) | proposed | Utility Functions in function Only |
 | [SET003](requirements/SET003.md) | proposed | config Contains No Executable Logic |
@@ -193,7 +191,7 @@ pie showData title Bugs by status
 | [BUG0022](bugs/open/BUG0022-the-notification-is-misleading.md) | 2026-05-14 | open | The notification is misleading |
 | [BUG0023](bugs/open/BUG0023-two-log-dir-echo-statements-joined-on-one-line-in-.md) | 2026-05-14 | open | Two log_dir echo statements joined on one line in function.sh |
 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | 2026-06-05 | open | power_cycle.py msg.exe notification not shown on DUT during test |
-| [BUG0026](bugs/open/BUG0026-dut-reboot-task-fires-during-python-tests.md) | 2026-06-05 | open | DUT-Reboot Task Scheduler task fires during Pi-controlled Python tests |
+| [BUG0027](bugs/open/BUG0027-reboot-py-boot-time-sec-measurement-defect.md) | 2026-06-08 | open | `reboot.py` `boot_time_sec` does not measure the reboot round-trip |
 
 ## Traceability
 
@@ -209,7 +207,6 @@ pie showData title Bugs by status
 | FWK026 | [BUG0014](bugs/closed/BUG0014-root-requirement-of-detection-scripts-not-formalis.md) | closed |
 | FWK027 | [BUG0019](bugs/closed/BUG0019-result-json-metadata-corruption-session-id-unknown.md) | closed |
 | FWK032 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
-| FWK032 | [BUG0026](bugs/open/BUG0026-dut-reboot-task-fires-during-python-tests.md) | open |
 | FWK034 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
 | LOG008 | [BUG0004](bugs/open/BUG0004-fio-log-filenames-missing-timestamp-and-result.md) | open |
 | LOG012 | [BUG0024](bugs/closed/BUG0024-extract-bw-fails-on-slow-disks-no-data-0-0-mib-s-f.md) | closed |
@@ -230,10 +227,10 @@ pie showData title Bugs by status
 | PWR009 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
 | PWR011 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
 | PWR011 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
-| PWR011 | [BUG0026](bugs/open/BUG0026-dut-reboot-task-fires-during-python-tests.md) | open |
+| PWR011 | [BUG0027](bugs/open/BUG0027-reboot-py-boot-time-sec-measurement-defect.md) | open |
 | PWR012 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
 | PWR012 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
-| PWR012 | [BUG0026](bugs/open/BUG0026-dut-reboot-task-fires-during-python-tests.md) | open |
+| PWR012 | [BUG0027](bugs/open/BUG0027-reboot-py-boot-time-sec-measurement-defect.md) | open |
 | SLP001 | [BUG0020](bugs/open/BUG0020-sleep-test-not-yet-integrated-or-verified.md) | open |
 | SLP004 | [BUG0020](bugs/open/BUG0020-sleep-test-not-yet-integrated-or-verified.md) | open |
 | SLP005 | [BUG0020](bugs/open/BUG0020-sleep-test-not-yet-integrated-or-verified.md) | open |
