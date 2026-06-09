@@ -17,7 +17,7 @@ Set-StrictMode -Version Latest
 
 # -- Version -------------------------------------------------------------------
 
-$_function_ps1_api = '00.00.01'
+$_function_ps1_api = '00.00.02'
 
 # -- 1. Console output helpers -------------------------------------------------
 
@@ -257,4 +257,102 @@ function Add-CombinedSummary {
         Add-Content -Path $_summary_file -Value ''
     }
     Add-Content -Path $_summary_file -Value "`n`n`n"
+}
+
+# -- 5. Tool installation helpers ----------------------------------------------
+# Mirrors function.sh __pkg_install / iperf3_install for Windows package managers.
+# Called from test scripts to ensure a required tool is present before testing.
+
+# Reload PATH from Machine + User registry values so a tool installed in this
+# session (via winget/choco/scoop) becomes resolvable without opening a new shell.
+function Update-PathFromEnv {
+    $m = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+    $u = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $env:PATH = (@($m, $u) | Where-Object { $_ -and $_ -ne '' }) -join ';'
+}
+
+# Like function.sh iperf3_install: already in PATH -> use it; missing -> install.
+# Returns the resolved iperf3.exe path, or $null if all methods fail.
+# Install fan-out (closest to bash __pkg_install apt-get/dnf/yum order):
+#   1. winget  (built into Win10 1809+/11)
+#   2. Chocolatey
+#   3. Scoop
+#   4. Portable-zip download from a GitHub release (no-package-manager fallback;
+#      unpacked into ToolsDir\iperf3 and prepended to PATH for this session only)
+function Ensure-Iperf3 {
+    param(
+        [int]    $AutoInstall = 1,
+        [string] $WingetId   = 'ar51an.iPerf3',
+        [string] $ChocoPkg   = 'iperf3',
+        [string] $ScoopPkg   = 'iperf3',
+        [string] $GhRepo     = 'ar51an/iperf3-win-builds',
+        [string] $ZipPattern = 'win64.zip',
+        [string] $ToolsDir   = $env:TEMP
+    )
+    $c = Get-Command iperf3 -ErrorAction SilentlyContinue
+    if ($null -ne $c) { return $c.Source }
+    if ($AutoInstall -ne 1) { return $null }
+
+    Write-Host '         iperf3 missing -- attempting auto-install...' -ForegroundColor Yellow
+
+    if ($WingetId -ne '' -and $null -ne (Get-Command winget -ErrorAction SilentlyContinue)) {
+        Write-Host ("         winget install $WingetId") -ForegroundColor DarkGray
+        try {
+            & winget install --id $WingetId --exact --silent `
+                --accept-package-agreements --accept-source-agreements `
+                --disable-interactivity 2>&1 | Out-Null
+        } catch {}
+        Update-PathFromEnv
+        $c = Get-Command iperf3 -ErrorAction SilentlyContinue
+        if ($null -ne $c) { return $c.Source }
+    }
+    if ($ChocoPkg -ne '' -and $null -ne (Get-Command choco -ErrorAction SilentlyContinue)) {
+        Write-Host ("         choco install $ChocoPkg") -ForegroundColor DarkGray
+        try { & choco install $ChocoPkg -y --no-progress 2>&1 | Out-Null } catch {}
+        Update-PathFromEnv
+        $c = Get-Command iperf3 -ErrorAction SilentlyContinue
+        if ($null -ne $c) { return $c.Source }
+    }
+    if ($ScoopPkg -ne '' -and $null -ne (Get-Command scoop -ErrorAction SilentlyContinue)) {
+        Write-Host ("         scoop install $ScoopPkg") -ForegroundColor DarkGray
+        try { & scoop install $ScoopPkg 2>&1 | Out-Null } catch {}
+        Update-PathFromEnv
+        $c = Get-Command iperf3 -ErrorAction SilentlyContinue
+        if ($null -ne $c) { return $c.Source }
+    }
+
+    # Portable-zip download fallback: no package manager available or all failed.
+    if ($GhRepo -eq '') { return $null }
+    try {
+        $api = "https://api.github.com/repos/$GhRepo/releases/latest"
+        $hdr = @{ 'User-Agent' = 'function.ps1'; 'Accept' = 'application/vnd.github+json' }
+        [Net.ServicePointManager]::SecurityProtocol =
+            [Net.SecurityProtocolType]::Tls12 -bor [Net.ServicePointManager]::SecurityProtocol
+        $rel   = Invoke-RestMethod -Uri $api -Headers $hdr -UseBasicParsing
+        $asset = @($rel.assets | Where-Object { $_.name -like "*$ZipPattern" } | Select-Object -First 1)
+        if ($asset.Count -eq 0) {
+            Write-Warning "iperf3: no release asset matching '*$ZipPattern' in $GhRepo latest."
+            return $null
+        }
+        $url  = $asset[0].browser_download_url
+        $dest = Join-Path $ToolsDir 'iperf3'
+        $zip  = Join-Path $env:TEMP ("iperf3_" + [guid]::NewGuid().ToString('N') + '.zip')
+        if (-not (Test-Path $ToolsDir)) { New-Item -ItemType Directory -Path $ToolsDir | Out-Null }
+        Write-Host ("         Downloading iperf3 : " + $url) -ForegroundColor DarkGray
+        $oldP = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
+        try   { Invoke-WebRequest -Uri $url -OutFile $zip -Headers $hdr -UseBasicParsing }
+        finally { $ProgressPreference = $oldP }
+        if (Test-Path $dest) { Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue }
+        Expand-Archive -Path $zip -DestinationPath $dest -Force
+        Remove-Item $zip -Force -ErrorAction SilentlyContinue
+        $exe = Get-ChildItem -Path $dest -Filter 'iperf3.exe' -Recurse -ErrorAction SilentlyContinue |
+               Select-Object -First 1
+        if ($null -ne $exe) {
+            $env:PATH = (Split-Path -Parent $exe.FullName) + ';' + $env:PATH
+            return $exe.FullName
+        }
+    } catch {
+        Write-Warning "iperf3 download/extract failed: $($_.Exception.Message)"
+    }
+    return $null
 }

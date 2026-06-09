@@ -68,9 +68,22 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$_script_ver  = '00.00.04'
+$_script_ver                = '00.00.05'
+$_requires_function_ps1_api = '00.00.02'
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Write-Host "net_test.ps1 v$_script_ver" -ForegroundColor Cyan
+
+# -- Shared library (function.ps1) ---------------------------------------------
+$_fn = Join-Path $_script_root 'function.ps1'
+if (-not (Test-Path $_fn)) {
+    Write-Error "function.ps1 not found at $_fn  -  cannot continue"
+    exit 1
+}
+. $_fn
+if ($script:_function_ps1_api -lt $_requires_function_ps1_api) {
+    Write-Error "function.ps1 API '$($script:_function_ps1_api)' is too old; need '$_requires_function_ps1_api'"
+    exit 1
+}
 
 # -- Config file (SET001) ------------------------------------------------------
 if ($ConfigFile -eq '') { $ConfigFile = Join-Path $_script_root 'config.ps1' }
@@ -169,98 +182,6 @@ function Get-NicSpeedOptions {
     return ,$out
 }
 
-# -- iperf3 auto-install helpers (NET006; mirrors net_test.sh iperf3_install) --
-# Refresh the process PATH from the Machine + User scopes so a tool installed by
-# winget/choco in this same run becomes resolvable without a new shell.
-function Update-PathFromEnv {
-    $m = [Environment]::GetEnvironmentVariable('Path','Machine')
-    $u = [Environment]::GetEnvironmentVariable('Path','User')
-    $env:PATH = (@($m,$u) | Where-Object { $_ -and $_ -ne '' }) -join ';'
-}
-
-function Resolve-Iperf3 {
-    $c = Get-Command iperf3 -ErrorAction SilentlyContinue
-    if ($null -ne $c) { return $c.Source }
-    return $null
-}
-
-# Download the latest portable iperf3 zip from a GitHub release and unpack it
-# beside the script (tools\iperf3), then prepend its folder to PATH.  Used only
-# when no package manager is available.  Returns the iperf3.exe path or $null.
-function Install-Iperf3FromGitHub {
-    param([string]$Repo, [string]$ZipPattern, [string]$ToolsDir)
-    if ($Repo -eq '') { return $null }
-    try {
-        $api = "https://api.github.com/repos/$Repo/releases/latest"
-        $hdr = @{ 'User-Agent' = 'net_test.ps1'; 'Accept' = 'application/vnd.github+json' }
-        [Net.ServicePointManager]::SecurityProtocol =
-            [Net.SecurityProtocolType]::Tls12 -bor [Net.ServicePointManager]::SecurityProtocol
-        $rel = Invoke-RestMethod -Uri $api -Headers $hdr -UseBasicParsing
-        $asset = @($rel.assets | Where-Object { $_.name -like "*$ZipPattern" } | Select-Object -First 1)
-        if ($asset.Count -eq 0) {
-            Write-Warning "iperf3: no release asset matching '*$ZipPattern' in $Repo latest."
-            return $null
-        }
-        $url = $asset[0].browser_download_url
-        if (-not (Test-Path $ToolsDir)) { New-Item -ItemType Directory -Path $ToolsDir | Out-Null }
-        $zip  = Join-Path $env:TEMP ("iperf3_" + [guid]::NewGuid().ToString('N') + '.zip')
-        $dest = Join-Path $ToolsDir 'iperf3'
-        Write-Host ("         Downloading iperf3 : " + $url) -ForegroundColor DarkGray
-        $oldP = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
-        try { Invoke-WebRequest -Uri $url -OutFile $zip -Headers $hdr -UseBasicParsing }
-        finally { $ProgressPreference = $oldP }
-        if (Test-Path $dest) { Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue }
-        Expand-Archive -Path $zip -DestinationPath $dest -Force
-        Remove-Item $zip -Force -ErrorAction SilentlyContinue
-        $exe = Get-ChildItem -Path $dest -Filter 'iperf3.exe' -Recurse -ErrorAction SilentlyContinue |
-               Select-Object -First 1
-        if ($null -ne $exe) {
-            $env:PATH = (Split-Path -Parent $exe.FullName) + ';' + $env:PATH
-            return $exe.FullName
-        }
-    } catch {
-        Write-Warning "iperf3 download/extract failed: $($_.Exception.Message)"
-    }
-    return $null
-}
-
-# Ensure iperf3 is available, installing it if missing (config-gated).  Returns
-# the resolved path or $null.  Order mirrors the bash __pkg_install fan-out:
-# prefer the system package manager, fall back to a portable download.
-function Install-Iperf3 {
-    $p = Resolve-Iperf3
-    if ($null -ne $p) { return $p }
-    if ($Iperf3AutoInst -ne 1) { return $null }
-
-    Write-Host "         iperf3 missing -- attempting auto-install..." -ForegroundColor Yellow
-
-    if ($null -ne (Get-Command winget -ErrorAction SilentlyContinue) -and $Iperf3WingetId -ne '') {
-        Write-Host ("         winget install $Iperf3WingetId") -ForegroundColor DarkGray
-        try {
-            & winget install --id $Iperf3WingetId --exact --silent `
-                --accept-package-agreements --accept-source-agreements `
-                --disable-interactivity 2>&1 | Out-Null
-        } catch {}
-        Update-PathFromEnv
-        $p = Resolve-Iperf3; if ($null -ne $p) { return $p }
-    }
-    if ($null -ne (Get-Command choco -ErrorAction SilentlyContinue) -and $Iperf3ChocoPkg -ne '') {
-        Write-Host ("         choco install $Iperf3ChocoPkg") -ForegroundColor DarkGray
-        try { & choco install $Iperf3ChocoPkg -y --no-progress 2>&1 | Out-Null } catch {}
-        Update-PathFromEnv
-        $p = Resolve-Iperf3; if ($null -ne $p) { return $p }
-    }
-    if ($null -ne (Get-Command scoop -ErrorAction SilentlyContinue) -and $Iperf3ScoopPkg -ne '') {
-        Write-Host ("         scoop install $Iperf3ScoopPkg") -ForegroundColor DarkGray
-        try { & scoop install $Iperf3ScoopPkg 2>&1 | Out-Null } catch {}
-        Update-PathFromEnv
-        $p = Resolve-Iperf3; if ($null -ne $p) { return $p }
-    }
-    # No package manager succeeded: portable-zip download fallback.
-    return (Install-Iperf3FromGitHub -Repo $Iperf3GhRepo -ZipPattern $Iperf3ZipPat `
-                -ToolsDir (Join-Path $_script_root 'tools'))
-}
-
 # -- Admin check ---------------------------------------------------------------
 $_isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
             ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -272,7 +193,14 @@ if (-not $_isAdmin -and -not $DryRun) {
 # -- iperf3 check + auto-install (NET006) --------------------------------------
 # Like net_test.sh's iperf3_install: use it if present, otherwise install it.
 if (-not $DryRun) {
-    $i3path = Install-Iperf3
+    $i3path = Ensure-Iperf3 `
+        -AutoInstall $Iperf3AutoInst `
+        -WingetId    $Iperf3WingetId `
+        -ChocoPkg    $Iperf3ChocoPkg `
+        -ScoopPkg    $Iperf3ScoopPkg `
+        -GhRepo      $Iperf3GhRepo `
+        -ZipPattern  $Iperf3ZipPat `
+        -ToolsDir    (Join-Path $_script_root 'tools')
     if ($null -eq $i3path) {
         Write-Error ("iperf3 not found and auto-install failed.`n" +
             "Install it manually (winget install --id $Iperf3WingetId) or download from`n" +
