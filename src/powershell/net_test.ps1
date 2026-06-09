@@ -66,7 +66,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$_script_ver  = '00.00.02'
+$_script_ver  = '00.00.03'
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Write-Host "net_test.ps1 v$_script_ver" -ForegroundColor Cyan
 
@@ -255,15 +255,30 @@ for ($i = 0; $i -lt $_evenNics.Count; $i++) {
     $evenOpts = Get-NicSpeedOptions $_evenNics[$i]
     $oddOpts  = Get-NicSpeedOptions $_oddNics[$i]
     $plan = @()
-    if ($evenOpts.Count -gt 0 -and $oddOpts.Count -gt 0) {
+    if ($evenOpts.Count -gt 0 -or $oddOpts.Count -gt 0) {
         $evenMap = @{}; foreach ($o in $evenOpts) { $evenMap[[int]$o.mbps] = $o.display }
         $oddMap  = @{}; foreach ($o in $oddOpts)  { $oddMap[[int]$o.mbps]  = $o.display }
-        $common = @($evenMap.Keys | Where-Object { $oddMap.ContainsKey($_) } | Sort-Object)
+        # Union of both NICs' advertised speeds. Speeds only one NIC supports are
+        # included but marked testable=false; the job records them as N/A so the
+        # user can see which speeds were considered but skipped.
+        $allSpeeds = @(($evenMap.Keys + $oddMap.Keys) | Sort-Object -Unique)
         if ($_speedAllow.Count -gt 0) {
-            $common = @($common | Where-Object { $_speedAllow -contains $_ })
+            $allSpeeds = @($allSpeeds | Where-Object { $_speedAllow -contains $_ })
         }
-        foreach ($m in $common) {
-            $plan += @{ mbps = [int]$m; evenDisplay = $evenMap[[int]$m]; oddDisplay = $oddMap[[int]$m] }
+        foreach ($m in $allSpeeds) {
+            $testable = $evenMap.ContainsKey($m) -and $oddMap.ContainsKey($m)
+            $naReason = $null
+            if (-not $testable) {
+                if (-not $evenMap.ContainsKey($m)) { $naReason = "$($_evenNics[$i]) does not support ${m}M" }
+                else                               { $naReason = "$($_oddNics[$i]) does not support ${m}M" }
+            }
+            $plan += @{
+                mbps        = [int]$m
+                testable    = $testable
+                evenDisplay = if ($evenMap.ContainsKey($m)) { $evenMap[[int]$m] } else { $null }
+                oddDisplay  = if ($oddMap.ContainsKey($m))  { $oddMap[[int]$m]  } else { $null }
+                na_reason   = $naReason
+            }
         }
     }
     if ($plan.Count -eq 0) {
@@ -271,12 +286,14 @@ for ($i = 0; $i -lt $_evenNics.Count; $i++) {
         $neg = Get-LinkMbps (Get-NetAdapter -Name $_evenNics[$i] -ErrorAction SilentlyContinue)
         if ($neg -le 0) { $neg = 1000 }
         if ($_speedAllow.Count -eq 0 -or $_speedAllow -contains $neg) {
-            $plan += @{ mbps = $neg; evenDisplay = $null; oddDisplay = $null }
+            $plan += @{ mbps = $neg; testable = $true; evenDisplay = $null; oddDisplay = $null; na_reason = $null }
         }
     }
     $_pairPlans += ,$plan
-    $spdList = @($plan | ForEach-Object { $_.mbps }) -join ', '
-    Write-Host ("  Pair $i : " + $_evenNics[$i] + " <-> " + $_oddNics[$i] + "   speeds: [$spdList] Mbps") -ForegroundColor Green
+    $spdList = @($plan | ForEach-Object {
+        if ($_.testable) { "$($_.mbps)M" } else { "$($_.mbps)M(N/A)" }
+    }) -join ', '
+    Write-Host ("  Pair $i : " + $_evenNics[$i] + " <-> " + $_oddNics[$i] + "   speeds: [$spdList]") -ForegroundColor Green
 }
 foreach ($u in $_unpairedNics) { Write-Host ("  Unpaired : $u") -ForegroundColor Yellow }
 Write-Host ""
@@ -445,7 +462,7 @@ $_pairJobBlock = {
     @(
         "============= Pair ${PairIdx}: ${pair} ============="
         "Start: $(Now-Iso)   Iteration: $LoopN/$TotalLoops"
-        "Speeds to test: $(@($SpeedPlan | ForEach-Object { $_.mbps }) -join ', ') Mbps"
+        "Speeds planned: $(@($SpeedPlan | ForEach-Object { if ($_.testable) { "$($_.mbps)M" } else { "$($_.mbps)M(N/A)" } }) -join ', ')"
         "====================================================="
     ) | Set-Content $pairLog
 
@@ -455,6 +472,19 @@ $_pairJobBlock = {
         foreach ($step in $SpeedPlan) {
             $mbps = [int]$step.mbps
             "" | Add-Content $pairLog
+
+            # Speed not testable: one NIC in the pair does not support it.
+            if (-not [bool]$step.testable) {
+                $naReason = [string]$step.na_reason
+                "### Speed = $mbps Mbps  [N/A: $naReason]" | Add-Content $pairLog
+                $speedResults += @{
+                    speed_mbps = $mbps; ipv4_ping='N/A'; ipv6_ping='N/A'
+                    throughput=@{tcp_fwd_mbps=0;tcp_rev_mbps=0;udp_fwd_mbps=0;udp_rev_mbps=0}
+                    verdict='N/A'; na_reason=$naReason
+                }
+                continue
+            }
+
             "### Speed = $mbps Mbps" | Add-Content $pairLog
 
             # Force speed on both NICs and wait for the link to settle.
@@ -581,10 +611,14 @@ try {
                         $_pairResults[$k] = @{ name = $res.name; speeds = @() }
                     }
                     $_pairResults[$k].speeds += $res.speeds
-                    $verd = if ($res.speeds.Count -gt 0) { $res.speeds[-1].verdict } else { '?' }
+                    $nPass = @($res.speeds | Where-Object { $_.verdict -eq 'PASS'    }).Count
+                    $nFail = @($res.speeds | Where-Object { $_.verdict -eq 'FAIL'    }).Count
+                    $nUnk  = @($res.speeds | Where-Object { $_.verdict -eq 'UNKNOWN' }).Count
+                    $nNa   = @($res.speeds | Where-Object { $_.verdict -eq 'N/A'     }).Count
+                    $verd  = if ($nFail -gt 0) { 'FAIL' } elseif ($nPass -gt 0) { 'PASS' } elseif ($nUnk -gt 0) { 'UNKNOWN' } else { 'N/A' }
                     $col = 'Yellow'; if ($verd -eq 'PASS') { $col = 'Green' } elseif ($verd -eq 'FAIL') { $col = 'Red' }
-                    Write-MainLog "[Pair] DONE  $($res.name)  last-verdict=$verd  speeds=$($res.speeds.Count)"
-                    Write-Host ("  [Pair] " + $res.name + "  ($($res.speeds.Count) speed(s), last=$verd)") -ForegroundColor $col
+                    Write-MainLog "[Pair] DONE  $($res.name)  verdict=$verd  pass=$nPass fail=$nFail unknown=$nUnk na=$nNa"
+                    Write-Host ("  [Pair] " + $res.name + "  (pass=$nPass fail=$nFail unknown=$nUnk na=$nNa)") -ForegroundColor $col
                 }
             } catch {
                 Write-Warning "Job $($j.Id) error: $_"
