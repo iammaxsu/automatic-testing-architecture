@@ -69,7 +69,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$_script_ver                = '00.00.07'
+$_script_ver                = '00.00.08'
 $_requires_function_ps1_api = '00.00.02'
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Write-Host "net_test.ps1 v$_script_ver" -ForegroundColor Cyan
@@ -234,10 +234,12 @@ if ($_allNics.Count -eq 0) {
 # -- Management NIC exclusion (NET012) -----------------------------------------
 # Priority: 1. MAC list from config ($_net_exclude_macs)
 #           2. -Lifeline name(s) from CLI
-#           3. Fallback: lowest-metric default route (auto-detect)
-# The fallback gives wrong results when all test NICs also have a default gateway
-# (Windows assigns lower metrics to faster links), so using MAC addresses in
-# config.ps1 is strongly preferred for DUTs with multiple gateways.
+#           3. Fallback: the NIC carrying the active SSH/RDP session
+# The fallback identifies the genuine lifeline by looking at which local IP the
+# inbound management connection terminates on -- far more reliable than guessing
+# from route metrics (Windows gives faster links lower metrics, so a 10G test NIC
+# can outrank the real management NIC).  When the script runs from a local console
+# there is no remote session, so nothing is excluded and every NIC is testable.
 $_excluded = [System.Collections.Generic.List[string]]::new()
 
 # Step 1: resolve MAC addresses from config to NIC names.
@@ -263,18 +265,28 @@ foreach ($ln in ($Lifeline -split '[,;]+' | Where-Object { $_ -ne '' })) {
     }
 }
 
-# Step 3: fallback auto-detect (only when nothing was specified above).
+# Step 3: fallback -- exclude the NIC carrying the active remote session (SSH 22 /
+# RDP 3389).  Runs only when nothing was specified above.  Local-console runs have
+# no such session, so this correctly excludes nothing.
 if ($_excluded.Count -eq 0) {
     try {
-        $r = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
-             Sort-Object { $_.RouteMetric + $_.InterfaceMetric } | Select-Object -First 1
-        if ($null -ne $r) {
-            $dn = (Get-NetAdapter -InterfaceIndex $r.InterfaceIndex -ErrorAction SilentlyContinue).Name
-            if ($null -ne $dn) {
-                [void]$_excluded.Add($dn)
-                Write-Host ("         Excl (route)    : $dn  (auto-detected, lowest default-route metric)") -ForegroundColor DarkGray
-                Write-Host ("         NOTE: set _net_exclude_macs in config.ps1 for reliable detection") -ForegroundColor DarkYellow
+        $mgmtPorts = @(22, 3389)
+        $sessionIps = @(Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
+            Where-Object { $mgmtPorts -contains $_.LocalPort -and
+                           $_.RemoteAddress -notin @('127.0.0.1', '::1') } |
+            Select-Object -ExpandProperty LocalAddress -Unique)
+        foreach ($lip in $sessionIps) {
+            $own = Get-NetIPAddress -IPAddress $lip -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($null -ne $own) {
+                $nicName = (Get-NetAdapter -InterfaceIndex $own.InterfaceIndex -ErrorAction SilentlyContinue).Name
+                if ($null -ne $nicName -and -not $_excluded.Contains($nicName)) {
+                    [void]$_excluded.Add($nicName)
+                    Write-Host ("         Excl (session)  : $nicName  (carries active SSH/RDP session, local $lip)") -ForegroundColor DarkGray
+                }
             }
+        }
+        if ($_excluded.Count -eq 0) {
+            Write-Host ("         Lifeline       : none detected (local console; no NIC excluded)") -ForegroundColor DarkGray
         }
     } catch {}
 }

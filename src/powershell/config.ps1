@@ -60,8 +60,10 @@ $_net_exclude_macs     = ''   # NET012: comma-separated MAC addresses of managem
                               #   (AA-BB-CC-DD-EE-FF) separators are accepted.
                               #   Supports multiple entries for multi-management-NIC
                               #   setups (e.g. one control USB NIC + one spare USB NIC).
-                              #   When non-empty this overrides the route-metric
-                              #   auto-detection.
+                              #   When empty, net_test.ps1 falls back to excluding the
+                              #   NIC carrying the active SSH/RDP session (nothing is
+                              #   excluded on a local-console run).  Set this to pin the
+                              #   management NIC(s) for unattended / Ansible-driven runs.
                               #   Example (single): '00-50-56-C0-00-08'
                               #   Example (two):    '00-50-56-C0-00-08, AA-BB-CC-DD-EE-FF'
 # Multi-speed testing (NET004): each NIC is driven at every link speed it
