@@ -47,7 +47,6 @@
 .EXAMPLE
   .\net_test.ps1
   .\net_test.ps1 -Loops 3 -Speeds "1000,10000"
-  .\net_test.ps1 -Skip "Ethernet 3" -VendorFilter Intel
   .\net_test.ps1 -Lifeline "Ethernet 4"
   .\net_test.ps1 -DryRun
 #>
@@ -62,7 +61,7 @@ param(
     [int]    $IperfOmitSec = -1,   # iperf3 ramp-up omit in sec (-1 = config)
     [int]    $TcpPassPct   = 0,    # TCP pass threshold % of link speed (0 = config)
     [int]    $LinkWaitSec  = 0,    # max wait for link after a speed change (0 = config)
-    [string] $Lifeline    = '',    # explicit SSH lifeline NIC name ('' = auto-detect, NET012)
+    [string] $Lifeline    = '',    # NIC name(s) to exclude, comma-separated (CLI override; prefer $_net_exclude_macs in config, NET012)
     [switch] $DryRun,              # skip actual IP/speed changes and iperf3 runs
     [string] $ConfigFile   = ''    # path to config.ps1 (default: beside this script)
 )
@@ -70,7 +69,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$_script_ver                = '00.00.06'
+$_script_ver                = '00.00.07'
 $_requires_function_ps1_api = '00.00.02'
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Write-Host "net_test.ps1 v$_script_ver" -ForegroundColor Cyan
@@ -113,7 +112,7 @@ $cfgSpeeds       = [string](Get-CfgVal '_net_speeds'          'auto')
 $cfgVendor       = [string](Get-CfgVal '_net_vendor_filter'   'Intel')
 $cfgLinkWaitSec  = [int]   (Get-CfgVal '_net_link_wait_sec'   30)
 $StrictLifeline  = [int]   (Get-CfgVal '_net_strict_lifeline' 1)
-$cfgLifeline     = [string](Get-CfgVal '_net_lifeline_nic'    '')
+$cfgExcludeMacs  = [string](Get-CfgVal '_net_exclude_macs'    '')
 $Iperf3AutoInst  = [int]   (Get-CfgVal '_net_iperf3_auto_install' 1)
 $Iperf3WingetId  = [string](Get-CfgVal '_net_iperf3_winget_id' 'ar51an.iPerf3')
 $Iperf3ChocoPkg  = [string](Get-CfgVal '_net_iperf3_choco_pkg' 'iperf3')
@@ -128,7 +127,6 @@ $TcpPassPct   = if ($PSBoundParameters.ContainsKey('TcpPassPct')   -and $TcpPass
 $LinkWaitSec  = if ($PSBoundParameters.ContainsKey('LinkWaitSec')  -and $LinkWaitSec -gt 0)  { $LinkWaitSec }  else { $cfgLinkWaitSec }
 $Speeds       = if ($PSBoundParameters.ContainsKey('Speeds')       -and $Speeds -ne '')      { $Speeds }       else { $cfgSpeeds }
 $VendorFilter = if ($PSBoundParameters.ContainsKey('VendorFilter'))                          { $VendorFilter } else { $cfgVendor }
-$Lifeline     = if ($PSBoundParameters.ContainsKey('Lifeline'))                              { $Lifeline }     else { $cfgLifeline }
 if ($Loops -le 0) { $Loops = 1 }
 
 # Parse explicit speed allow-list (empty / 'auto' = no restriction).
@@ -233,24 +231,50 @@ if ($_allNics.Count -eq 0) {
     exit 1
 }
 
-# -- SSH lifeline detection (NET012) -------------------------------------------
-# -Lifeline (or $_net_lifeline_nic in config.ps1) names the management NIC
-# explicitly.  Without it, the script falls back to the NIC that owns the
-# lowest-metric default route -- which gives the wrong answer when all test NICs
-# also have a default gateway (their route metrics beat the real management NIC
-# because Windows assigns lower metrics to faster links).
-$_lifelineNic  = $null
-$_lifelineHow  = ''
-if ($Lifeline -ne '') {
-    $_lifelineNic = $Lifeline
-    $_lifelineHow = 'explicit'
-} else {
+# -- Management NIC exclusion (NET012) -----------------------------------------
+# Priority: 1. MAC list from config ($_net_exclude_macs)
+#           2. -Lifeline name(s) from CLI
+#           3. Fallback: lowest-metric default route (auto-detect)
+# The fallback gives wrong results when all test NICs also have a default gateway
+# (Windows assigns lower metrics to faster links), so using MAC addresses in
+# config.ps1 is strongly preferred for DUTs with multiple gateways.
+$_excluded = [System.Collections.Generic.List[string]]::new()
+
+# Step 1: resolve MAC addresses from config to NIC names.
+foreach ($rawMac in ($cfgExcludeMacs -split '[,;\s]+' | Where-Object { $_ -ne '' })) {
+    $norm = ($rawMac -replace '[-:]', '').ToUpper()
+    $a = Get-NetAdapter -Physical -ErrorAction SilentlyContinue |
+         Where-Object { ($_.MacAddress -replace '[-:]', '') -ieq $norm } |
+         Select-Object -First 1
+    if ($null -ne $a) {
+        [void]$_excluded.Add($a.Name)
+        Write-Host ("         Excl MAC " + $rawMac.PadRight(17) + ": " + $a.Name) -ForegroundColor DarkGray
+    } else {
+        Write-Warning "NET012: MAC $rawMac not found on this system -- ignored."
+    }
+}
+
+# Step 2: -Lifeline CLI parameter (name-based; may be comma-separated for multiple NICs).
+foreach ($ln in ($Lifeline -split '[,;]+' | Where-Object { $_ -ne '' })) {
+    $ln = $ln.Trim()
+    if ($ln -ne '' -and -not $_excluded.Contains($ln)) {
+        [void]$_excluded.Add($ln)
+        Write-Host ("         Excl -Lifeline  : " + $ln) -ForegroundColor DarkGray
+    }
+}
+
+# Step 3: fallback auto-detect (only when nothing was specified above).
+if ($_excluded.Count -eq 0) {
     try {
         $r = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
              Sort-Object { $_.RouteMetric + $_.InterfaceMetric } | Select-Object -First 1
         if ($null -ne $r) {
-            $_lifelineNic = (Get-NetAdapter -InterfaceIndex $r.InterfaceIndex -ErrorAction SilentlyContinue).Name
-            $_lifelineHow = 'auto-detected'
+            $dn = (Get-NetAdapter -InterfaceIndex $r.InterfaceIndex -ErrorAction SilentlyContinue).Name
+            if ($null -ne $dn) {
+                [void]$_excluded.Add($dn)
+                Write-Host ("         Excl (route)    : $dn  (auto-detected, lowest default-route metric)") -ForegroundColor DarkGray
+                Write-Host ("         NOTE: set _net_exclude_macs in config.ps1 for reliable detection") -ForegroundColor DarkYellow
+            }
         }
     } catch {}
 }
@@ -260,20 +284,16 @@ $_skipSet = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::
 foreach ($s in ($Skip -split '[,;]+' | Where-Object { $_ -ne '' })) {
     [void]$_skipSet.Add($s.Trim())
 }
-if ($null -ne $_lifelineNic) {
-    if ($_skipSet.Contains($_lifelineNic)) {
-        Write-Host ("         SSH lifeline   : $_lifelineNic  ($_lifelineHow, already in -Skip)") -ForegroundColor DarkGray
-    } elseif ($_allNics -notcontains $_lifelineNic) {
-        # Already excluded by the vendor filter (or not an Ethernet NIC at all).
-        # The lifeline is protected; no test NIC needs to be removed.
-        Write-Host ("         SSH lifeline   : $_lifelineNic  ($_lifelineHow, excluded by vendor filter)") -ForegroundColor DarkGray
+foreach ($excl in $_excluded) {
+    if ($_skipSet.Contains($excl)) {
+        # Already in -Skip; nothing to do.
+    } elseif ($_allNics -notcontains $excl) {
+        Write-Host ("         Excl            : $excl  (not in vendor-filtered set; already protected)") -ForegroundColor DarkGray
     } else {
-        # Lifeline is in the vendor-filtered test candidate set; protect it.
         if ($StrictLifeline) {
-            Write-Warning "NET012: lifeline NIC '$_lifelineNic' ($_lifelineHow) is a test candidate; auto-excluding to protect SSH."
+            Write-Warning "NET012: '$excl' is in the exclusion list and in the test candidate set; removing."
         }
-        [void]$_skipSet.Add($_lifelineNic)
-        Write-Host ("         SSH lifeline   : $_lifelineNic  ($_lifelineHow, added to skip set)") -ForegroundColor DarkGray
+        [void]$_skipSet.Add($excl)
     }
 }
 

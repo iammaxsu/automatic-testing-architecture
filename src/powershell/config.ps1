@@ -51,14 +51,19 @@ $_net_loops            = 1    # Test loop count (each loop runs all pairs once).
 $_net_iperf_time_sec   = 60   # NET007: iperf3 test duration per direction (seconds).
 $_net_iperf_omit_sec   = 3    # NET007: seconds to omit at start (ramp-up exclusion).
 $_net_tcp_pass_pct     = 95   # NET009: TCP PASS threshold as % of link speed.
-$_net_strict_lifeline  = 1    # NET012: 1 = refuse to start if the SSH-lifeline NIC
-                              #   would be tested and was not listed in -Skip.
-$_net_lifeline_nic     = ''   # NET012: explicit SSH/management NIC name.
-                              #   '' = auto-detect via lowest-metric default route.
-                              #   Set this when auto-detection picks the wrong NIC,
-                              #   e.g. all test NICs have a default gateway but only
-                              #   one is physically connected to the management network.
-                              #   Example: 'Ethernet 4'
+$_net_strict_lifeline  = 1    # NET012: 1 = warn and auto-exclude any NIC whose MAC
+                              #   matches $_net_exclude_macs if it appears in the test set.
+$_net_exclude_macs     = ''   # NET012: comma-separated MAC addresses of management /
+                              #   control NICs that must NEVER be tested, regardless of
+                              #   vendor filter or NIC name.  Matching is case-insensitive;
+                              #   both colon (AA:BB:CC:DD:EE:FF) and hyphen
+                              #   (AA-BB-CC-DD-EE-FF) separators are accepted.
+                              #   Supports multiple entries for multi-management-NIC
+                              #   setups (e.g. one control USB NIC + one spare USB NIC).
+                              #   When non-empty this overrides the route-metric
+                              #   auto-detection.
+                              #   Example (single): '00-50-56-C0-00-08'
+                              #   Example (two):    '00-50-56-C0-00-08, AA-BB-CC-DD-EE-FF'
 # Multi-speed testing (NET004): each NIC is driven at every link speed it
 # advertises (10/100/1000/2500/10000 Mbps, ...), set via the *SpeedDuplex
 # advanced property.  A pair is tested only at speeds BOTH NICs support.
