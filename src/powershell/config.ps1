@@ -63,3 +63,16 @@ $_net_vendor_filter    = 'Intel' # Only test NICs whose description matches this
                                  #   *SpeedDuplex enum, so it is the supported default.
 $_net_link_wait_sec    = 30      # Max seconds to wait for the link to re-establish at a
                                  #   new speed before recording that speed as UNKNOWN.
+# iperf3 auto-install (mirrors the bash side's apt-get/dnf "ensure tool" logic).
+# If iperf3 is not already in PATH, net_test.ps1 tries to install it the same way
+# net_test.sh does on Linux -- here via the Windows package managers, newest to
+# oldest, then a portable-zip download as a no-package-manager fallback.
+$_net_iperf3_auto_install = 1                  # 1 = install iperf3 if missing; 0 = error out.
+$_net_iperf3_winget_id    = 'ar51an.iPerf3'    # winget package id (built into Win10 1809+/11).
+$_net_iperf3_choco_pkg    = 'iperf3'           # Chocolatey package name.
+$_net_iperf3_scoop_pkg    = 'iperf3'           # Scoop package name (main bucket).
+# Portable-zip fallback when NO package manager is present: the script queries
+# this GitHub repo's latest release and downloads the asset ending in the pattern
+# below into tools\iperf3 beside the script, then prepends it to PATH for the run.
+$_net_iperf3_gh_repo      = 'ar51an/iperf3-win-builds'  # '' disables the download fallback.
+$_net_iperf3_zip_pattern  = 'win64.zip'                 # asset suffix to pick (the plain build).
