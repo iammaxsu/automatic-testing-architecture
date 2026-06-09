@@ -53,6 +53,12 @@ $_net_iperf_omit_sec   = 3    # NET007: seconds to omit at start (ramp-up exclus
 $_net_tcp_pass_pct     = 95   # NET009: TCP PASS threshold as % of link speed.
 $_net_strict_lifeline  = 1    # NET012: 1 = refuse to start if the SSH-lifeline NIC
                               #   would be tested and was not listed in -Skip.
+$_net_lifeline_nic     = ''   # NET012: explicit SSH/management NIC name.
+                              #   '' = auto-detect via lowest-metric default route.
+                              #   Set this when auto-detection picks the wrong NIC,
+                              #   e.g. all test NICs have a default gateway but only
+                              #   one is physically connected to the management network.
+                              #   Example: 'Ethernet 4'
 # Multi-speed testing (NET004): each NIC is driven at every link speed it
 # advertises (10/100/1000/2500/10000 Mbps, ...), set via the *SpeedDuplex
 # advanced property.  A pair is tested only at speeds BOTH NICs support.
