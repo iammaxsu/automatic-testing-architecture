@@ -39,3 +39,17 @@ $_sleep_states         = 'auto'   # 'auto' = every supported state among S3/S4,
 $_sleep_pre_delay_sec  = 30       # Seconds in Windows before each sleep transition.
 $_sleep_wake_after_sec = 10       # RTC wake timer: seconds asleep before waking.
 $_sleep_settle_sec     = 5        # Grace period after wake before the next cycle begins.
+
+# ======================================================================
+# Network test  (net_test.ps1, NET001-NET013)
+# ======================================================================
+# Pairs of physical Ethernet NICs are tested back-to-back (directly cabled).
+# Isolation is achieved by assigning each pair a private /24 subnet
+# (192.247.{idx}.0/24 + fd00:2470::{idx}:0/64) with no default gateway,
+# matching what Linux network namespaces provide on the bash side.
+$_net_loops            = 1    # Test loop count (each loop runs all pairs once).
+$_net_iperf_time_sec   = 60   # NET007: iperf3 test duration per direction (seconds).
+$_net_iperf_omit_sec   = 3    # NET007: seconds to omit at start (ramp-up exclusion).
+$_net_tcp_pass_pct     = 95   # NET009: TCP PASS threshold as % of link speed.
+$_net_strict_lifeline  = 1    # NET012: 1 = refuse to start if the SSH-lifeline NIC
+                              #   would be tested and was not listed in -Skip.
