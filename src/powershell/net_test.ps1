@@ -69,7 +69,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$_script_ver                = '00.00.08'
+$_script_ver                = '00.00.09'
 $_requires_function_ps1_api = '00.00.02'
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Write-Host "net_test.ps1 v$_script_ver" -ForegroundColor Cyan
@@ -146,6 +146,74 @@ function Write-Utf8NoBom {
     param([string]$Path, [string]$Text)
     $enc = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($Path, $Text, $enc)
+}
+
+# Render a self-contained HTML report from the PSCustomObject parsed out of
+# result.json.  FWK028: result.json is canonical; HTML is a derived view only.
+function Write-HtmlReport {
+    param($Result, [string]$OutPath)
+    $ov  = [string]$Result.overall_verdict
+    $ovc = switch ($ov) { 'PASS' { '#2ea043' } 'FAIL' { '#da3633' } default { '#e3b341' } }
+    $s   = $Result.summary
+    $cfg = $Result.config
+    $css = 'body{font-family:Consolas,monospace;background:#0d1117;color:#c9d1d9;margin:24px 32px}' +
+           'h1,h2,h3{color:#58a6ff}h2{border-bottom:1px solid #30363d;padding-bottom:4px;margin-top:28px}' +
+           'table{border-collapse:collapse;width:100%;margin-bottom:12px}' +
+           'th{background:#161b22;color:#8b949e;padding:6px 10px;text-align:left;border:1px solid #30363d}' +
+           'td{padding:5px 10px;border:1px solid #21262d}tr:nth-child(even) td{background:#161b22}' +
+           '.pass{color:#2ea043;font-weight:bold}.fail{color:#da3633;font-weight:bold}' +
+           '.unknown{color:#e3b341;font-weight:bold}.na{color:#6e7681}.skip{color:#6e7681}' +
+           '.badge{display:inline-block;padding:3px 14px;border-radius:4px;color:#fff;font-weight:bold}'
+    $sb = [System.Text.StringBuilder]::new(8192)
+    [void]$sb.Append('<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">')
+    [void]$sb.Append('<title>net_test ' + $Result.session_id + '</title>')
+    [void]$sb.Append('<style>' + $css + '</style></head><body>')
+    [void]$sb.Append('<h1>Network Test Report</h1>')
+    [void]$sb.Append('<p>Host: <b>' + $cfg.dut_host + '</b> &nbsp;|&nbsp; Session: ' + $Result.session_id + '</p>')
+    [void]$sb.Append('<p>Vendor filter: <b>' + $cfg.vendor_filter + '</b> &nbsp;|&nbsp; Loops: ' + $cfg.loops +
+                     ' &nbsp;|&nbsp; iperf3 time: ' + $cfg.iperf_time_sec + 's &nbsp;|&nbsp; omit: ' +
+                     $cfg.iperf_omit_sec + 's &nbsp;|&nbsp; TCP pass: ' + $cfg.tcp_pass_pct + '%</p>')
+    [void]$sb.Append('<p>Overall: <span class="badge" style="background:' + $ovc + '">' + $ov + '</span></p>')
+    [void]$sb.Append('<h2>Summary</h2>')
+    [void]$sb.Append('<table><tr><th>Total</th><th>Pass</th><th>Fail</th><th>Unknown</th><th>N/A+Skipped</th></tr><tr>')
+    [void]$sb.Append('<td>'               + $s.total   + '</td>')
+    [void]$sb.Append('<td class="pass">'  + $s.passed  + '</td>')
+    [void]$sb.Append('<td class="fail">'  + $s.failed  + '</td>')
+    [void]$sb.Append('<td class="unknown">' + $s.unknown + '</td>')
+    [void]$sb.Append('<td class="na">'    + $s.skipped + '</td>')
+    [void]$sb.Append('</tr></table>')
+    [void]$sb.Append('<h2>Pairs</h2>')
+    foreach ($pair in $Result.details.pairs) {
+        [void]$sb.Append('<h3>' + $pair.name + '</h3>')
+        if ($pair.skip_reason) {
+            [void]$sb.Append('<p class="skip">Skipped: ' + $pair.skip_reason + '</p>')
+            continue
+        }
+        [void]$sb.Append('<table><tr><th>Speed (Mbps)</th><th>IPv4 Ping</th><th>IPv6 Ping</th>')
+        [void]$sb.Append('<th>TCP Fwd (M)</th><th>TCP Rev (M)</th><th>UDP Fwd (M)</th><th>UDP Rev (M)</th><th>Verdict</th></tr>')
+        foreach ($spd in $pair.speeds) {
+            $vc = switch ([string]$spd.verdict) { 'PASS' { 'pass' } 'FAIL' { 'fail' } 'UNKNOWN' { 'unknown' } default { 'na' } }
+            $t  = $spd.throughput
+            $nr = if ($spd.na_reason) { '<br><small>' + $spd.na_reason + '</small>' } else { '' }
+            [void]$sb.Append('<tr>')
+            [void]$sb.Append('<td>' + $spd.speed_mbps + '</td>')
+            [void]$sb.Append('<td class="' + $vc + '">' + $spd.ipv4_ping + '</td>')
+            [void]$sb.Append('<td class="' + $vc + '">' + $spd.ipv6_ping + '</td>')
+            [void]$sb.Append('<td>' + $t.tcp_fwd_mbps + '</td>')
+            [void]$sb.Append('<td>' + $t.tcp_rev_mbps + '</td>')
+            [void]$sb.Append('<td>' + $t.udp_fwd_mbps + '</td>')
+            [void]$sb.Append('<td>' + $t.udp_rev_mbps + '</td>')
+            [void]$sb.Append('<td class="' + $vc + '">' + $spd.verdict + $nr + '</td>')
+            [void]$sb.Append('</tr>')
+        }
+        [void]$sb.Append('</table>')
+    }
+    [void]$sb.Append('<hr style="border-color:#30363d;margin-top:32px">')
+    [void]$sb.Append('<p style="color:#6e7681;font-size:0.85em">net_test.ps1 v' +
+                     $script:_script_ver + '  |  ' + $Result.ended_at + '</p>')
+    [void]$sb.Append('</body></html>')
+    $enc = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($OutPath, $sb.ToString(), $enc)
 }
 
 # Convert a "1.0 Gbps Full Duplex" / "100 Mbps Full Duplex" display string to Mbps.
@@ -424,9 +492,12 @@ $_pairJobBlock = {
 
     function Now-Iso { Get-Date -Format 'yyyy-MM-ddTHH:mm:ss' }
 
-    # SpeedPlan is passed as JSON (a live array would be flattened by Start-Job's
-    # -ArgumentList).  @() forces an array even when the JSON holds a single step.
-    $SpeedPlan = @($SpeedPlanJson | ConvertFrom-Json)
+    # SpeedPlan is passed as JSON to avoid Start-Job -ArgumentList flattening.
+    # In PS 5.1, ConvertFrom-Json emits the entire JSON array as ONE pipeline item
+    # (Object[]).  Wrapping in @() would therefore create a nested array -- do NOT
+    # use @() here.  foreach works on both Object[] and a single PSCustomObject.
+    $SpeedPlan = $SpeedPlanJson | ConvertFrom-Json
+    if ($null -eq $SpeedPlan) { $SpeedPlan = @() }
 
     function Get-LinkMbpsJob {
         param($Adapter)
@@ -792,8 +863,19 @@ $_result = [ordered]@{
 $_resultFile = Join-Path $_log_path "net_test_$_runTs.result.json"
 Write-Utf8NoBom -Path $_resultFile -Text ($_result | ConvertTo-Json -Depth 9)
 
+# Generate HTML report (FWK028: render from canonical result.json)
+$_reportFile = Join-Path $_log_path "net_test_$_runTs.report.html"
+try {
+    $_resultObj = Get-Content $_resultFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    Write-HtmlReport -Result $_resultObj -Path $_reportFile
+} catch {
+    Write-Warning "HTML report generation failed: $_"
+    $_reportFile = $null
+}
+
 Write-Host ""
 Write-Host "[INFO] Main log    : $_mainLog"    -ForegroundColor Cyan
 Write-Host "[INFO] Result JSON : $_resultFile" -ForegroundColor Cyan
+if ($_reportFile) { Write-Host "[INFO] HTML report : $_reportFile" -ForegroundColor Cyan }
 $_col = 'Yellow'; if ($_verdict -eq 'PASS') { $_col = 'Green' } elseif ($_verdict -eq 'FAIL') { $_col = 'Red' }
 Write-Host "[INFO] Overall     : $_verdict  (pass=$_pass fail=$_fail unknown=$_unknown skipped=$_skipped)" -ForegroundColor $_col
