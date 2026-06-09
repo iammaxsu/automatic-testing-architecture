@@ -53,3 +53,13 @@ $_net_iperf_omit_sec   = 3    # NET007: seconds to omit at start (ramp-up exclus
 $_net_tcp_pass_pct     = 95   # NET009: TCP PASS threshold as % of link speed.
 $_net_strict_lifeline  = 1    # NET012: 1 = refuse to start if the SSH-lifeline NIC
                               #   would be tested and was not listed in -Skip.
+# Multi-speed testing (NET004): each NIC is driven at every link speed it
+# advertises (10/100/1000/2500/10000 Mbps, ...), set via the *SpeedDuplex
+# advanced property.  A pair is tested only at speeds BOTH NICs support.
+$_net_speeds           = 'auto'  # 'auto' = every speed both NICs in a pair support;
+                                 #   or an explicit list e.g. '100,1000' / '1000,10000'.
+$_net_vendor_filter    = 'Intel' # Only test NICs whose description matches this string
+                                 #   ('' = all vendors).  Intel exposes a predictable
+                                 #   *SpeedDuplex enum, so it is the supported default.
+$_net_link_wait_sec    = 30      # Max seconds to wait for the link to re-establish at a
+                                 #   new speed before recording that speed as UNKNOWN.
