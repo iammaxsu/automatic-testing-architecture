@@ -69,7 +69,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$_script_ver                = '00.00.14'
+$_script_ver                = '00.00.15'
 $_requires_function_ps1_api = '00.00.02'
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Write-Host "net_test.ps1 v$_script_ver" -ForegroundColor Cyan
@@ -603,32 +603,11 @@ $_pairJobBlock = {
         return $true
     }
 
-    # Wait until both NICs are Up at the requested Mbps.
+    # Wait until both NICs are Up at the requested Mbps.  Logs a status/speed
+    # snapshot every ~5s so a stuck or mismatched link is visible in the pair log.
     function Wait-PairLink {
-        param([string]$A, [string]$B, [int]$Mbps, [int]$TimeoutSec, [bool]$Dry)
+        param([string]$A, [string]$B, [int]$Mbps, [int]$TimeoutSec, [bool]$Dry, [string]$LogPath)
         if ($Dry) { return $true }
-        $deadline = (Get-Date).AddSeconds($TimeoutSec)
-        while ((Get-Date) -lt $deadline) {
-            $na = Get-NetAdapter -Name $A -ErrorAction SilentlyContinue
-            $nb = Get-NetAdapter -Name $B -ErrorAction SilentlyContinue
-            if ($na -and $nb -and $na.Status -eq 'Up' -and $nb.Status -eq 'Up' -and
-                (Get-LinkMbpsJob $na) -eq $Mbps -and (Get-LinkMbpsJob $nb) -eq $Mbps) {
-                return $true
-            }
-            Start-Sleep -Milliseconds 800
-        }
-        return $false
-    }
-
-    # Wait until both NICs are Up and have converged on the SAME speed, whatever
-    # that speed turns out to be.  Used after falling back to Auto Negotiation,
-    # where the result isn't known in advance and renegotiation after a PHY
-    # reset can take much longer than a forced-speed wait.  Returns the common
-    # speed in Mbps, or 0 on timeout.  Logs a status/speed snapshot every ~5s so
-    # a stuck negotiation is visible in the pair log instead of just "UNKNOWN".
-    function Wait-PairLinkCommon {
-        param([string]$A, [string]$B, [int]$TimeoutSec, [bool]$Dry, [string]$LogPath)
-        if ($Dry) { return 0 }
         $deadline = (Get-Date).AddSeconds($TimeoutSec)
         $lastLog  = Get-Date
         while ((Get-Date) -lt $deadline) {
@@ -637,18 +616,18 @@ $_pairJobBlock = {
             $sa = Get-LinkMbpsJob $na
             $sb = Get-LinkMbpsJob $nb
             if ($na -and $nb -and $na.Status -eq 'Up' -and $nb.Status -eq 'Up' -and
-                $sa -gt 0 -and $sa -eq $sb) {
-                return $sa
+                $sa -eq $Mbps -and $sb -eq $Mbps) {
+                return $true
             }
             if ($LogPath -and ((Get-Date) - $lastLog).TotalSeconds -ge 5) {
                 $stA = if ($na) { [string]$na.Status } else { '?' }
                 $stB = if ($nb) { [string]$nb.Status } else { '?' }
-                "  [wait]  $A : $stA / ${sa}M   |   $B : $stB / ${sb}M" | Add-Content $LogPath
+                "  [wait]  $A : $stA / ${sa}M   |   $B : $stB / ${sb}M  (target ${Mbps}M)" | Add-Content $LogPath
                 $lastLog = Get-Date
             }
             Start-Sleep -Milliseconds 800
         }
-        return 0
+        return $false
     }
 
     function Add-PairIPs {
@@ -775,42 +754,27 @@ $_pairJobBlock = {
             "### Speed = $mbps Mbps" | Add-Content $pairLog
             $autonegNote = $null
 
-            # Force speed on both NICs and wait for the link to settle.
+            # Set the target speed on BOTH NICs.  On Intel, selecting a specific
+            # "<n> Gbps/Mbps Full Duplex" value advertises ONLY that speed via
+            # autonegotiation (it does NOT disable autoneg), which is exactly what
+            # 1000BASE-T+ on copper requires.  Restricting BOTH ends to a single
+            # speed also stops a multi-gig (NBASE-T) NIC from advertising 2.5/5/10G
+            # and confusing a plain-gigabit partner into a parallel-detection
+            # fallback (the X550<->I219-V 10000M/100M mismatch seen back-to-back).
+            #
+            # A registry/property change does not reliably restart the PHY, so
+            # bounce both adapters to make the new advertisement take effect, then
+            # wait for the link to settle.  Restart + renegotiation is much slower
+            # than a plain property write, hence the longer $AutonegWait timeout.
             Set-NicSpeed -Nic $EvenNic -Display ([string]$step.evenDisplay) -Dry $Dry -LogPath $pairLog | Out-Null
             Set-NicSpeed -Nic $OddNic  -Display ([string]$step.oddDisplay)  -Dry $Dry -LogPath $pairLog | Out-Null
-            $linkOk = Wait-PairLink -A $EvenNic -B $OddNic -Mbps $mbps -TimeoutSec $LinkWait -Dry $Dry
-
-            # 1000BASE-T and faster require auto-negotiation on copper (IEEE 802.3
-            # clause 40): a forced fixed-speed setting disables autoneg and the link
-            # will not come up.  Fall back to Auto Negotiation and accept whatever
-            # common speed both NICs converge on -- normally $mbps when this is the
-            # pair's top common speed (the usual reason a >=1000M force fails here).
-            # Renegotiation after a PHY reset can take much longer than a normal
-            # forced-speed wait, hence the separate, longer $AutonegWait timeout.
-            if (-not $linkOk -and -not $Dry -and $mbps -ge 1000) {
-                "Forced ${mbps}M did not link; retrying with Auto Negotiation (1000BASE-T+ requires autoneg)..." | Add-Content $pairLog
-                Set-NicSpeed -Nic $EvenNic -Display 'Auto Negotiation' -Dry $Dry -LogPath $pairLog | Out-Null
-                Set-NicSpeed -Nic $OddNic  -Display 'Auto Negotiation' -Dry $Dry -LogPath $pairLog | Out-Null
-                if (-not $Dry) {
-                    # A registry-only *SpeedDuplex change does not always restart the
-                    # PHY; bounce both adapters so the link partners actually run a
-                    # fresh autonegotiation handshake instead of holding the old
-                    # forced state.
-                    "  [speed] restarting adapters to force renegotiation..." | Add-Content $pairLog
-                    Restart-NetAdapter -Name $EvenNic -Confirm:$false -ErrorAction SilentlyContinue
-                    Restart-NetAdapter -Name $OddNic  -Confirm:$false -ErrorAction SilentlyContinue
-                    Start-Sleep -Seconds 2
-                }
-                $common = Wait-PairLinkCommon -A $EvenNic -B $OddNic -TimeoutSec $AutonegWait -Dry $Dry -LogPath $pairLog
-                if ($common -gt 0) {
-                    "Auto Negotiation settled at ${common}M (requested ${mbps}M)." | Add-Content $pairLog
-                    if ($common -ne $mbps) {
-                        $autonegNote = "Auto-negotiated at ${common}M instead of requested ${mbps}M"
-                    }
-                    $mbps   = $common
-                    $linkOk = $true
-                }
+            if (-not $Dry) {
+                "  [speed] restarting adapters to apply ${mbps}M and renegotiate..." | Add-Content $pairLog
+                Restart-NetAdapter -Name $EvenNic -Confirm:$false -ErrorAction SilentlyContinue
+                Restart-NetAdapter -Name $OddNic  -Confirm:$false -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 2
             }
+            $linkOk = Wait-PairLink -A $EvenNic -B $OddNic -Mbps $mbps -TimeoutSec $AutonegWait -Dry $Dry -LogPath $pairLog
 
             # (Re-)assert the test IPs; a speed change bounces the link.
             Add-PairIPs -Idx $PairIdx -Even $EvenNic -Odd $OddNic -Dry $Dry
@@ -819,7 +783,7 @@ $_pairJobBlock = {
             if (-not $linkOk) {
                 $actEven = Get-LinkMbpsJob (Get-NetAdapter -Name $EvenNic -ErrorAction SilentlyContinue)
                 $actOdd  = Get-LinkMbpsJob (Get-NetAdapter -Name $OddNic  -ErrorAction SilentlyContinue)
-                "Link did NOT reach $mbps Mbps within ${LinkWait}s (actual: ${EvenNic}=${actEven}M, ${OddNic}=${actOdd}M) - recording UNKNOWN." | Add-Content $pairLog
+                "Link did NOT reach $mbps Mbps within ${AutonegWait}s (actual: ${EvenNic}=${actEven}M, ${OddNic}=${actOdd}M) - recording UNKNOWN." | Add-Content $pairLog
                 $speedResults += @{
                     speed_mbps = $mbps; ipv4_ping='UNKNOWN'; ipv6_ping='UNKNOWN'
                     throughput=@{tcp_fwd_mbps=0;tcp_rev_mbps=0;udp_fwd_mbps=0;udp_rev_mbps=0}
