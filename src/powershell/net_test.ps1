@@ -69,7 +69,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$_script_ver                = '00.00.11'
+$_script_ver                = '00.00.12'
 $_requires_function_ps1_api = '00.00.02'
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Write-Host "net_test.ps1 v$_script_ver" -ForegroundColor Cyan
@@ -152,6 +152,17 @@ function Write-Utf8NoBom {
 
 # Render a self-contained HTML report from the PSCustomObject parsed out of
 # result.json.  FWK028: result.json is canonical; HTML is a derived view only.
+# ConvertFrom-Json's PSCustomObject does not have every key on every object
+# (e.g. "skip_reason" only exists on skipped pairs, "na_reason"/"note" only on
+# some speed entries).  Under Set-StrictMode -Version Latest, $obj.missingProp
+# throws PropertyNotFoundException, so all optional-field reads must go through
+# this helper.
+function Get-JsonProp {
+    param($Obj, [string]$Name)
+    if ($null -ne $Obj -and $Obj.PSObject.Properties.Name -contains $Name) { return $Obj.$Name }
+    return $null
+}
+
 function Write-HtmlReport {
     param($Result, [string]$OutPath)
     $ov  = [string]$Result.overall_verdict
@@ -187,8 +198,9 @@ function Write-HtmlReport {
     [void]$sb.Append('<h2>Pairs</h2>')
     foreach ($pair in $Result.details.pairs) {
         [void]$sb.Append('<h3>' + $pair.name + '</h3>')
-        if ($pair.skip_reason) {
-            [void]$sb.Append('<p class="skip">Skipped: ' + $pair.skip_reason + '</p>')
+        $skipReason = Get-JsonProp $pair 'skip_reason'
+        if ($skipReason) {
+            [void]$sb.Append('<p class="skip">Skipped: ' + $skipReason + '</p>')
             continue
         }
         # Per-NIC advertised speeds (NET004): show which NIC supports what, so the
@@ -205,8 +217,10 @@ function Write-HtmlReport {
         foreach ($spd in $pair.speeds) {
             $vc = switch ([string]$spd.verdict) { 'PASS' { 'pass' } 'FAIL' { 'fail' } 'UNKNOWN' { 'unknown' } default { 'na' } }
             $t  = $spd.throughput
-            $nr = if ($spd.na_reason) { '<br><small>' + $spd.na_reason + '</small>' }
-                  elseif ($spd.note)  { '<br><small>' + $spd.note + '</small>' }
+            $naReason = Get-JsonProp $spd 'na_reason'
+            $note     = Get-JsonProp $spd 'note'
+            $nr = if ($naReason) { '<br><small>' + $naReason + '</small>' }
+                  elseif ($note)  { '<br><small>' + $note + '</small>' }
                   else { '' }
             [void]$sb.Append('<tr>')
             [void]$sb.Append('<td>' + $spd.speed_mbps + '</td>')
