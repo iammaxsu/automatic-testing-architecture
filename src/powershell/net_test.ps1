@@ -69,7 +69,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$_script_ver                = '00.00.13'
+$_script_ver                = '00.00.14'
 $_requires_function_ps1_api = '00.00.02'
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Write-Host "net_test.ps1 v$_script_ver" -ForegroundColor Cyan
@@ -624,18 +624,27 @@ $_pairJobBlock = {
     # that speed turns out to be.  Used after falling back to Auto Negotiation,
     # where the result isn't known in advance and renegotiation after a PHY
     # reset can take much longer than a forced-speed wait.  Returns the common
-    # speed in Mbps, or 0 on timeout.
+    # speed in Mbps, or 0 on timeout.  Logs a status/speed snapshot every ~5s so
+    # a stuck negotiation is visible in the pair log instead of just "UNKNOWN".
     function Wait-PairLinkCommon {
-        param([string]$A, [string]$B, [int]$TimeoutSec, [bool]$Dry)
+        param([string]$A, [string]$B, [int]$TimeoutSec, [bool]$Dry, [string]$LogPath)
         if ($Dry) { return 0 }
         $deadline = (Get-Date).AddSeconds($TimeoutSec)
+        $lastLog  = Get-Date
         while ((Get-Date) -lt $deadline) {
             $na = Get-NetAdapter -Name $A -ErrorAction SilentlyContinue
             $nb = Get-NetAdapter -Name $B -ErrorAction SilentlyContinue
-            if ($na -and $nb -and $na.Status -eq 'Up' -and $nb.Status -eq 'Up') {
-                $sa = Get-LinkMbpsJob $na
-                $sb = Get-LinkMbpsJob $nb
-                if ($sa -gt 0 -and $sa -eq $sb) { return $sa }
+            $sa = Get-LinkMbpsJob $na
+            $sb = Get-LinkMbpsJob $nb
+            if ($na -and $nb -and $na.Status -eq 'Up' -and $nb.Status -eq 'Up' -and
+                $sa -gt 0 -and $sa -eq $sb) {
+                return $sa
+            }
+            if ($LogPath -and ((Get-Date) - $lastLog).TotalSeconds -ge 5) {
+                $stA = if ($na) { [string]$na.Status } else { '?' }
+                $stB = if ($nb) { [string]$nb.Status } else { '?' }
+                "  [wait]  $A : $stA / ${sa}M   |   $B : $stB / ${sb}M" | Add-Content $LogPath
+                $lastLog = Get-Date
             }
             Start-Sleep -Milliseconds 800
         }
@@ -782,7 +791,17 @@ $_pairJobBlock = {
                 "Forced ${mbps}M did not link; retrying with Auto Negotiation (1000BASE-T+ requires autoneg)..." | Add-Content $pairLog
                 Set-NicSpeed -Nic $EvenNic -Display 'Auto Negotiation' -Dry $Dry -LogPath $pairLog | Out-Null
                 Set-NicSpeed -Nic $OddNic  -Display 'Auto Negotiation' -Dry $Dry -LogPath $pairLog | Out-Null
-                $common = Wait-PairLinkCommon -A $EvenNic -B $OddNic -TimeoutSec $AutonegWait -Dry $Dry
+                if (-not $Dry) {
+                    # A registry-only *SpeedDuplex change does not always restart the
+                    # PHY; bounce both adapters so the link partners actually run a
+                    # fresh autonegotiation handshake instead of holding the old
+                    # forced state.
+                    "  [speed] restarting adapters to force renegotiation..." | Add-Content $pairLog
+                    Restart-NetAdapter -Name $EvenNic -Confirm:$false -ErrorAction SilentlyContinue
+                    Restart-NetAdapter -Name $OddNic  -Confirm:$false -ErrorAction SilentlyContinue
+                    Start-Sleep -Seconds 2
+                }
+                $common = Wait-PairLinkCommon -A $EvenNic -B $OddNic -TimeoutSec $AutonegWait -Dry $Dry -LogPath $pairLog
                 if ($common -gt 0) {
                     "Auto Negotiation settled at ${common}M (requested ${mbps}M)." | Add-Content $pairLog
                     if ($common -ne $mbps) {
