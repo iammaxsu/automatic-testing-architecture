@@ -69,7 +69,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$_script_ver                = '00.00.09'
+$_script_ver                = '00.00.10'
 $_requires_function_ps1_api = '00.00.02'
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Write-Host "net_test.ps1 v$_script_ver" -ForegroundColor Cyan
@@ -188,6 +188,15 @@ function Write-HtmlReport {
         if ($pair.skip_reason) {
             [void]$sb.Append('<p class="skip">Skipped: ' + $pair.skip_reason + '</p>')
             continue
+        }
+        # Per-NIC advertised speeds (NET004): show which NIC supports what, so the
+        # N/A rows below are self-explanatory.
+        if ($pair.PSObject.Properties.Name -contains 'even_nic' -and $pair.even_nic) {
+            $evCap = if ($pair.even_speeds) { (@($pair.even_speeds | ForEach-Object { "${_}M" }) -join ' / ') } else { '(negotiated only)' }
+            $odCap = if ($pair.odd_speeds)  { (@($pair.odd_speeds  | ForEach-Object { "${_}M" }) -join ' / ') } else { '(negotiated only)' }
+            [void]$sb.Append('<table style="width:auto;margin-bottom:8px"><tr><th>NIC</th><th>Advertised speeds</th></tr>')
+            [void]$sb.Append('<tr><td>' + $pair.even_nic + '</td><td>' + $evCap + '</td></tr>')
+            [void]$sb.Append('<tr><td>' + $pair.odd_nic  + '</td><td>' + $odCap + '</td></tr></table>')
         }
         [void]$sb.Append('<table><tr><th>Speed (Mbps)</th><th>IPv4 Ping</th><th>IPv6 Ping</th>')
         [void]$sb.Append('<th>TCP Fwd (M)</th><th>TCP Rev (M)</th><th>UDP Fwd (M)</th><th>UDP Rev (M)</th><th>Verdict</th></tr>')
@@ -404,14 +413,22 @@ if ($_testNics.Count % 2 -eq 1) {
 # -Speeds.  If neither NIC exposes *SpeedDuplex, fall back to the single
 # negotiated speed so the test still runs.
 $_pairPlans = @()   # index-aligned with $_evenNics: array of speed-step hashtables
+$_pairCaps  = @{}   # pairKey -> @{ even; odd; even_speeds=@(); odd_speeds=@() } (NET004 display)
 Write-Host ""
 for ($i = 0; $i -lt $_evenNics.Count; $i++) {
     $evenOpts = Get-NicSpeedOptions $_evenNics[$i]
     $oddOpts  = Get-NicSpeedOptions $_oddNics[$i]
+    $evenMap  = @{}; foreach ($o in $evenOpts) { $evenMap[[int]$o.mbps] = $o.display }
+    $oddMap   = @{}; foreach ($o in $oddOpts)  { $oddMap[[int]$o.mbps]  = $o.display }
+    $pairKey  = "$($_evenNics[$i])<->$($_oddNics[$i])"
+    $_pairCaps[$pairKey] = @{
+        even        = $_evenNics[$i]
+        odd         = $_oddNics[$i]
+        even_speeds = @($evenMap.Keys | Sort-Object)
+        odd_speeds  = @($oddMap.Keys  | Sort-Object)
+    }
     $plan = @()
     if ($evenOpts.Count -gt 0 -or $oddOpts.Count -gt 0) {
-        $evenMap = @{}; foreach ($o in $evenOpts) { $evenMap[[int]$o.mbps] = $o.display }
-        $oddMap  = @{}; foreach ($o in $oddOpts)  { $oddMap[[int]$o.mbps]  = $o.display }
         # Union of both NICs' advertised speeds. Speeds only one NIC supports are
         # included but marked testable=false; the job records them as N/A so the
         # user can see which speeds were considered but skipped.
@@ -447,7 +464,14 @@ for ($i = 0; $i -lt $_evenNics.Count; $i++) {
     $spdList = @($plan | ForEach-Object {
         if ($_.testable) { "$($_.mbps)M" } else { "$($_.mbps)M(N/A)" }
     }) -join ', '
-    Write-Host ("  Pair $i : " + $_evenNics[$i] + " <-> " + $_oddNics[$i] + "   speeds: [$spdList]") -ForegroundColor Green
+    $evenCap = @($_pairCaps[$pairKey].even_speeds | ForEach-Object { "${_}M" }) -join '/'
+    $oddCap  = @($_pairCaps[$pairKey].odd_speeds  | ForEach-Object { "${_}M" }) -join '/'
+    if ($evenCap -eq '') { $evenCap = '(negotiated only)' }
+    if ($oddCap  -eq '') { $oddCap  = '(negotiated only)' }
+    Write-Host ("  Pair $i : " + $_evenNics[$i] + " <-> " + $_oddNics[$i]) -ForegroundColor Green
+    Write-Host ("           " + $_evenNics[$i].PadRight(12) + " supports: $evenCap") -ForegroundColor DarkGray
+    Write-Host ("           " + $_oddNics[$i].PadRight(12)  + " supports: $oddCap")  -ForegroundColor DarkGray
+    Write-Host ("           tested speeds (union): [$spdList]") -ForegroundColor Green
 }
 foreach ($u in $_unpairedNics) { Write-Host ("  Unpaired : $u") -ForegroundColor Yellow }
 Write-Host ""
@@ -649,12 +673,26 @@ $_pairJobBlock = {
             Set-NicSpeed -Nic $OddNic  -Display ([string]$step.oddDisplay)  -Dry $Dry
             $linkOk = Wait-PairLink -A $EvenNic -B $OddNic -Mbps $mbps -TimeoutSec $LinkWait -Dry $Dry
 
+            # 1000BASE-T and faster require auto-negotiation on copper (IEEE 802.3
+            # clause 40): a forced fixed-speed setting disables autoneg and the link
+            # will not come up.  Fall back to Auto Negotiation, which settles at the
+            # highest speed BOTH NICs share -- exactly $mbps when this is the pair's
+            # top common speed (the usual reason a >=1000M force fails here).
+            if (-not $linkOk -and -not $Dry -and $mbps -ge 1000) {
+                "Forced ${mbps}M did not link; retrying with Auto Negotiation (1000BASE-T needs autoneg)..." | Add-Content $pairLog
+                Set-NicSpeed -Nic $EvenNic -Display 'Auto Negotiation' -Dry $Dry
+                Set-NicSpeed -Nic $OddNic  -Display 'Auto Negotiation' -Dry $Dry
+                $linkOk = Wait-PairLink -A $EvenNic -B $OddNic -Mbps $mbps -TimeoutSec $LinkWait -Dry $Dry
+            }
+
             # (Re-)assert the test IPs; a speed change bounces the link.
             Add-PairIPs -Idx $PairIdx -Even $EvenNic -Odd $OddNic -Dry $Dry
             if (-not $Dry) { Start-Sleep -Seconds 3 }   # NDP / DAD settle
 
             if (-not $linkOk) {
-                "Link did NOT reach $mbps Mbps within ${LinkWait}s - recording UNKNOWN." | Add-Content $pairLog
+                $actEven = Get-LinkMbpsJob (Get-NetAdapter -Name $EvenNic -ErrorAction SilentlyContinue)
+                $actOdd  = Get-LinkMbpsJob (Get-NetAdapter -Name $OddNic  -ErrorAction SilentlyContinue)
+                "Link did NOT reach $mbps Mbps within ${LinkWait}s (actual: ${EvenNic}=${actEven}M, ${OddNic}=${actOdd}M) - recording UNKNOWN." | Add-Content $pairLog
                 $speedResults += @{
                     speed_mbps = $mbps; ipv4_ping='UNKNOWN'; ipv6_ping='UNKNOWN'
                     throughput=@{tcp_fwd_mbps=0;tcp_rev_mbps=0;udp_fwd_mbps=0;udp_rev_mbps=0}
@@ -703,6 +741,19 @@ $_pairJobBlock = {
             $nUdpFwd = Get-IperfMbps $logUdpFwd
             $nUdpRev = Get-IperfMbps $logUdpRev
 
+            # Diagnostics: 0 Mbps usually means iperf3 could not connect (commonly
+            # the Windows Firewall dropping inbound TCP/UDP 5201).  Dump the tails so
+            # the cause is visible without opening every per-run log.
+            if ($nTcpFwd -eq 0.0 -or $nTcpRev -eq 0.0 -or $nUdpFwd -eq 0.0 -or $nUdpRev -eq 0.0) {
+                "[diag] iperf3 reported 0 Mbps for >=1 direction; per-run log tails:" | Add-Content $pairLog
+                foreach ($lf in @($logTcpFwd, $logTcpRev, $logUdpFwd, $logUdpRev)) {
+                    if (Test-Path $lf) {
+                        $tl = (Get-Content $lf -Tail 3 -ErrorAction SilentlyContinue) -join ' | '
+                        ("  " + (Split-Path -Leaf $lf) + ": " + $tl) | Add-Content $pairLog
+                    }
+                }
+            }
+
             $thr = [Math]::Round($mbps * $TcpPct / 100.0, 2)
             $verdict = 'FAIL'
             if ($v4Res -ne 'PASS' -or $v6Res -ne 'PASS') { $verdict = 'FAIL' }
@@ -737,6 +788,25 @@ $_pairJobBlock = {
     return @{ name = $pair; speeds = $speedResults }
 }
 
+# -- Firewall allow rule for iperf3 (NET006) -----------------------------------
+# Back-to-back traffic crosses physical interfaces, so the Defender Firewall
+# applies to iperf3's inbound TCP/UDP 5201.  ICMP (ping) often passes while the
+# iperf3 sockets are silently dropped -- showing up as 0 Mbps with a PASS ping.
+# The bash side runs inside a network namespace with no firewall; here we add a
+# scoped allow rule for the resolved iperf3.exe and remove it on exit.
+$_fwRuleName = "net_test_iperf3_$_runTs"
+$_fwRuleAdded = $false
+if (-not $DryRun -and $i3path) {
+    try {
+        New-NetFirewallRule -DisplayName $_fwRuleName -Direction Inbound -Action Allow `
+            -Program $i3path -Profile Any -ErrorAction Stop | Out-Null
+        $_fwRuleAdded = $true
+        Write-Host ("         Firewall       : allow rule added for iperf3 ($_fwRuleName)") -ForegroundColor DarkGray
+    } catch {
+        Write-Warning "Could not add firewall allow rule for iperf3: $($_.Exception.Message)"
+    }
+}
+
 # -- Main run loop -------------------------------------------------------------
 $_pairResults = @{}   # name -> @{ name; speeds=[] }
 
@@ -765,7 +835,15 @@ try {
                 if ($null -ne $res) {
                     $k = "$($res.name)"
                     if (-not $_pairResults.ContainsKey($k)) {
-                        $_pairResults[$k] = @{ name = $res.name; speeds = @() }
+                        $cap = $_pairCaps[$k]
+                        $_pairResults[$k] = @{
+                            name        = $res.name
+                            speeds      = @()
+                            even_nic    = if ($cap) { $cap.even }        else { $null }
+                            odd_nic     = if ($cap) { $cap.odd }         else { $null }
+                            even_speeds = if ($cap) { @($cap.even_speeds) } else { @() }
+                            odd_speeds  = if ($cap) { @($cap.odd_speeds) }  else { @() }
+                        }
                     }
                     $_pairResults[$k].speeds += $res.speeds
                     $nPass = @($res.speeds | Where-Object { $_.verdict -eq 'PASS'    }).Count
@@ -798,6 +876,9 @@ try {
             foreach ($ip in @("192.247.$i.1","192.247.$i.11","fd00:2470::${i}:1","fd00:2470::${i}:11")) {
                 Remove-NetIPAddress -IPAddress $ip -Confirm:$false -ErrorAction SilentlyContinue
             }
+        }
+        if ($_fwRuleAdded) {
+            Remove-NetFirewallRule -DisplayName $_fwRuleName -ErrorAction SilentlyContinue
         }
     }
 }
@@ -867,7 +948,7 @@ Write-Utf8NoBom -Path $_resultFile -Text ($_result | ConvertTo-Json -Depth 9)
 $_reportFile = Join-Path $_log_path "net_test_$_runTs.report.html"
 try {
     $_resultObj = Get-Content $_resultFile -Raw -Encoding UTF8 | ConvertFrom-Json
-    Write-HtmlReport -Result $_resultObj -Path $_reportFile
+    Write-HtmlReport -Result $_resultObj -OutPath $_reportFile
 } catch {
     Write-Warning "HTML report generation failed: $_"
     $_reportFile = $null
