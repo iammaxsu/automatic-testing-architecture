@@ -69,7 +69,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$_script_ver                = '00.00.15'
+$_script_ver                = '00.00.16'
 $_requires_function_ps1_api = '00.00.02'
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Write-Host "net_test.ps1 v$_script_ver" -ForegroundColor Cyan
@@ -770,9 +770,17 @@ $_pairJobBlock = {
             Set-NicSpeed -Nic $OddNic  -Display ([string]$step.oddDisplay)  -Dry $Dry -LogPath $pairLog | Out-Null
             if (-not $Dry) {
                 "  [speed] restarting adapters to apply ${mbps}M and renegotiate..." | Add-Content $pairLog
-                Restart-NetAdapter -Name $EvenNic -Confirm:$false -ErrorAction SilentlyContinue
-                Restart-NetAdapter -Name $OddNic  -Confirm:$false -ErrorAction SilentlyContinue
-                Start-Sleep -Seconds 2
+                # Restart-NetAdapter is a quick "bounce" that some drivers (notably
+                # the X550) apply almost instantly without actually retraining the
+                # copper link.  A full Disable/Enable cycle forces the PHY to power
+                # down and re-link from scratch, which is what onboard NICs (I219-V)
+                # need to pick up a new *SpeedDuplex advertisement.
+                Disable-NetAdapter -Name $EvenNic -Confirm:$false -ErrorAction SilentlyContinue
+                Disable-NetAdapter -Name $OddNic  -Confirm:$false -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 3
+                Enable-NetAdapter -Name $EvenNic -Confirm:$false -ErrorAction SilentlyContinue
+                Enable-NetAdapter -Name $OddNic  -Confirm:$false -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 5
             }
             $linkOk = Wait-PairLink -A $EvenNic -B $OddNic -Mbps $mbps -TimeoutSec $AutonegWait -Dry $Dry -LogPath $pairLog
 
@@ -784,6 +792,23 @@ $_pairJobBlock = {
                 $actEven = Get-LinkMbpsJob (Get-NetAdapter -Name $EvenNic -ErrorAction SilentlyContinue)
                 $actOdd  = Get-LinkMbpsJob (Get-NetAdapter -Name $OddNic  -ErrorAction SilentlyContinue)
                 "Link did NOT reach $mbps Mbps within ${AutonegWait}s (actual: ${EvenNic}=${actEven}M, ${OddNic}=${actOdd}M) - recording UNKNOWN." | Add-Content $pairLog
+                # Diagnostic dump: full adapter status + *SpeedDuplex setting for
+                # both NICs, so a stuck negotiation can be root-caused from the log
+                # without needing another round trip.
+                foreach ($n in @($EvenNic, $OddNic)) {
+                    try {
+                        $ad = Get-NetAdapter -Name $n -ErrorAction Stop
+                        "  [diag] ${n}: Status=$($ad.Status) MediaConnectionState=$($ad.MediaConnectionState) LinkSpeed=$($ad.LinkSpeed)" | Add-Content $pairLog
+                    } catch {
+                        "  [diag] ${n}: Get-NetAdapter failed: $($_.Exception.Message)" | Add-Content $pairLog
+                    }
+                    try {
+                        $sd = Get-NetAdapterAdvancedProperty -Name $n -RegistryKeyword '*SpeedDuplex' -ErrorAction Stop
+                        "  [diag] ${n}: *SpeedDuplex = '$($sd.DisplayValue)' (reg=$($sd.RegistryValue))" | Add-Content $pairLog
+                    } catch {
+                        "  [diag] ${n}: *SpeedDuplex read failed: $($_.Exception.Message)" | Add-Content $pairLog
+                    }
+                }
                 $speedResults += @{
                     speed_mbps = $mbps; ipv4_ping='UNKNOWN'; ipv6_ping='UNKNOWN'
                     throughput=@{tcp_fwd_mbps=0;tcp_rev_mbps=0;udp_fwd_mbps=0;udp_rev_mbps=0}
