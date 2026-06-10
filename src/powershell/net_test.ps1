@@ -69,7 +69,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$_script_ver                = '00.00.16'
+$_script_ver                = '00.00.17'
 $_requires_function_ps1_api = '00.00.02'
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Write-Host "net_test.ps1 v$_script_ver" -ForegroundColor Cyan
@@ -438,6 +438,8 @@ for ($i = 0; $i -lt $_evenNics.Count; $i++) {
     $oddOpts  = Get-NicSpeedOptions $_oddNics[$i]
     $evenMap  = @{}; foreach ($o in $evenOpts) { $evenMap[[int]$o.mbps] = $o.display }
     $oddMap   = @{}; foreach ($o in $oddOpts)  { $oddMap[[int]$o.mbps]  = $o.display }
+    $evenMax  = if ($evenMap.Count -gt 0) { [int]($evenMap.Keys | Measure-Object -Maximum).Maximum } else { 0 }
+    $oddMax   = if ($oddMap.Count  -gt 0) { [int]($oddMap.Keys  | Measure-Object -Maximum).Maximum } else { 0 }
     $pairKey  = "$($_evenNics[$i])<->$($_oddNics[$i])"
     $_pairCaps[$pairKey] = @{
         even        = $_evenNics[$i]
@@ -461,11 +463,24 @@ for ($i = 0; $i -lt $_evenNics.Count; $i++) {
                 if (-not $evenMap.ContainsKey($m)) { $naReason = "$($_evenNics[$i]) does not support ${m}M" }
                 else                               { $naReason = "$($_oddNics[$i]) does not support ${m}M" }
             }
+            # 1000BASE-T+ on copper requires autonegotiation (IEEE 802.3 clause 40).
+            # On some PHYs (e.g. Intel I219-V) selecting a fixed ">=1000 Full Duplex"
+            # value disables autoneg, so the link will NOT come up -- the NIC goes
+            # Disconnected.  When the target speed IS that NIC's top advertised
+            # speed, use Auto Negotiation instead (autoneg stays on and naturally
+            # tops out at that speed).  When the target is BELOW the NIC's top speed,
+            # force the value: for 10/100 no autoneg is needed, and a multi-gig NIC
+            # (e.g. X550) keeps autoneg on while advertising only the forced speed,
+            # so a "force 1000" on a 10G NIC still negotiates cleanly to 1000M.
+            $evenAuto = ($evenMap.ContainsKey($m) -and [int]$m -ge 1000 -and [int]$m -eq $evenMax)
+            $oddAuto  = ($oddMap.ContainsKey($m)  -and [int]$m -ge 1000 -and [int]$m -eq $oddMax)
             $plan += @{
                 mbps        = [int]$m
                 testable    = $testable
                 evenDisplay = if ($evenMap.ContainsKey($m)) { $evenMap[[int]$m] } else { $null }
                 oddDisplay  = if ($oddMap.ContainsKey($m))  { $oddMap[[int]$m]  } else { $null }
+                evenAuto    = [bool]$evenAuto
+                oddAuto     = [bool]$oddAuto
                 na_reason   = $naReason
             }
         }
@@ -475,7 +490,7 @@ for ($i = 0; $i -lt $_evenNics.Count; $i++) {
         $neg = Get-LinkMbps (Get-NetAdapter -Name $_evenNics[$i] -ErrorAction SilentlyContinue)
         if ($neg -le 0) { $neg = 1000 }
         if ($_speedAllow.Count -eq 0 -or $_speedAllow -contains $neg) {
-            $plan += @{ mbps = $neg; testable = $true; evenDisplay = $null; oddDisplay = $null; na_reason = $null }
+            $plan += @{ mbps = $neg; testable = $true; evenDisplay = $null; oddDisplay = $null; evenAuto = $false; oddAuto = $false; na_reason = $null }
         }
     }
     $_pairPlans += ,$plan
@@ -645,6 +660,24 @@ $_pairJobBlock = {
         }
     }
 
+    # Restore a NIC to DHCP / automatic addressing.  Assigning a static test IP
+    # with New-NetIPAddress flips the interface from DHCP to manual; just removing
+    # the static IP afterwards would leave it stranded in manual mode with NO
+    # address.  Re-enable DHCP for IPv4+IPv6 and reset DNS so the NIC is returned
+    # to the state it had before the test.
+    function Restore-NicDhcp {
+        param([string]$Nic, [bool]$Dry, [string]$LogPath)
+        if ($Dry) { return }
+        try {
+            Set-NetIPInterface -InterfaceAlias $Nic -AddressFamily IPv4 -Dhcp Enabled -ErrorAction SilentlyContinue
+            Set-NetIPInterface -InterfaceAlias $Nic -AddressFamily IPv6 -Dhcp Enabled -ErrorAction SilentlyContinue
+            Set-DnsClientServerAddress -InterfaceAlias $Nic -ResetServerAddresses -ErrorAction SilentlyContinue
+            if ($LogPath) { "  [ip]    $Nic : restored to DHCP / automatic" | Add-Content $LogPath }
+        } catch {
+            if ($LogPath) { "  [ip]    $Nic : DHCP restore failed: $($_.Exception.Message)" | Add-Content $LogPath }
+        }
+    }
+
     function Invoke-PingCheck {
         param([string]$SrcIp, [string]$DstIp, [bool]$IsV6, [bool]$Dry)
         if ($Dry) { return 'PASS' }
@@ -754,20 +787,22 @@ $_pairJobBlock = {
             "### Speed = $mbps Mbps" | Add-Content $pairLog
             $autonegNote = $null
 
-            # Set the target speed on BOTH NICs.  On Intel, selecting a specific
-            # "<n> Gbps/Mbps Full Duplex" value advertises ONLY that speed via
-            # autonegotiation (it does NOT disable autoneg), which is exactly what
-            # 1000BASE-T+ on copper requires.  Restricting BOTH ends to a single
-            # speed also stops a multi-gig (NBASE-T) NIC from advertising 2.5/5/10G
-            # and confusing a plain-gigabit partner into a parallel-detection
-            # fallback (the X550<->I219-V 10000M/100M mismatch seen back-to-back).
+            # Choose, per NIC, between forcing the target speed and Auto Negotiation
+            # (see the plan-building comment): when the target is a NIC's own top
+            # speed and >=1000M, force-mode would disable autoneg on some PHYs
+            # (I219-V) and the link drops, so that NIC uses Auto Negotiation while
+            # the other (which can go higher, e.g. X550) is pinned to the target.
+            # Both ends keep autoneg on with overlapping advertisement, so the link
+            # converges cleanly at the target speed.
             #
-            # A registry/property change does not reliably restart the PHY, so
-            # bounce both adapters to make the new advertisement take effect, then
-            # wait for the link to settle.  Restart + renegotiation is much slower
-            # than a plain property write, hence the longer $AutonegWait timeout.
-            Set-NicSpeed -Nic $EvenNic -Display ([string]$step.evenDisplay) -Dry $Dry -LogPath $pairLog | Out-Null
-            Set-NicSpeed -Nic $OddNic  -Display ([string]$step.oddDisplay)  -Dry $Dry -LogPath $pairLog | Out-Null
+            # A registry/property change does not reliably restart the PHY, so the
+            # Disable/Enable cycle below makes the new advertisement take effect;
+            # renegotiation is slow, hence the longer $AutonegWait timeout.
+            $evenWant = if ([bool]$step.evenAuto) { 'Auto Negotiation' } else { [string]$step.evenDisplay }
+            $oddWant  = if ([bool]$step.oddAuto)  { 'Auto Negotiation' } else { [string]$step.oddDisplay }
+            "  [speed] plan: $EvenNic -> '$evenWant'   |   $OddNic -> '$oddWant'  (target ${mbps}M)" | Add-Content $pairLog
+            Set-NicSpeed -Nic $EvenNic -Display $evenWant -Dry $Dry -LogPath $pairLog | Out-Null
+            Set-NicSpeed -Nic $OddNic  -Display $oddWant  -Dry $Dry -LogPath $pairLog | Out-Null
             if (-not $Dry) {
                 "  [speed] restarting adapters to apply ${mbps}M and renegotiate..." | Add-Content $pairLog
                 # Restart-NetAdapter is a quick "bounce" that some drivers (notably
@@ -888,13 +923,15 @@ $_pairJobBlock = {
             }
         }
     } finally {
-        # Restore Auto Negotiation so the NICs are usable after the test.
+        # Restore Auto Negotiation and DHCP so the NICs are usable after the test.
         if (-not $Dry) {
             Set-NicSpeed -Nic $EvenNic -Display 'Auto Negotiation' -Dry $Dry -LogPath $pairLog | Out-Null
             Set-NicSpeed -Nic $OddNic  -Display 'Auto Negotiation' -Dry $Dry -LogPath $pairLog | Out-Null
             foreach ($ip in @($v4even,$v4odd,$v6even,$v6odd)) {
                 Remove-NetIPAddress -IPAddress $ip -Confirm:$false -ErrorAction SilentlyContinue
             }
+            Restore-NicDhcp -Nic $EvenNic -Dry $Dry -LogPath $pairLog
+            Restore-NicDhcp -Nic $OddNic  -Dry $Dry -LogPath $pairLog
         }
     }
 
@@ -998,6 +1035,14 @@ try {
             foreach ($ip in @("192.247.$i.1","192.247.$i.11","fd00:2470::${i}:1","fd00:2470::${i}:11")) {
                 Remove-NetIPAddress -IPAddress $ip -Confirm:$false -ErrorAction SilentlyContinue
             }
+        }
+        # Re-enable DHCP / automatic addressing on every test NIC: assigning the
+        # static test IPs flipped each interface to manual, and removing those IPs
+        # would otherwise leave the NIC with no address at all.
+        foreach ($nic in $_testNics) {
+            Set-NetIPInterface -InterfaceAlias $nic -AddressFamily IPv4 -Dhcp Enabled -ErrorAction SilentlyContinue
+            Set-NetIPInterface -InterfaceAlias $nic -AddressFamily IPv6 -Dhcp Enabled -ErrorAction SilentlyContinue
+            Set-DnsClientServerAddress -InterfaceAlias $nic -ResetServerAddresses -ErrorAction SilentlyContinue
         }
         if ($_fwRuleAdded) {
             Remove-NetFirewallRule -DisplayName $_fwRuleName -ErrorAction SilentlyContinue
