@@ -69,7 +69,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$_script_ver                = '00.00.12'
+$_script_ver                = '00.00.13'
 $_requires_function_ps1_api = '00.00.02'
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Write-Host "net_test.ps1 v$_script_ver" -ForegroundColor Cyan
@@ -553,10 +553,54 @@ $_pairJobBlock = {
     }
 
     function Set-NicSpeed {
-        param([string]$Nic, [string]$Display, [bool]$Dry)
-        if ($Dry -or [string]::IsNullOrEmpty($Display)) { return }
-        Set-NetAdapterAdvancedProperty -Name $Nic -RegistryKeyword '*SpeedDuplex' `
-            -DisplayValue $Display -ErrorAction SilentlyContinue
+        param([string]$Nic, [string]$Display, [bool]$Dry, [string]$LogPath)
+        if ($Dry -or [string]::IsNullOrEmpty($Display)) { return $true }
+
+        try {
+            $prop = Get-NetAdapterAdvancedProperty -Name $Nic -RegistryKeyword '*SpeedDuplex' -ErrorAction Stop
+        } catch {
+            if ($LogPath) { "  [speed] $Nic : cannot read *SpeedDuplex ($($_.Exception.Message))" | Add-Content $LogPath }
+            return $false
+        }
+
+        # Resolve the requested DisplayValue to its RegistryValue (the numeric enum
+        # the driver actually stores) and set by RegistryValue.  This is far more
+        # robust than setting by DisplayValue: the visible strings drift across
+        # Intel driver releases ("Auto Negotiation" / "Auto-Negotiation" / "Auto"),
+        # but the enum index is stable and is exactly what Device Manager writes.
+        $disps  = @($prop.ValidDisplayValues)
+        $regs   = @($prop.ValidRegistryValues)
+        $want   = $Display.Trim()
+        $regVal = $null
+        if ($regs.Count -gt 0 -and $regs.Count -eq $disps.Count) {
+            for ($k = 0; $k -lt $disps.Count; $k++) {
+                if ([string]$disps[$k] -eq $want) { $regVal = [string]$regs[$k]; break }
+            }
+            if ($null -eq $regVal -and $want -match 'Auto') {
+                # Tolerant autoneg match: any display string containing "Auto".
+                for ($k = 0; $k -lt $disps.Count; $k++) {
+                    if ([string]$disps[$k] -match 'Auto') { $regVal = [string]$regs[$k]; break }
+                }
+            }
+        }
+
+        try {
+            if ($null -ne $regVal) {
+                Set-NetAdapterAdvancedProperty -Name $Nic -RegistryKeyword '*SpeedDuplex' -RegistryValue $regVal -ErrorAction Stop
+            } else {
+                Set-NetAdapterAdvancedProperty -Name $Nic -RegistryKeyword '*SpeedDuplex' -DisplayValue $want -ErrorAction Stop
+            }
+        } catch {
+            if ($LogPath) { "  [speed] $Nic : set '$want' FAILED ($($_.Exception.Message))" | Add-Content $LogPath }
+            return $false
+        }
+
+        # Read back so the log shows whether the driver actually accepted the change.
+        Start-Sleep -Milliseconds 400
+        $now = '?'
+        try { $now = [string](Get-NetAdapterAdvancedProperty -Name $Nic -RegistryKeyword '*SpeedDuplex' -ErrorAction Stop).DisplayValue } catch {}
+        if ($LogPath) { "  [speed] $Nic : set '$want' (reg=$regVal) -> now '$now'" | Add-Content $LogPath }
+        return $true
     }
 
     # Wait until both NICs are Up at the requested Mbps.
@@ -723,8 +767,8 @@ $_pairJobBlock = {
             $autonegNote = $null
 
             # Force speed on both NICs and wait for the link to settle.
-            Set-NicSpeed -Nic $EvenNic -Display ([string]$step.evenDisplay) -Dry $Dry
-            Set-NicSpeed -Nic $OddNic  -Display ([string]$step.oddDisplay)  -Dry $Dry
+            Set-NicSpeed -Nic $EvenNic -Display ([string]$step.evenDisplay) -Dry $Dry -LogPath $pairLog | Out-Null
+            Set-NicSpeed -Nic $OddNic  -Display ([string]$step.oddDisplay)  -Dry $Dry -LogPath $pairLog | Out-Null
             $linkOk = Wait-PairLink -A $EvenNic -B $OddNic -Mbps $mbps -TimeoutSec $LinkWait -Dry $Dry
 
             # 1000BASE-T and faster require auto-negotiation on copper (IEEE 802.3
@@ -736,8 +780,8 @@ $_pairJobBlock = {
             # forced-speed wait, hence the separate, longer $AutonegWait timeout.
             if (-not $linkOk -and -not $Dry -and $mbps -ge 1000) {
                 "Forced ${mbps}M did not link; retrying with Auto Negotiation (1000BASE-T+ requires autoneg)..." | Add-Content $pairLog
-                Set-NicSpeed -Nic $EvenNic -Display 'Auto Negotiation' -Dry $Dry
-                Set-NicSpeed -Nic $OddNic  -Display 'Auto Negotiation' -Dry $Dry
+                Set-NicSpeed -Nic $EvenNic -Display 'Auto Negotiation' -Dry $Dry -LogPath $pairLog | Out-Null
+                Set-NicSpeed -Nic $OddNic  -Display 'Auto Negotiation' -Dry $Dry -LogPath $pairLog | Out-Null
                 $common = Wait-PairLinkCommon -A $EvenNic -B $OddNic -TimeoutSec $AutonegWait -Dry $Dry
                 if ($common -gt 0) {
                     "Auto Negotiation settled at ${common}M (requested ${mbps}M)." | Add-Content $pairLog
@@ -838,10 +882,8 @@ $_pairJobBlock = {
     } finally {
         # Restore Auto Negotiation so the NICs are usable after the test.
         if (-not $Dry) {
-            Set-NetAdapterAdvancedProperty -Name $EvenNic -RegistryKeyword '*SpeedDuplex' `
-                -DisplayValue 'Auto Negotiation' -ErrorAction SilentlyContinue
-            Set-NetAdapterAdvancedProperty -Name $OddNic -RegistryKeyword '*SpeedDuplex' `
-                -DisplayValue 'Auto Negotiation' -ErrorAction SilentlyContinue
+            Set-NicSpeed -Nic $EvenNic -Display 'Auto Negotiation' -Dry $Dry -LogPath $pairLog | Out-Null
+            Set-NicSpeed -Nic $OddNic  -Display 'Auto Negotiation' -Dry $Dry -LogPath $pairLog | Out-Null
             foreach ($ip in @($v4even,$v4odd,$v6even,$v6odd)) {
                 Remove-NetIPAddress -IPAddress $ip -Confirm:$false -ErrorAction SilentlyContinue
             }
@@ -933,8 +975,16 @@ try {
     if (-not $DryRun) {
         Write-Host "`nRestoring NICs (Auto Negotiation) and removing test IPs..." -ForegroundColor Cyan
         foreach ($nic in $_testNics) {
-            Set-NetAdapterAdvancedProperty -Name $nic -RegistryKeyword '*SpeedDuplex' `
-                -DisplayValue 'Auto Negotiation' -ErrorAction SilentlyContinue
+            # Try by DisplayValue; if the string does not match this driver's enum,
+            # fall back to RegistryValue 0 (Auto Negotiation is enum 0 for Intel
+            # *SpeedDuplex), so a NIC is never left stuck at a forced speed.
+            try {
+                Set-NetAdapterAdvancedProperty -Name $nic -RegistryKeyword '*SpeedDuplex' `
+                    -DisplayValue 'Auto Negotiation' -ErrorAction Stop
+            } catch {
+                Set-NetAdapterAdvancedProperty -Name $nic -RegistryKeyword '*SpeedDuplex' `
+                    -RegistryValue '0' -ErrorAction SilentlyContinue
+            }
         }
         for ($i = 0; $i -lt $_evenNics.Count; $i++) {
             foreach ($ip in @("192.247.$i.1","192.247.$i.11","fd00:2470::${i}:1","fd00:2470::${i}:11")) {
