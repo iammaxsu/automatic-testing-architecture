@@ -69,7 +69,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$_script_ver                = '00.00.10'
+$_script_ver                = '00.00.11'
 $_requires_function_ps1_api = '00.00.02'
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Write-Host "net_test.ps1 v$_script_ver" -ForegroundColor Cyan
@@ -111,6 +111,7 @@ $cfgTcpPassPct   = [int]   (Get-CfgVal '_net_tcp_pass_pct'    95)
 $cfgSpeeds       = [string](Get-CfgVal '_net_speeds'          'auto')
 $cfgVendor       = [string](Get-CfgVal '_net_vendor_filter'   'Intel')
 $cfgLinkWaitSec  = [int]   (Get-CfgVal '_net_link_wait_sec'   30)
+$cfgAutonegWaitSec = [int] (Get-CfgVal '_net_link_wait_autoneg_sec' 90)
 $StrictLifeline  = [int]   (Get-CfgVal '_net_strict_lifeline' 1)
 $cfgExcludeMacs  = [string](Get-CfgVal '_net_exclude_macs'    '')
 $Iperf3AutoInst  = [int]   (Get-CfgVal '_net_iperf3_auto_install' 1)
@@ -125,6 +126,7 @@ $IperfTimeSec = if ($PSBoundParameters.ContainsKey('IperfTimeSec') -and $IperfTi
 $IperfOmitSec = if ($PSBoundParameters.ContainsKey('IperfOmitSec') -and $IperfOmitSec -ge 0) { $IperfOmitSec } else { $cfgIperfOmitSec }
 $TcpPassPct   = if ($PSBoundParameters.ContainsKey('TcpPassPct')   -and $TcpPassPct -gt 0)   { $TcpPassPct }   else { $cfgTcpPassPct }
 $LinkWaitSec  = if ($PSBoundParameters.ContainsKey('LinkWaitSec')  -and $LinkWaitSec -gt 0)  { $LinkWaitSec }  else { $cfgLinkWaitSec }
+$AutonegWaitSec = $cfgAutonegWaitSec
 $Speeds       = if ($PSBoundParameters.ContainsKey('Speeds')       -and $Speeds -ne '')      { $Speeds }       else { $cfgSpeeds }
 $VendorFilter = if ($PSBoundParameters.ContainsKey('VendorFilter'))                          { $VendorFilter } else { $cfgVendor }
 if ($Loops -le 0) { $Loops = 1 }
@@ -203,7 +205,9 @@ function Write-HtmlReport {
         foreach ($spd in $pair.speeds) {
             $vc = switch ([string]$spd.verdict) { 'PASS' { 'pass' } 'FAIL' { 'fail' } 'UNKNOWN' { 'unknown' } default { 'na' } }
             $t  = $spd.throughput
-            $nr = if ($spd.na_reason) { '<br><small>' + $spd.na_reason + '</small>' } else { '' }
+            $nr = if ($spd.na_reason) { '<br><small>' + $spd.na_reason + '</small>' }
+                  elseif ($spd.note)  { '<br><small>' + $spd.note + '</small>' }
+                  else { '' }
             [void]$sb.Append('<tr>')
             [void]$sb.Append('<td>' + $spd.speed_mbps + '</td>')
             [void]$sb.Append('<td class="' + $vc + '">' + $spd.ipv4_ping + '</td>')
@@ -511,6 +515,7 @@ $_pairJobBlock = {
         [int]    $IperfOmit,
         [int]    $TcpPct,
         [int]    $LinkWait,
+        [int]    $AutonegWait,
         [bool]   $Dry
     )
 
@@ -557,6 +562,28 @@ $_pairJobBlock = {
         return $false
     }
 
+    # Wait until both NICs are Up and have converged on the SAME speed, whatever
+    # that speed turns out to be.  Used after falling back to Auto Negotiation,
+    # where the result isn't known in advance and renegotiation after a PHY
+    # reset can take much longer than a forced-speed wait.  Returns the common
+    # speed in Mbps, or 0 on timeout.
+    function Wait-PairLinkCommon {
+        param([string]$A, [string]$B, [int]$TimeoutSec, [bool]$Dry)
+        if ($Dry) { return 0 }
+        $deadline = (Get-Date).AddSeconds($TimeoutSec)
+        while ((Get-Date) -lt $deadline) {
+            $na = Get-NetAdapter -Name $A -ErrorAction SilentlyContinue
+            $nb = Get-NetAdapter -Name $B -ErrorAction SilentlyContinue
+            if ($na -and $nb -and $na.Status -eq 'Up' -and $nb.Status -eq 'Up') {
+                $sa = Get-LinkMbpsJob $na
+                $sb = Get-LinkMbpsJob $nb
+                if ($sa -gt 0 -and $sa -eq $sb) { return $sa }
+            }
+            Start-Sleep -Milliseconds 800
+        }
+        return 0
+    }
+
     function Add-PairIPs {
         param([int]$Idx, [string]$Even, [string]$Odd, [bool]$Dry)
         if ($Dry) { return }
@@ -582,10 +609,22 @@ $_pairJobBlock = {
         if ($LASTEXITCODE -eq 0) { return 'PASS' } else { return 'FAIL' }
     }
 
+    # Start-Process -ArgumentList does not reliably quote array elements that
+    # contain spaces (PS 5.1): an unquoted "C:\...\Ethernet 2..." path gets split
+    # into multiple arguments by the child process, silently truncating
+    # iperf3's --logfile value (e.g. to "...iPerf3_Ethernet").  Build a single
+    # pre-quoted command-line string instead.
+    function ConvertTo-ArgString {
+        param([string[]]$ArgList)
+        ($ArgList | ForEach-Object {
+            if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { "$_" }
+        }) -join ' '
+    }
+
     function Start-IperfServer {
         param([string]$BindIp, [int]$Port, [bool]$Dry)
         if ($Dry) { return 0 }
-        $p = Start-Process iperf3 -ArgumentList @('--server','--bind',$BindIp,'--port',$Port) `
+        $p = Start-Process iperf3 -ArgumentList (ConvertTo-ArgString @('--server','--bind',$BindIp,'--port',$Port)) `
              -PassThru -WindowStyle Hidden
         Start-Sleep -Seconds 1
         return $p.Id
@@ -611,7 +650,7 @@ $_pairJobBlock = {
                '--interval','3','--omit',$Omit,'--logfile',$LogFile,'--forceflush')
         if ($Reverse) { $a += '--reverse' }
         if ($Udp)     { $a += '--udp' }
-        $p = Start-Process iperf3 -ArgumentList $a -Wait -PassThru -WindowStyle Hidden
+        $p = Start-Process iperf3 -ArgumentList (ConvertTo-ArgString $a) -Wait -PassThru -WindowStyle Hidden
         if ($p.ExitCode -ne 0) { "iperf3 client exit $($p.ExitCode)" | Add-Content $LogFile }
     }
 
@@ -667,6 +706,7 @@ $_pairJobBlock = {
             }
 
             "### Speed = $mbps Mbps" | Add-Content $pairLog
+            $autonegNote = $null
 
             # Force speed on both NICs and wait for the link to settle.
             Set-NicSpeed -Nic $EvenNic -Display ([string]$step.evenDisplay) -Dry $Dry
@@ -675,14 +715,24 @@ $_pairJobBlock = {
 
             # 1000BASE-T and faster require auto-negotiation on copper (IEEE 802.3
             # clause 40): a forced fixed-speed setting disables autoneg and the link
-            # will not come up.  Fall back to Auto Negotiation, which settles at the
-            # highest speed BOTH NICs share -- exactly $mbps when this is the pair's
-            # top common speed (the usual reason a >=1000M force fails here).
+            # will not come up.  Fall back to Auto Negotiation and accept whatever
+            # common speed both NICs converge on -- normally $mbps when this is the
+            # pair's top common speed (the usual reason a >=1000M force fails here).
+            # Renegotiation after a PHY reset can take much longer than a normal
+            # forced-speed wait, hence the separate, longer $AutonegWait timeout.
             if (-not $linkOk -and -not $Dry -and $mbps -ge 1000) {
-                "Forced ${mbps}M did not link; retrying with Auto Negotiation (1000BASE-T needs autoneg)..." | Add-Content $pairLog
+                "Forced ${mbps}M did not link; retrying with Auto Negotiation (1000BASE-T+ requires autoneg)..." | Add-Content $pairLog
                 Set-NicSpeed -Nic $EvenNic -Display 'Auto Negotiation' -Dry $Dry
                 Set-NicSpeed -Nic $OddNic  -Display 'Auto Negotiation' -Dry $Dry
-                $linkOk = Wait-PairLink -A $EvenNic -B $OddNic -Mbps $mbps -TimeoutSec $LinkWait -Dry $Dry
+                $common = Wait-PairLinkCommon -A $EvenNic -B $OddNic -TimeoutSec $AutonegWait -Dry $Dry
+                if ($common -gt 0) {
+                    "Auto Negotiation settled at ${common}M (requested ${mbps}M)." | Add-Content $pairLog
+                    if ($common -ne $mbps) {
+                        $autonegNote = "Auto-negotiated at ${common}M instead of requested ${mbps}M"
+                    }
+                    $mbps   = $common
+                    $linkOk = $true
+                }
             }
 
             # (Re-)assert the test IPs; a speed change bounces the link.
@@ -768,7 +818,7 @@ $_pairJobBlock = {
                 speed_mbps = $mbps; ipv4_ping=$v4Res; ipv6_ping=$v6Res
                 throughput=@{ tcp_fwd_mbps=$nTcpFwd; tcp_rev_mbps=$nTcpRev
                               udp_fwd_mbps=$nUdpFwd; udp_rev_mbps=$nUdpRev }
-                verdict=$verdict
+                verdict=$verdict; note=$autonegNote
             }
         }
     } finally {
@@ -821,7 +871,7 @@ try {
             $j = Start-Job -ScriptBlock $_pairJobBlock -ArgumentList @(
                 $i, $_evenNics[$i], $_oddNics[$i], $planJson,
                 $_log_path, $_runTs, $loop, $Loops,
-                $IperfTimeSec, $IperfOmitSec, $TcpPassPct, $LinkWaitSec, ([bool]$DryRun)
+                $IperfTimeSec, $IperfOmitSec, $TcpPassPct, $LinkWaitSec, $AutonegWaitSec, ([bool]$DryRun)
             )
             Write-Host ("  [Pair $i] Job $($j.Id) started  " + $_evenNics[$i] + " <-> " + $_oddNics[$i])
             $jobs += $j

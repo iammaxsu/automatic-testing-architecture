@@ -76,6 +76,12 @@ $_net_vendor_filter    = 'Intel' # Only test NICs whose description matches this
                                  #   *SpeedDuplex enum, so it is the supported default.
 $_net_link_wait_sec    = 30      # Max seconds to wait for the link to re-establish at a
                                  #   new speed before recording that speed as UNKNOWN.
+$_net_link_wait_autoneg_sec = 90 # NET004: 1000BASE-T and faster require auto-negotiation
+                                 #   on copper -- a forced fixed speed never links.  When a
+                                 #   >=1000M force fails, net_test.ps1 retries with Auto
+                                 #   Negotiation and waits up to this many seconds for both
+                                 #   NICs to converge on the same speed (renegotiation after
+                                 #   a PHY reset is slower than a normal forced-speed wait).
 # iperf3 auto-install (mirrors the bash side's apt-get/dnf "ensure tool" logic).
 # If iperf3 is not already in PATH, net_test.ps1 tries to install it the same way
 # net_test.sh does on Linux -- here via the Windows package managers, newest to
