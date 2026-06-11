@@ -74,7 +74,30 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$_script_ver                = '00.00.22'
+# Surface the exact failing location for any otherwise-unhandled terminating
+# error.  Without this, a deep .NET exception (e.g. ArgumentOutOfRangeException)
+# bubbles to the top and PowerShell reports only "At line:1 char:1 .\net_test.ps1",
+# which hides where it actually came from.  The trap prints the message, the
+# script line/position, and the PowerShell call stack, then stops.
+trap {
+    Write-Host ''
+    Write-Host '==== net_test.ps1 : unhandled error ====' -ForegroundColor Red
+    Write-Host ("  Type    : " + $_.Exception.GetType().FullName) -ForegroundColor Red
+    Write-Host ("  Message : " + $_.Exception.Message) -ForegroundColor Red
+    if ($null -ne $_.InvocationInfo) {
+        Write-Host ("  At      : " + $_.InvocationInfo.PositionMessage) -ForegroundColor Yellow
+    }
+    if ($_.ScriptStackTrace) {
+        Write-Host "  Stack   :" -ForegroundColor DarkYellow
+        foreach ($_line in ($_.ScriptStackTrace -split "`n")) {
+            Write-Host ("            " + $_line) -ForegroundColor DarkYellow
+        }
+    }
+    Write-Host '========================================' -ForegroundColor Red
+    break
+}
+
+$_script_ver                = '00.00.23'
 $_requires_function_ps1_api = '00.00.02'
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Write-Host "net_test.ps1 v$_script_ver" -ForegroundColor Cyan
