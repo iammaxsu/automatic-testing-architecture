@@ -89,6 +89,25 @@ $_net_link_wait_autoneg_sec = 90 # NET004: 1000BASE-T and faster require auto-ne
                                  #   Negotiation and waits up to this many seconds for both
                                  #   NICs to converge on the same speed (renegotiation after
                                  #   a PHY reset is slower than a normal forced-speed wait).
+# ---------- World-class extras (NET016-NET019) ----------
+$_net_err_counter_check = 1   # NET016: 1 = snapshot NIC error/discard counters
+                              #   (Get-NetAdapterStatistics) before and after the iperf3
+                              #   runs at each speed and record the delta.  A link can hit
+                              #   its throughput target while silently dropping/erroring
+                              #   frames; this catches bad cables / marginal PHYs that a
+                              #   Mbps-only check misses.
+$_net_err_fail_on_delta = 0   # NET016: 1 = a non-zero rx/tx error (NOT discard) delta
+                              #   downgrades the speed verdict to FAIL; 0 = record and warn
+                              #   only (errors are reported in the reason text either way).
+$_net_test_bidir       = 1    # NET017: 1 = additionally run a simultaneous bidirectional
+                              #   (full-duplex) iperf3 pass at each speed -- both directions
+                              #   at once -- to expose PHY/PCIe/bus bottlenecks that the
+                              #   one-direction-at-a-time TCP/UDP runs cannot.
+$_net_test_jumbo       = 1    # NET018: 1 = at each >=1000M speed, raise the MTU on both
+                              #   NICs to $_net_jumbo_mtu and verify a DF-bit jumbo ping
+                              #   crosses the link unfragmented, then restore the MTU.
+$_net_jumbo_mtu        = 9000 # NET018: jumbo MTU to test (bytes).  The DF ping payload is
+                              #   this minus 28 (IPv4 + ICMP headers).
 # iperf3 auto-install (mirrors the bash side's apt-get/dnf "ensure tool" logic).
 # If iperf3 is not already in PATH, net_test.ps1 tries to install it the same way
 # net_test.sh does on Linux -- here via the Windows package managers, newest to
