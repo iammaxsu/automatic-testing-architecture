@@ -60,7 +60,7 @@ $_net_tcp_pass_pct_tiers = '10:90,100:90,1000:95,2500:95,5000:95,10000:95'
                               #   keeps 95%. Adjust per DUT/site policy.
 $_net_strict_lifeline  = 1    # NET012: 1 = warn and auto-exclude any NIC whose MAC
                               #   matches $_net_exclude_macs if it appears in the test set.
-$_net_exclude_macs     = ''   # NET012: comma-separated MAC addresses of management /
+$_net_exclude_macs     = '00-E0-4C-68-00-56'   # NET012: comma-separated MAC addresses of management /
                               #   control NICs that must NEVER be tested, regardless of
                               #   vendor filter or NIC name.  Matching is case-insensitive;
                               #   both colon (AA:BB:CC:DD:EE:FF) and hyphen
