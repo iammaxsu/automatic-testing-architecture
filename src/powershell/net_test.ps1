@@ -97,7 +97,7 @@ trap {
     break
 }
 
-$_script_ver                = '00.00.23'
+$_script_ver                = '00.00.24'
 $_requires_function_ps1_api = '00.00.02'
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Write-Host "net_test.ps1 v$_script_ver" -ForegroundColor Cyan
@@ -155,9 +155,14 @@ $TestBidir       = [int]   (Get-CfgVal '_net_test_bidir'         1)   # NET017
 $TestJumbo       = [int]   (Get-CfgVal '_net_test_jumbo'         1)   # NET018
 $JumboMtu        = [int]   (Get-CfgVal '_net_jumbo_mtu'          9000) # NET018
 
-# Parse "speedMbps:pct,..." into a sorted lookup; Get-TcpPassPct below picks the
-# tier whose speed equals the link speed, falling back to $TcpPassPct (NET009).
-$_tcpPassPctTiers = [ordered]@{}
+# Parse "speedMbps:pct,..." into a speed->pct lookup; Get-TcpPassPct below picks
+# the tier whose speed equals the link speed, falling back to $TcpPassPct (NET009).
+# NOTE: a plain @{} hashtable, NOT [ordered]@{}.  An OrderedDictionary's indexer
+# treats an [int] as a POSITIONAL index, so $od[[int]10]=90 means "set element at
+# position 10" (which does not exist) and throws ArgumentOutOfRangeException.  A
+# hashtable indexes by key, so integer speed keys work correctly; ordering is
+# irrelevant here since this is only ever used for .Contains()/[key] lookups.
+$_tcpPassPctTiers = @{}
 foreach ($pair in ($cfgTcpPassPctTiers -split '[,;]+')) {
     if ($pair.Trim() -match '^(\d+)\s*:\s*(\d+)$') {
         $_tcpPassPctTiers[[int]$Matches[1]] = [int]$Matches[2]
