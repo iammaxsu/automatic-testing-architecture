@@ -69,7 +69,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$_script_ver                = '00.00.17'
+$_script_ver                = '00.00.18'
 $_requires_function_ps1_api = '00.00.02'
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Write-Host "net_test.ps1 v$_script_ver" -ForegroundColor Cyan
@@ -187,6 +187,13 @@ function Write-HtmlReport {
                      ' &nbsp;|&nbsp; iperf3 time: ' + $cfg.iperf_time_sec + 's &nbsp;|&nbsp; omit: ' +
                      $cfg.iperf_omit_sec + 's &nbsp;|&nbsp; TCP pass: ' + $cfg.tcp_pass_pct + '%</p>')
     [void]$sb.Append('<p>Overall: <span class="badge" style="background:' + $ovc + '">' + $ov + '</span></p>')
+    $diag = Get-JsonProp $Result 'diagnostics'
+    if ($diag -and -not $diag.firewall_program_rule_added -and -not $diag.firewall_port_rule_added) {
+        [void]$sb.Append('<p class="fail">Firewall: no iperf3 allow rule could be added (' +
+                         $diag.firewall_status + '). iperf3 results below are likely 0 Mbps ' +
+                         'because traffic was dropped, not because the link is slow. ' +
+                         'Re-run as Administrator.</p>')
+    }
     [void]$sb.Append('<h2>Summary</h2>')
     [void]$sb.Append('<table><tr><th>Total</th><th>Pass</th><th>Fail</th><th>Unknown</th><th>N/A+Skipped</th></tr><tr>')
     [void]$sb.Append('<td>'               + $s.total   + '</td>')
@@ -939,22 +946,52 @@ $_pairJobBlock = {
     return @{ name = $pair; speeds = $speedResults }
 }
 
-# -- Firewall allow rule for iperf3 (NET006) -----------------------------------
+# -- Firewall allow rules for iperf3 (NET006) -----------------------------------
 # Back-to-back traffic crosses physical interfaces, so the Defender Firewall
 # applies to iperf3's inbound TCP/UDP 5201.  ICMP (ping) often passes while the
 # iperf3 sockets are silently dropped -- showing up as 0 Mbps with a PASS ping.
-# The bash side runs inside a network namespace with no firewall; here we add a
-# scoped allow rule for the resolved iperf3.exe and remove it on exit.
-$_fwRuleName = "net_test_iperf3_$_runTs"
-$_fwRuleAdded = $false
-if (-not $DryRun -and $i3path) {
+# The bash side runs inside a network namespace with no firewall; here we add
+# scoped allow rules and remove them on exit.
+#
+# Two rules are added, since either can fail independently:
+#   - Program rule: scoped to the resolved iperf3.exe.
+#   - Port rule: TCP+UDP 5201 inbound, in case the Program rule does not match
+#     the binary actually launched (e.g. a different shim/path resolution).
+# Both require an elevated (Administrator) process; New-NetFirewallRule throws
+# if not elevated, in which case iperf3 traffic is silently dropped while ICMP
+# still passes. Status is recorded in the main log and result.json so this is
+# diagnosable without re-running.
+$_fwRuleName     = "net_test_iperf3_$_runTs"
+$_fwRuleNamePort = "net_test_iperf3_port_$_runTs"
+$_fwRuleAdded     = $false
+$_fwRulePortAdded = $false
+$_fwStatus        = 'not attempted'
+if (-not $DryRun) {
+    if ($i3path) {
+        try {
+            New-NetFirewallRule -DisplayName $_fwRuleName -Direction Inbound -Action Allow `
+                -Program $i3path -Profile Any -ErrorAction Stop | Out-Null
+            $_fwRuleAdded = $true
+            Write-Host ("         Firewall       : allow rule added for iperf3 ($_fwRuleName)") -ForegroundColor DarkGray
+        } catch {
+            Write-Warning "Could not add firewall allow rule for iperf3 (program): $($_.Exception.Message)"
+        }
+    }
     try {
-        New-NetFirewallRule -DisplayName $_fwRuleName -Direction Inbound -Action Allow `
-            -Program $i3path -Profile Any -ErrorAction Stop | Out-Null
-        $_fwRuleAdded = $true
-        Write-Host ("         Firewall       : allow rule added for iperf3 ($_fwRuleName)") -ForegroundColor DarkGray
+        New-NetFirewallRule -DisplayName $_fwRuleNamePort -Direction Inbound -Action Allow `
+            -Protocol TCP -LocalPort 5201 -Profile Any -ErrorAction Stop | Out-Null
+        New-NetFirewallRule -DisplayName "${_fwRuleNamePort}_udp" -Direction Inbound -Action Allow `
+            -Protocol UDP -LocalPort 5201 -Profile Any -ErrorAction Stop | Out-Null
+        $_fwRulePortAdded = $true
+        Write-Host ("         Firewall       : allow rule added for TCP/UDP 5201 ($_fwRuleNamePort)") -ForegroundColor DarkGray
     } catch {
-        Write-Warning "Could not add firewall allow rule for iperf3: $($_.Exception.Message)"
+        Write-Warning "Could not add firewall allow rule for iperf3 (port 5201): $($_.Exception.Message)"
+    }
+    $_fwStatus = if ($_fwRuleAdded -or $_fwRulePortAdded) { 'added' } else { 'FAILED (not elevated?)' }
+    Write-MainLog "[firewall] program-rule=$_fwRuleAdded  port-rule=$_fwRulePortAdded  status=$_fwStatus"
+    if (-not $_fwRuleAdded -and -not $_fwRulePortAdded) {
+        Write-Warning ("No iperf3 firewall allow rule could be added -- iperf3 traffic will likely be " +
+            "dropped (0 Mbps) while ICMP still passes. Re-run as Administrator.")
     }
 }
 
@@ -1047,6 +1084,10 @@ try {
         if ($_fwRuleAdded) {
             Remove-NetFirewallRule -DisplayName $_fwRuleName -ErrorAction SilentlyContinue
         }
+        if ($_fwRulePortAdded) {
+            Remove-NetFirewallRule -DisplayName $_fwRuleNamePort -ErrorAction SilentlyContinue
+            Remove-NetFirewallRule -DisplayName "${_fwRuleNamePort}_udp" -ErrorAction SilentlyContinue
+        }
     }
 }
 
@@ -1100,6 +1141,11 @@ $_result = [ordered]@{
         iperf_time_sec = $IperfTimeSec
         iperf_omit_sec = $IperfOmitSec
         tcp_pass_pct   = $TcpPassPct
+    }
+    diagnostics     = [ordered]@{
+        firewall_program_rule_added = $_fwRuleAdded
+        firewall_port_rule_added    = $_fwRulePortAdded
+        firewall_status             = $_fwStatus
     }
     summary         = [ordered]@{
         total=$_total; passed=$_pass; failed=$_fail; unknown=$_unknown; skipped=$_skipped

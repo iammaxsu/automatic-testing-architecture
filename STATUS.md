@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-06-09 03:25 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-06-11 05:36 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -148,21 +148,21 @@ pie showData title Requirements by status
 
 ## Bugs
 
-**Total:** 28
+**Total:** 29
 
 ### By status
 
 | Status | Count |
 | --- | --- |
 | open | 15 |
-| resolved | 1 |
+| resolved | 2 |
 | closed | 10 |
 | invalid | 2 |
 
 ```mermaid
 pie showData title Bugs by status
     "open" : 15
-    "resolved" : 1
+    "resolved" : 2
     "closed" : 10
     "invalid" : 2
 ```
@@ -173,7 +173,7 @@ pie showData title Bugs by status
 | --- | --- |
 | Ubuntu 26.04 LTS | 14 |
 | Ubuntu 24.04 LTS | 10 |
-| Windows 11 | 3 |
+| Windows 11 | 4 |
 | Windows 11 (English / en-US) | 1 |
 | Windows 11 (Traditional Chinese / zh-TW) | 1 |
 
@@ -226,6 +226,9 @@ pie showData title Bugs by status
 | LOG020 | [BUG0019](bugs/closed/BUG0019-result-json-metadata-corruption-session-id-unknown.md) | closed |
 | LOG021 | [BUG0002](bugs/closed/BUG0002-cannot-open-dev-detect-sh-html-report.md) | closed |
 | LOG022 | [BUG0019](bugs/closed/BUG0019-result-json-metadata-corruption-session-id-unknown.md) | closed |
+| NET006 | [BUG0029](bugs/closed/BUG0029-net-test-iperf3-firewall-rule-needs-elevation.md) | resolved |
+| NET008 | [BUG0029](bugs/closed/BUG0029-net-test-iperf3-firewall-rule-needs-elevation.md) | resolved |
+| NET009 | [BUG0029](bugs/closed/BUG0029-net-test-iperf3-firewall-rule-needs-elevation.md) | resolved |
 | NET011 | [BUG0015](bugs/open/BUG0015-net-test-sh-consumes-the-ssh-lifeline-nic.md) | open |
 | NET012 | [BUG0015](bugs/open/BUG0015-net-test-sh-consumes-the-ssh-lifeline-nic.md) | open |
 | PWR009 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
