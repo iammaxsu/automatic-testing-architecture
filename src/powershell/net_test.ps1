@@ -97,7 +97,7 @@ trap {
     break
 }
 
-$_script_ver                = '00.00.24'
+$_script_ver                = '00.00.25'
 $_requires_function_ps1_api = '00.00.02'
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Write-Host "net_test.ps1 v$_script_ver" -ForegroundColor Cyan
@@ -219,6 +219,16 @@ function Get-JsonProp {
     return $null
 }
 
+# Render a fwd/rev metric pair as "a/b", or "-" when both sides are null (e.g.
+# TCP retransmit count is unavailable on Windows iperf3 builds -- NET017).
+function Format-MetricPair {
+    param($A, $B)
+    if ($null -eq $A -and $null -eq $B) { return '-' }
+    $sa = if ($null -ne $A) { "$A" } else { '-' }
+    $sb = if ($null -ne $B) { "$B" } else { '-' }
+    return "$sa/$sb"
+}
+
 function Write-HtmlReport {
     param($Result, [string]$OutPath)
     $ov  = [string]$Result.overall_verdict
@@ -318,10 +328,13 @@ function Write-HtmlReport {
             $ql = Get-JsonProp $spd 'quality'
             $qlCell = ''
             if ($ql) {
-                $retr = @(Get-JsonProp $ql 'tcp_fwd_retr'; Get-JsonProp $ql 'tcp_rev_retr') -join '/'
-                $jit  = @(Get-JsonProp $ql 'udp_fwd_jitter_ms'; Get-JsonProp $ql 'udp_rev_jitter_ms') -join '/'
-                $loss = @(Get-JsonProp $ql 'udp_fwd_lost_pct'; Get-JsonProp $ql 'udp_rev_lost_pct') -join '/'
+                $retr = Format-MetricPair (Get-JsonProp $ql 'tcp_fwd_retr')      (Get-JsonProp $ql 'tcp_rev_retr')
+                $jit  = Format-MetricPair (Get-JsonProp $ql 'udp_fwd_jitter_ms') (Get-JsonProp $ql 'udp_rev_jitter_ms')
+                $loss = Format-MetricPair (Get-JsonProp $ql 'udp_fwd_lost_pct')  (Get-JsonProp $ql 'udp_rev_lost_pct')
                 $qlCell = "retr ${retr}<br><small>jit ${jit}ms loss ${loss}%</small>"
+                if ($retr -eq '-') {
+                    $qlCell += '<br><small title="iperf3 on Windows does not report TCP retransmit counts">retr N/A on Windows</small>'
+                }
             }
             $ec = Get-JsonProp $spd 'error_counters'
             $ecCell = '0'
@@ -338,7 +351,7 @@ function Write-HtmlReport {
             if ($jm) {
                 $jmRes = Get-JsonProp $jm 'result'
                 if ($jmRes) {
-                    $jmCls = if ($jmRes -eq 'PASS') { 'pass' } elseif ($jmRes -like 'FAIL*') { 'fail' } else { 'unknown' }
+                    $jmCls = if ($jmRes -eq 'PASS') { 'pass' } elseif ($jmRes -eq 'SKIP') { 'na' } elseif ($jmRes -like 'FAIL*') { 'fail' } else { 'unknown' }
                     $jmCell = '<span class="' + $jmCls + '">' + $jmRes + '</span>'
                 }
             }
@@ -983,6 +996,37 @@ $_pairJobBlock = {
         }
     }
 
+    # NET018: on Windows, raising the IP-layer MTU via Set-NetIPInterface alone does
+    # NOT enable jumbo frames -- the NIC driver still caps the Ethernet frame size at
+    # whatever its '*JumboPacket' advanced property says (default ~1514, i.e. no
+    # jumbo), so a DF jumbo ping fails with FAIL-FRAG even though the IP MTU "looks"
+    # right.  (Linux has no equivalent split: `ip link set mtu` controls the L2 frame
+    # size directly, so net_test.sh does not need this step.)  This returns the
+    # largest '*JumboPacket' option the NIC offers, plus its current setting so the
+    # caller can restore it afterwards.
+    function Get-NicMaxJumboBytes {
+        param([string]$Nic)
+        try {
+            $p = Get-NetAdapterAdvancedProperty -Name $Nic -RegistryKeyword '*JumboPacket' -ErrorAction Stop
+        } catch {
+            return @{ supported = $false; maxBytes = 0 }
+        }
+        $vals    = @($p.ValidDisplayValues)
+        $regVals = @($p.ValidRegistryValues)
+        $maxBytes = 0; $maxRegValue = $null
+        for ($vi = 0; $vi -lt $vals.Count; $vi++) {
+            $n = 0
+            if ($vals[$vi] -match '(\d+)') { $n = [int]$Matches[1] }
+            if ($n -gt $maxBytes) { $maxBytes = $n; $maxRegValue = $regVals[$vi] }
+        }
+        return @{
+            supported    = ($maxBytes -gt 1514)
+            maxBytes     = $maxBytes
+            maxRegValue  = $maxRegValue
+            origRegValue = $p.RegistryValue
+        }
+    }
+
     # ---- pair setup ----------------------------------------------------------
     $pair    = "$EvenNic<->$OddNic"
     $v4even  = "192.247.$PairIdx.1";    $v4odd = "192.247.$PairIdx.11"
@@ -1180,21 +1224,58 @@ $_pairJobBlock = {
             # NET018: jumbo-frame (MTU) verification at >=1000M.
             $jumbo = $null
             if ($TestJumbo -and -not $Dry -and $mbps -ge 1000) {
-                "[jumbo] setting MTU $JumboMtu on both NICs and testing DF ping..." | Add-Content $pairLog
-                $okSet = $true
-                foreach ($n in @($EvenNic, $OddNic)) {
-                    try { Set-NetIPInterface -InterfaceAlias $n -NlMtuBytes $JumboMtu -ErrorAction Stop }
-                    catch { $okSet = $false; "  [jumbo] MTU set failed on ${n}: $($_.Exception.Message)" | Add-Content $pairLog }
-                }
-                if ($okSet) {
-                    Start-Sleep -Seconds 2
-                    $jumbo = Test-JumboPing -SrcIp $v4even -DstIp $v4odd -Mtu $JumboMtu -Dry $Dry
+                $needBytes = $JumboMtu + 14   # Ethernet header (no FCS)
+                $jpEven = Get-NicMaxJumboBytes -Nic $EvenNic
+                $jpOdd  = Get-NicMaxJumboBytes -Nic $OddNic
+                if (-not $jpEven.supported -or -not $jpOdd.supported) {
+                    $jumbo = 'SKIP'
+                    "[jumbo] skipped -- '*JumboPacket' not supported on " +
+                        "$(if (-not $jpEven.supported) {$EvenNic}) $(if (-not $jpOdd.supported) {$OddNic})" |
+                        Add-Content $pairLog
+                } elseif ($jpEven.maxBytes -lt $needBytes -or $jpOdd.maxBytes -lt $needBytes) {
+                    $jumbo = 'SKIP'
+                    "[jumbo] skipped -- max Jumbo Packet size ($($jpEven.maxBytes)/$($jpOdd.maxBytes) bytes) " +
+                        "< required $needBytes bytes for MTU $JumboMtu" | Add-Content $pairLog
                 } else {
-                    $jumbo = 'UNKNOWN'
-                }
-                "  [jumbo] MTU=$JumboMtu result=$jumbo" | Add-Content $pairLog
-                foreach ($n in @($EvenNic, $OddNic)) {
-                    Set-NetIPInterface -InterfaceAlias $n -NlMtuBytes 1500 -ErrorAction SilentlyContinue
+                    "[jumbo] enabling Jumbo Packet ($($jpEven.maxBytes)/$($jpOdd.maxBytes) bytes) " +
+                        "and MTU $JumboMtu on both NICs..." | Add-Content $pairLog
+                    try {
+                        # Windows splits "IP MTU" from "NIC frame size": Set-NetIPInterface
+                        # alone does not change the Ethernet frame size the driver will
+                        # actually send/accept, which is governed by '*JumboPacket'. Both
+                        # must be raised, and (mirroring the *SpeedDuplex change above) the
+                        # adapters must be bounced for the driver to re-init at the new
+                        # frame size.
+                        Set-NetAdapterAdvancedProperty -Name $EvenNic -RegistryKeyword '*JumboPacket' -RegistryValue $jpEven.maxRegValue -ErrorAction Stop
+                        Set-NetAdapterAdvancedProperty -Name $OddNic  -RegistryKeyword '*JumboPacket' -RegistryValue $jpOdd.maxRegValue  -ErrorAction Stop
+                        Disable-NetAdapter -Name $EvenNic -Confirm:$false -ErrorAction SilentlyContinue
+                        Disable-NetAdapter -Name $OddNic  -Confirm:$false -ErrorAction SilentlyContinue
+                        Start-Sleep -Seconds 3
+                        Enable-NetAdapter -Name $EvenNic -Confirm:$false -ErrorAction SilentlyContinue
+                        Enable-NetAdapter -Name $OddNic  -Confirm:$false -ErrorAction SilentlyContinue
+                        Start-Sleep -Seconds 5
+                        Set-NetIPInterface -InterfaceAlias $EvenNic -NlMtuBytes $JumboMtu -ErrorAction Stop
+                        Set-NetIPInterface -InterfaceAlias $OddNic  -NlMtuBytes $JumboMtu -ErrorAction Stop
+                        Start-Sleep -Seconds 2
+                        $jumbo = Test-JumboPing -SrcIp $v4even -DstIp $v4odd -Mtu $JumboMtu -Dry $Dry
+                    } catch {
+                        $jumbo = 'UNKNOWN'
+                        "  [jumbo] setup failed: $($_.Exception.Message)" | Add-Content $pairLog
+                    }
+                    "  [jumbo] MTU=$JumboMtu result=$jumbo" | Add-Content $pairLog
+                    # Restore: IP MTU back to 1500, '*JumboPacket' back to its original
+                    # setting, then bounce again so the driver re-inits at 1500.
+                    foreach ($n in @($EvenNic, $OddNic)) {
+                        Set-NetIPInterface -InterfaceAlias $n -NlMtuBytes 1500 -ErrorAction SilentlyContinue
+                    }
+                    Set-NetAdapterAdvancedProperty -Name $EvenNic -RegistryKeyword '*JumboPacket' -RegistryValue $jpEven.origRegValue -ErrorAction SilentlyContinue
+                    Set-NetAdapterAdvancedProperty -Name $OddNic  -RegistryKeyword '*JumboPacket' -RegistryValue $jpOdd.origRegValue  -ErrorAction SilentlyContinue
+                    Disable-NetAdapter -Name $EvenNic -Confirm:$false -ErrorAction SilentlyContinue
+                    Disable-NetAdapter -Name $OddNic  -Confirm:$false -ErrorAction SilentlyContinue
+                    Start-Sleep -Seconds 3
+                    Enable-NetAdapter -Name $EvenNic -Confirm:$false -ErrorAction SilentlyContinue
+                    Enable-NetAdapter -Name $OddNic  -Confirm:$false -ErrorAction SilentlyContinue
+                    Start-Sleep -Seconds 5
                 }
             }
 

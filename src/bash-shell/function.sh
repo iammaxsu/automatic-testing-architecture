@@ -1757,7 +1757,7 @@ ROWS.forEach(r=>{
   const spdCell=r.spd!=null?r.spd:'—';
   const maxCell=r.pmax!=null?r.pmax+'M':'—';
   const errCell=(r.errc==null)?'—':(r.errc>0?'<span class="b FAIL">'+r.errc+'</span>':'0');
-  const jumboCell=r.jumbo?'<span class="b '+(r.jumbo==='PASS'?'PASS':'FAIL')+'">'+r.jumbo+'</span>':'—';
+  const jumboCell=r.jumbo?'<span class="b '+(r.jumbo==='PASS'?'PASS':(r.jumbo==='SKIP'?'na':'FAIL'))+'">'+r.jumbo+'</span>':'—';
   const thrCell=(r.thr!=null)?fmtMbps(r.thr)+'M'+(r.pct!=null?' ('+r.pct+'%)':''):'—';
   const reasonAttr=r.reason?' title="'+String(r.reason).replace(/"/g,'&quot;')+'"':'';
   tr.innerHTML='<td>'+r.pair+'</td><td style="font-size:11px">'+maxCell+'</td><td>'+spdCell+'</td>'+

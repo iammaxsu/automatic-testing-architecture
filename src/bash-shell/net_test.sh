@@ -17,6 +17,9 @@
 #   - Summary is assembled after all pairs complete (wait)
 #
 # Changelog:
+#   v00.00.09  NET018: distinguish PASS/FAIL-FRAG/FAIL/SKIP for jumbo DF-ping
+#              (SKIP when the NIC rejects the jumbo MTU outright, instead of a
+#              misleading FAIL); jumbo report cell shows SKIP as N/A, not FAIL.
 #   v00.00.08  NET008 reason field; NET009 per-speed-tier thresholds; NET015 max
 #              link speed; NET016 NIC error-counter deltas; NET017 iperf3 quality
 #              metrics + simultaneous full-duplex pass; NET018 jumbo-frame check
@@ -37,7 +40,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
 fi
 
 export _net_test_version
-: "${_net_test_version:="00.00.08"}"
+: "${_net_test_version:="00.00.09"}"
 
 echo "[INFO] running net_test.sh v${_net_test_version}."
 
@@ -267,13 +270,20 @@ _nic_err_snapshot() {
 }
 
 # NET018: verify a DF jumbo frame crosses the link unfragmented inside the ns.
-# Returns PASS / FAIL.  payload = mtu - 28 (IPv4 + ICMP headers).
+# Returns PASS / FAIL-FRAG / FAIL.  payload = mtu - 28 (IPv4 + ICMP headers).
+# FAIL-FRAG mirrors net_test.ps1: the kernel itself refused to send the DF
+# packet because it exceeds the path MTU ("Message too long" / "Frag needed"),
+# i.e. the MTU change did not actually take effect end-to-end.
 _jumbo_ping() {
   local ns="$1" dst="$2" mtu="$3"
-  local payload=$(( mtu - 28 ))
-  if echo "${_pwd}" | sudo -S ip netns exec "${ns}" \
-        ping -M do -s "${payload}" -c 2 -W 2 "${dst}" >/dev/null 2>&1; then
+  local payload=$(( mtu - 28 )) out rc
+  out="$(echo "${_pwd}" | sudo -S ip netns exec "${ns}" \
+        ping -M do -s "${payload}" -c 2 -W 2 "${dst}" 2>&1)"
+  rc=$?
+  if (( rc == 0 )); then
     echo "PASS"
+  elif echo "${out}" | grep -qiE 'message too long|frag needed|local error'; then
+    echo "FAIL-FRAG"
   else
     echo "FAIL"
   fi
@@ -534,18 +544,28 @@ _run_pair() {
       echo "  [counters] even rx_err=${_d_ev_rxe} tx_err=${_d_ev_txe} | odd rx_err=${_d_od_rxe} tx_err=${_d_od_txe} | total_err=${_err_total}" >> "${pairlog}"
     fi
 
-    # NET018: jumbo-frame (MTU) verification at >=1000M.
+    # NET018: jumbo-frame (MTU) verification at >=1000M.  On Linux, `ip link set
+    # mtu` controls the L2 frame size directly (unlike Windows, which splits IP
+    # MTU from the NIC's '*JumboPacket' driver setting -- see net_test.ps1).  If
+    # either NIC rejects the requested MTU (driver/hardware cap), skip the ping
+    # rather than report a misleading FAIL.
     local _jumbo_res="null"
     if [[ "${_net_test_jumbo:-1}" == "1" ]] && (( _netspd >= 1000 )); then
       local _mtu="${_net_jumbo_mtu:-9000}"
       echo "  [jumbo] setting MTU ${_mtu} and testing DF ping..." >> "${pairlog}"
-      sudo ip netns exec "ns_${ev}" ip link set dev "${ev}" mtu "${_mtu}" 2>/dev/null || true
-      sudo ip netns exec "ns_${od}" ip link set dev "${od}" mtu "${_mtu}" 2>/dev/null || true
-      sleep 1
-      _jumbo_res="\"$(_jumbo_ping "ns_${ev}" "192.247.${pair_idx}.11" "${_mtu}")\""
+      local _mtu_ev_ok=1 _mtu_od_ok=1
+      sudo ip netns exec "ns_${ev}" ip link set dev "${ev}" mtu "${_mtu}" 2>/dev/null || _mtu_ev_ok=0
+      sudo ip netns exec "ns_${od}" ip link set dev "${od}" mtu "${_mtu}" 2>/dev/null || _mtu_od_ok=0
+      if (( _mtu_ev_ok == 0 || _mtu_od_ok == 0 )); then
+        _jumbo_res="\"SKIP\""
+        echo "  [jumbo] MTU=${_mtu} result=SKIP (NIC rejected MTU ${_mtu})" >> "${pairlog}"
+      else
+        sleep 1
+        _jumbo_res="\"$(_jumbo_ping "ns_${ev}" "192.247.${pair_idx}.11" "${_mtu}")\""
+        echo "  [jumbo] MTU=${_mtu} result=${_jumbo_res}" >> "${pairlog}"
+      fi
       sudo ip netns exec "ns_${ev}" ip link set dev "${ev}" mtu 1500 2>/dev/null || true
       sudo ip netns exec "ns_${od}" ip link set dev "${od}" mtu 1500 2>/dev/null || true
-      echo "  [jumbo] MTU=${_mtu} result=${_jumbo_res}" >> "${pairlog}"
     fi
 
     # NET017: iperf3 quality metrics (TCP retransmits, UDP jitter/loss).
@@ -617,9 +637,10 @@ _run_pair() {
         _reason="${_reason}  [warning: NIC rx/tx error counters +${_err_total} during run]"
       fi
     fi
-    # NET018: a failed jumbo test annotates the reason (informational).
-    if [[ "${_jumbo_res}" == "\"FAIL\"" ]]; then
-      _reason="${_reason}  [jumbo MTU ${_net_jumbo_mtu:-9000}: FAIL]"
+    # NET018: a failed jumbo test annotates the reason (informational); SKIP
+    # (NIC/driver does not support the configured MTU) is not an error.
+    if [[ "${_jumbo_res}" != "null" && "${_jumbo_res}" != "\"PASS\"" && "${_jumbo_res}" != "\"SKIP\"" ]]; then
+      _reason="${_reason}  [jumbo MTU ${_net_jumbo_mtu:-9000}: $(echo "${_jumbo_res}" | tr -d '\"')]"
     fi
 
     local _pair_json_new
