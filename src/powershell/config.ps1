@@ -50,7 +50,14 @@ $_sleep_settle_sec     = 5        # Grace period after wake before the next cycl
 $_net_loops            = 1    # Test loop count (each loop runs all pairs once).
 $_net_iperf_time_sec   = 60   # NET007: iperf3 test duration per direction (seconds).
 $_net_iperf_omit_sec   = 3    # NET007: seconds to omit at start (ramp-up exclusion).
-$_net_tcp_pass_pct     = 95   # NET009: TCP PASS threshold as % of link speed.
+$_net_tcp_pass_pct     = 95   # NET009: default TCP PASS threshold as % of link speed,
+                              #   used for any speed not listed in $_net_tcp_pass_pct_tiers.
+$_net_tcp_pass_pct_tiers = '10:90,100:90,1000:95,2500:95,5000:95,10000:95'
+                              # NET009: per-speed-tier override, "speedMbps:pct,...".
+                              #   TCP overhead is proportionally larger at lower link
+                              #   speeds (measured ~94-95% at 100M is normal), so 100M
+                              #   and below default to a 90% threshold while 1000M+
+                              #   keeps 95%. Adjust per DUT/site policy.
 $_net_strict_lifeline  = 1    # NET012: 1 = warn and auto-exclude any NIC whose MAC
                               #   matches $_net_exclude_macs if it appears in the test set.
 $_net_exclude_macs     = ''   # NET012: comma-separated MAC addresses of management /

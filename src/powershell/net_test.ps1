@@ -69,7 +69,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$_script_ver                = '00.00.19'
+$_script_ver                = '00.00.20'
 $_requires_function_ps1_api = '00.00.02'
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Write-Host "net_test.ps1 v$_script_ver" -ForegroundColor Cyan
@@ -108,6 +108,7 @@ $cfgLoops        = [int]   (Get-CfgVal '_net_loops'           1)
 $cfgIperfTimeSec = [int]   (Get-CfgVal '_net_iperf_time_sec'  60)
 $cfgIperfOmitSec = [int]   (Get-CfgVal '_net_iperf_omit_sec'  3)
 $cfgTcpPassPct   = [int]   (Get-CfgVal '_net_tcp_pass_pct'    95)
+$cfgTcpPassPctTiers = [string](Get-CfgVal '_net_tcp_pass_pct_tiers' '10:90,100:90,1000:95,2500:95,5000:95,10000:95')
 $cfgSpeeds       = [string](Get-CfgVal '_net_speeds'          'auto')
 $cfgVendor       = [string](Get-CfgVal '_net_vendor_filter'   'Intel')
 $cfgLinkWaitSec  = [int]   (Get-CfgVal '_net_link_wait_sec'   30)
@@ -121,10 +122,27 @@ $Iperf3ScoopPkg  = [string](Get-CfgVal '_net_iperf3_scoop_pkg' 'iperf3')
 $Iperf3GhRepo    = [string](Get-CfgVal '_net_iperf3_gh_repo'   'ar51an/iperf3-win-builds')
 $Iperf3ZipPat    = [string](Get-CfgVal '_net_iperf3_zip_pattern' 'win64.zip')
 
+# Parse "speedMbps:pct,..." into a sorted lookup; Get-TcpPassPct below picks the
+# tier whose speed equals the link speed, falling back to $TcpPassPct (NET009).
+$_tcpPassPctTiers = [ordered]@{}
+foreach ($pair in ($cfgTcpPassPctTiers -split '[,;]+')) {
+    if ($pair.Trim() -match '^(\d+)\s*:\s*(\d+)$') {
+        $_tcpPassPctTiers[[int]$Matches[1]] = [int]$Matches[2]
+    }
+}
+function Get-TcpPassPct {
+    param([int]$Mbps, [int]$Default)
+    if ($_tcpPassPctTiers.Contains($Mbps)) { return [int]$_tcpPassPctTiers[$Mbps] }
+    return $Default
+}
+
 $Loops        = if ($PSBoundParameters.ContainsKey('Loops')        -and $Loops -gt 0)        { $Loops }        else { $cfgLoops }
 $IperfTimeSec = if ($PSBoundParameters.ContainsKey('IperfTimeSec') -and $IperfTimeSec -gt 0) { $IperfTimeSec } else { $cfgIperfTimeSec }
 $IperfOmitSec = if ($PSBoundParameters.ContainsKey('IperfOmitSec') -and $IperfOmitSec -ge 0) { $IperfOmitSec } else { $cfgIperfOmitSec }
-$TcpPassPct   = if ($PSBoundParameters.ContainsKey('TcpPassPct')   -and $TcpPassPct -gt 0)   { $TcpPassPct }   else { $cfgTcpPassPct }
+# An explicit -TcpPassPct on the command line overrides the per-speed-tier table
+# entirely (NET009): every speed uses that one flat percentage.
+$_tcpPassPctExplicit = $PSBoundParameters.ContainsKey('TcpPassPct') -and $TcpPassPct -gt 0
+$TcpPassPct   = if ($_tcpPassPctExplicit) { $TcpPassPct }   else { $cfgTcpPassPct }
 $LinkWaitSec  = if ($PSBoundParameters.ContainsKey('LinkWaitSec')  -and $LinkWaitSec -gt 0)  { $LinkWaitSec }  else { $cfgLinkWaitSec }
 $AutonegWaitSec = $cfgAutonegWaitSec
 $Speeds       = if ($PSBoundParameters.ContainsKey('Speeds')       -and $Speeds -ne '')      { $Speeds }       else { $cfgSpeeds }
@@ -185,7 +203,15 @@ function Write-HtmlReport {
     [void]$sb.Append('<p>Host: <b>' + $cfg.dut_host + '</b> &nbsp;|&nbsp; Session: ' + $Result.session_id + '</p>')
     [void]$sb.Append('<p>Vendor filter: <b>' + $cfg.vendor_filter + '</b> &nbsp;|&nbsp; Loops: ' + $cfg.loops +
                      ' &nbsp;|&nbsp; iperf3 time: ' + $cfg.iperf_time_sec + 's &nbsp;|&nbsp; omit: ' +
-                     $cfg.iperf_omit_sec + 's &nbsp;|&nbsp; TCP pass: ' + $cfg.tcp_pass_pct + '%</p>')
+                     $cfg.iperf_omit_sec + 's &nbsp;|&nbsp; TCP pass (default): ' + $cfg.tcp_pass_pct + '%</p>')
+    $tiers = Get-JsonProp $cfg 'tcp_pass_pct_tiers'
+    if ($tiers) {
+        [void]$sb.Append('<p><small>TCP PASS threshold (NET009) is per-speed: each row below shows ' +
+                         '<b>thr</b>, the link-speed-specific threshold actually applied (e.g. lower-speed ' +
+                         'links carry proportionally more TCP/IP overhead, so 100M defaults to a lower % than ' +
+                         '1000M+). Configured tiers ("speedMbps:pct"): <code>' + $tiers + '</code>; any speed ' +
+                         'not listed uses the default ' + $cfg.tcp_pass_pct + '% above.</small></p>')
+    }
     [void]$sb.Append('<p>Overall: <span class="badge" style="background:' + $ovc + '">' + $ov + '</span></p>')
     $diag = Get-JsonProp $Result 'diagnostics'
     if ($diag -and -not $diag.firewall_program_rule_added -and -not $diag.firewall_port_rule_added) {
@@ -220,13 +246,17 @@ function Write-HtmlReport {
             [void]$sb.Append('<tr><td>' + $pair.odd_nic  + '</td><td>' + $odCap + '</td></tr></table>')
         }
         [void]$sb.Append('<table><tr><th>Speed (Mbps)</th><th>IPv4 Ping</th><th>IPv6 Ping</th>')
-        [void]$sb.Append('<th>TCP Fwd (M)</th><th>TCP Rev (M)</th><th>UDP Fwd (M)</th><th>UDP Rev (M)</th><th>Verdict</th></tr>')
+        [void]$sb.Append('<th>TCP Fwd (M)</th><th>TCP Rev (M)</th><th>UDP Fwd (M)</th><th>UDP Rev (M)</th>' +
+                         '<th>TCP PASS thr (NET009)</th><th>Verdict</th></tr>')
         foreach ($spd in $pair.speeds) {
             $vc = switch ([string]$spd.verdict) { 'PASS' { 'pass' } 'FAIL' { 'fail' } 'UNKNOWN' { 'unknown' } default { 'na' } }
             $t  = $spd.throughput
             $naReason = Get-JsonProp $spd 'na_reason'
             $note     = Get-JsonProp $spd 'note'
             $reason   = Get-JsonProp $spd 'reason'
+            $thrPct   = Get-JsonProp $spd 'tcp_pass_pct'
+            $thrMbps  = Get-JsonProp $spd 'tcp_pass_thr_mbps'
+            $thrCell  = if ($null -ne $thrPct) { "${thrMbps}M (${thrPct}%)" } else { '' }
             # Show the verdict reason for FAIL/UNKNOWN so the cause is visible
             # inline; N/A rows show na_reason; PASS rows stay clean.
             $nr = if ($naReason) { '<br><small>' + $naReason + '</small>' }
@@ -243,6 +273,7 @@ function Write-HtmlReport {
             [void]$sb.Append('<td>' + $t.tcp_rev_mbps + '</td>')
             [void]$sb.Append('<td>' + $t.udp_fwd_mbps + '</td>')
             [void]$sb.Append('<td>' + $t.udp_rev_mbps + '</td>')
+            [void]$sb.Append('<td>' + $thrCell + '</td>')
             [void]$sb.Append('<td class="' + $vc + '">' + $spd.verdict + $nr + '</td>')
             [void]$sb.Append('</tr>')
         }
@@ -487,6 +518,10 @@ for ($i = 0; $i -lt $_evenNics.Count; $i++) {
             # so a "force 1000" on a 10G NIC still negotiates cleanly to 1000M.
             $evenAuto = ($evenMap.ContainsKey($m) -and [int]$m -ge 1000 -and [int]$m -eq $evenMax)
             $oddAuto  = ($oddMap.ContainsKey($m)  -and [int]$m -ge 1000 -and [int]$m -eq $oddMax)
+            # Per-speed-tier TCP PASS threshold (NET009): lower link speeds carry
+            # proportionally more TCP/IP overhead, so e.g. 100M defaults to 90%
+            # while 1000M+ keeps 95%. -TcpPassPct on the CLI overrides per-speed.
+            $tcpPassPct = if ($_tcpPassPctExplicit) { $TcpPassPct } else { Get-TcpPassPct -Mbps ([int]$m) -Default $TcpPassPct }
             $plan += @{
                 mbps        = [int]$m
                 testable    = $testable
@@ -495,6 +530,7 @@ for ($i = 0; $i -lt $_evenNics.Count; $i++) {
                 evenAuto    = [bool]$evenAuto
                 oddAuto     = [bool]$oddAuto
                 na_reason   = $naReason
+                tcp_pass_pct = [int]$tcpPassPct
             }
         }
     }
@@ -503,7 +539,8 @@ for ($i = 0; $i -lt $_evenNics.Count; $i++) {
         $neg = Get-LinkMbps (Get-NetAdapter -Name $_evenNics[$i] -ErrorAction SilentlyContinue)
         if ($neg -le 0) { $neg = 1000 }
         if ($_speedAllow.Count -eq 0 -or $_speedAllow -contains $neg) {
-            $plan += @{ mbps = $neg; testable = $true; evenDisplay = $null; oddDisplay = $null; evenAuto = $false; oddAuto = $false; na_reason = $null }
+            $tcpPassPct = if ($_tcpPassPctExplicit) { $TcpPassPct } else { Get-TcpPassPct -Mbps ([int]$neg) -Default $TcpPassPct }
+            $plan += @{ mbps = $neg; testable = $true; evenDisplay = $null; oddDisplay = $null; evenAuto = $false; oddAuto = $false; na_reason = $null; tcp_pass_pct = [int]$tcpPassPct }
         }
     }
     $_pairPlans += ,$plan
@@ -521,7 +558,7 @@ for ($i = 0; $i -lt $_evenNics.Count; $i++) {
 }
 foreach ($u in $_unpairedNics) { Write-Host ("  Unpaired : $u") -ForegroundColor Yellow }
 Write-Host ""
-Write-Host ("  Loops: $Loops   iperf3 time: ${IperfTimeSec}s   omit: ${IperfOmitSec}s   TCP pass: ${TcpPassPct}%   link wait: ${LinkWaitSec}s")
+Write-Host ("  Loops: $Loops   iperf3 time: ${IperfTimeSec}s   omit: ${IperfOmitSec}s   TCP pass (default): ${TcpPassPct}%   link wait: ${LinkWaitSec}s")
 Write-Host ""
 
 # -- Main log setup ------------------------------------------------------------
@@ -536,7 +573,12 @@ function Write-MainLog { param([string]$Msg)
     "============= Network Test ($_runTs) ============="
     "Host: $($env:COMPUTERNAME)   User: $($env:USERNAME)"
     "Vendor filter: '$VendorFilter'   Loops: $Loops"
-    "iperf3 time: ${IperfTimeSec}s   omit: ${IperfOmitSec}s   TCP pass: ${TcpPassPct}%"
+    "iperf3 time: ${IperfTimeSec}s   omit: ${IperfOmitSec}s   TCP pass (default): ${TcpPassPct}%"
+    if ($_tcpPassPctExplicit) {
+        "TCP pass thresholds: -TcpPassPct=${TcpPassPct}% applied to ALL speeds (overrides per-speed tiers)"
+    } else {
+        "TCP pass thresholds (NET009, per speed tier): ${cfgTcpPassPctTiers}  (any speed not listed uses ${TcpPassPct}%)"
+    }
     "Mode: parallel pairs ($($_evenNics.Count) pair(s)), multi-speed"
     "======================================================="
 ) | Out-File -FilePath $_mainLog -Encoding UTF8
@@ -918,7 +960,10 @@ $_pairJobBlock = {
                 }
             }
 
-            $thr = [Math]::Round($mbps * $TcpPct / 100.0, 2)
+            # Per-speed-tier TCP PASS threshold (NET009): each plan step carries its
+            # own tcp_pass_pct, computed from $_net_tcp_pass_pct_tiers in config.ps1.
+            $stepPct = [int]$step.tcp_pass_pct
+            $thr = [Math]::Round($mbps * $stepPct / 100.0, 2)
             $verdict = 'FAIL'
             if ($v4Res -ne 'PASS' -or $v6Res -ne 'PASS') { $verdict = 'FAIL' }
             elseif ($nTcpFwd -eq 0.0 -or $nTcpRev -eq 0.0) { $verdict = 'UNKNOWN' }
@@ -929,7 +974,7 @@ $_pairJobBlock = {
             # label, so the report localises a failure to its cause.
             $reason = $null
             if ($verdict -eq 'PASS') {
-                $reason = "TCP fwd ${nTcpFwd}M and rev ${nTcpRev}M both >= ${thr}M (${TcpPct}% of ${mbps}M)"
+                $reason = "TCP fwd ${nTcpFwd}M and rev ${nTcpRev}M both >= ${thr}M (${stepPct}% of ${mbps}M)"
             } elseif ($verdict -eq 'UNKNOWN') {
                 $zeros = @()
                 if ($nTcpFwd -eq 0.0) { $zeros += 'TCP fwd' }
@@ -946,10 +991,10 @@ $_pairJobBlock = {
                 if ($nTcpFwd -lt $thr) { $causes += "TCP fwd ${nTcpFwd}M < ${thr}M threshold" }
                 if ($nTcpRev -lt $thr) { $causes += "TCP rev ${nTcpRev}M < ${thr}M threshold" }
                 if ($causes.Count -eq 0) { $causes += 'see throughput values' }
-                $reason = "FAIL: " + ($causes -join '; ') + " (threshold ${TcpPct}% of ${mbps}M = ${thr}M)"
+                $reason = "FAIL: " + ($causes -join '; ') + " (threshold ${stepPct}% of ${mbps}M = ${thr}M)"
             }
 
-            "Verdict: $verdict  tcpFwd=${nTcpFwd}M tcpRev=${nTcpRev}M udpFwd=${nUdpFwd}M udpRev=${nUdpRev}M thr=${thr}M" |
+            "Verdict: $verdict  tcpFwd=${nTcpFwd}M tcpRev=${nTcpRev}M udpFwd=${nUdpFwd}M udpRev=${nUdpRev}M thr=${thr}M (${stepPct}% of ${mbps}M)" |
                 Add-Content $pairLog
             "  Reason: $reason" | Add-Content $pairLog
 
@@ -957,6 +1002,7 @@ $_pairJobBlock = {
                 speed_mbps = $mbps; ipv4_ping=$v4Res; ipv6_ping=$v6Res
                 throughput=@{ tcp_fwd_mbps=$nTcpFwd; tcp_rev_mbps=$nTcpRev
                               udp_fwd_mbps=$nUdpFwd; udp_rev_mbps=$nUdpRev }
+                tcp_pass_pct=$stepPct; tcp_pass_thr_mbps=$thr
                 verdict=$verdict; reason=$reason; note=$autonegNote
             }
         }
@@ -1172,6 +1218,7 @@ $_result = [ordered]@{
         iperf_time_sec = $IperfTimeSec
         iperf_omit_sec = $IperfOmitSec
         tcp_pass_pct   = $TcpPassPct
+        tcp_pass_pct_tiers = if ($_tcpPassPctExplicit) { $null } else { $cfgTcpPassPctTiers }
     }
     diagnostics     = [ordered]@{
         firewall_program_rule_added = $_fwRuleAdded
