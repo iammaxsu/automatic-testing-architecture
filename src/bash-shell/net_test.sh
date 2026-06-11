@@ -17,6 +17,9 @@
 #   - Summary is assembled after all pairs complete (wait)
 #
 # Changelog:
+#   v00.00.08  NET008 reason field; NET009 per-speed-tier thresholds; NET015 max
+#              link speed; NET016 NIC error-counter deltas; NET017 iperf3 quality
+#              metrics + simultaneous full-duplex pass; NET018 jumbo-frame check
 #   v00.00.07  Fix ethtool pipeline crash when NIC has no link (grep exits 1 → set -e)
 #   v00.00.06  NET009: TCP >= 95% link speed verdict; show all NICs (excluded as SKIPPED)
 #   v00.00.05  NET011: --skip / --exclude CLI flag to exclude specific NICs
@@ -34,7 +37,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
 fi
 
 export _net_test_version
-: "${_net_test_version:="00.00.07"}"
+: "${_net_test_version:="00.00.08"}"
 
 echo "[INFO] running net_test.sh v${_net_test_version}."
 
@@ -220,6 +223,62 @@ _extract_mbps_num() {
   esac
 }
 
+# Echo a number unchanged, or the JSON literal null when the value is empty.
+# Used to feed jq --argjson for optional quality metrics.
+_jnum() { [[ -n "$1" ]] && echo "$1" || echo null; }
+
+# NET009: resolve the per-speed-tier TCP PASS percentage.  _net_tcp_pass_pct_tiers
+# is "speedMbps:pct,..."; a speed not listed falls back to _net_tcp_pass_pct.
+_tcp_pass_pct_for() {
+  local mbps="$1" pair pct=""
+  IFS=',' read -ra _tiers <<< "${_net_tcp_pass_pct_tiers:-}"
+  for pair in "${_tiers[@]}"; do
+    if [[ "${pair%%:*}" == "${mbps}" ]]; then pct="${pair##*:}"; break; fi
+  done
+  [[ -z "${pct}" ]] && pct="${_net_tcp_pass_pct:-95}"
+  echo "${pct}"
+}
+
+# NET017: iperf3 quality metrics from a text log.  TCP retransmits come from the
+# sender summary line; UDP jitter/loss from the receiver summary line.
+_extract_retr() {   # TCP retransmit count, or empty
+  awk '/sender$/{for(i=1;i<=NF;i++) if($i=="sender") print $(i-1)}' "$1" 2>/dev/null | tail -n1
+}
+_extract_udp_jitter() {  # jitter in ms, or empty
+  awk '/receiver$/{for(i=1;i<=NF;i++) if($i=="ms") print $(i-1)}' "$1" 2>/dev/null | tail -n1
+}
+_extract_udp_loss() {    # loss percent (without %), or empty
+  awk '/receiver$/{for(i=1;i<=NF;i++) if($i ~ /^\([0-9.]+%\)$/){g=$i; gsub(/[()%]/,"",g); print g}}' \
+    "$1" 2>/dev/null | tail -n1
+}
+
+# NET016: snapshot rx/tx error + drop counters for an interface inside its
+# namespace, driver-independently via /sys.  Prints "rxerr txerr rxdrop txdrop".
+_nic_err_snapshot() {
+  local ns="$1" ifn="$2" b="/sys/class/net/${ifn}/statistics" v
+  local out=""
+  for v in rx_errors tx_errors rx_dropped tx_dropped; do
+    local n
+    n="$(sudo ip netns exec "${ns}" cat "${b}/${v}" 2>/dev/null || echo 0)"
+    [[ -z "${n}" ]] && n=0
+    out="${out}${n} "
+  done
+  echo "${out}"   # "rxerr txerr rxdrop txdrop "
+}
+
+# NET018: verify a DF jumbo frame crosses the link unfragmented inside the ns.
+# Returns PASS / FAIL.  payload = mtu - 28 (IPv4 + ICMP headers).
+_jumbo_ping() {
+  local ns="$1" dst="$2" mtu="$3"
+  local payload=$(( mtu - 28 ))
+  if echo "${_pwd}" | sudo -S ip netns exec "${ns}" \
+        ping -M do -s "${payload}" -c 2 -W 2 "${dst}" >/dev/null 2>&1; then
+    echo "PASS"
+  else
+    echo "FAIL"
+  fi
+}
+
 _set_speed() {
   local ns="$1" ifn="$2" spd="$3"
   if ! echo "${_pwd}" | sudo -S ip netns exec "${ns}" \
@@ -293,6 +352,26 @@ _run_pair() {
     | tr ' ' '\n' | grep '/Full' | sed 's/[^0-9]//g' | sort -n | uniq)" || true
   [[ -z "${_speed_list}" ]] && _speed_list="10 100 1000 2500"
 
+  # NET015: the pair's maximum link speed = highest speed BOTH NICs support.
+  # _speed_list (from the even NIC) is ascending; the odd NIC's list is gathered
+  # too, and the pair max is the greatest value common to both.
+  local _odd_speed_list _pair_max_mbps=0 _even_max_mbps=0 _odd_max_mbps=0
+  _odd_speed_list="$(echo "${_pwd}" | sudo -S ip netns exec "ns_${od}" ethtool "${od}" 2>/dev/null \
+    | tr ' ' '\n' | grep '/Full' | sed 's/[^0-9]//g' | sort -n | uniq)" || true
+  [[ -z "${_odd_speed_list}" ]] && _odd_speed_list="${_speed_list}"
+  local _sp
+  for _sp in ${_speed_list}; do
+    (( _sp > _even_max_mbps )) && _even_max_mbps="${_sp}" || true
+    if echo " ${_odd_speed_list} " | grep -q " ${_sp} " && (( _sp > _pair_max_mbps )); then
+      _pair_max_mbps="${_sp}"
+    fi
+  done
+  for _sp in ${_odd_speed_list}; do (( _sp > _odd_max_mbps )) && _odd_max_mbps="${_sp}" || true; done
+  # NET015: record the pair's and each NIC's maximum link speed on the pair object.
+  jq --argjson em "${_even_max_mbps}" --argjson om "${_odd_max_mbps}" --argjson pm "${_pair_max_mbps}" \
+     '. + { even_max_mbps:$em, odd_max_mbps:$om, pair_max_mbps:$pm }' \
+     "${pair_json}" > "${pair_json}.tmp" && mv "${pair_json}.tmp" "${pair_json}"
+
   : > "${pair_sum}"
 
   for _netspd in ${_speed_list}; do
@@ -321,6 +400,13 @@ _run_pair() {
 
     echo "" >> "${pairlog}"
 
+    # NET016: snapshot error/drop counters on both NICs BEFORE the runs.
+    local _err_before_ev="" _err_before_od=""
+    if [[ "${_net_err_counter_check:-1}" == "1" ]]; then
+      _err_before_ev="$(_nic_err_snapshot "ns_${ev}" "${ev}")"
+      _err_before_od="$(_nic_err_snapshot "ns_${od}" "${od}")"
+    fi
+
     # Start iperf3 server on odd side (no --pidfile; use pgrep after start)
     echo "${_pwd}" | sudo -S ip netns exec "ns_${od}" \
       iperf3 --bind "192.247.${pair_idx}.11" --server --daemon 2>/dev/null || true
@@ -338,7 +424,8 @@ _run_pair() {
     udp_fwd="${log_root}/iPerf3_${ev}_n_${od}_UDP_${_k}of${_mm}_spd${_netspd}_${_run_ts}.log"
     udp_rev="${log_root}/iPerf3_${ev}_n_${od}_UDPRev_${_k}of${_mm}_spd${_netspd}_${_run_ts}.log"
 
-    local _iperf_time=60   # must match --time below
+    local _iperf_time="${_net_iperf_time_sec:-60}"
+    local _iperf_omit="${_net_iperf_omit_sec:-3}"
     local _prog_pid
 
     echo "[TCP Reverse] ${ev} <- ${od} @ ${_netspd} Mbps" >> "${pairlog}"
@@ -346,7 +433,7 @@ _run_pair() {
     _prog_pid=$!
     echo "${_pwd}" | sudo -S ip netns exec "ns_${ev}" iperf3 \
         --bind "192.247.${pair_idx}.1" --client "192.247.${pair_idx}.11" \
-        --bitrate "${_netspd}M" --time "${_iperf_time}" --interval 3 --omit 3 --reverse \
+        --bitrate "${_netspd}M" --time "${_iperf_time}" --interval 3 --omit "${_iperf_omit}" --reverse \
         --logfile "${tcp_rev}" || true
     wait "${_prog_pid}" 2>/dev/null || true
 
@@ -355,7 +442,7 @@ _run_pair() {
     _prog_pid=$!
     echo "${_pwd}" | sudo -S ip netns exec "ns_${ev}" iperf3 \
         --bind "192.247.${pair_idx}.1" --client "192.247.${pair_idx}.11" \
-        --bitrate "${_netspd}M" --time "${_iperf_time}" --interval 3 --omit 3 \
+        --bitrate "${_netspd}M" --time "${_iperf_time}" --interval 3 --omit "${_iperf_omit}" \
         --logfile "${tcp_fwd}" || true
     wait "${_prog_pid}" 2>/dev/null || true
 
@@ -364,7 +451,7 @@ _run_pair() {
     _prog_pid=$!
     echo "${_pwd}" | sudo -S ip netns exec "ns_${ev}" iperf3 \
         --bind "192.247.${pair_idx}.1" --client "192.247.${pair_idx}.11" \
-        --udp --bitrate "${_netspd}M" --time "${_iperf_time}" --interval 3 --omit 3 --reverse \
+        --udp --bitrate "${_netspd}M" --time "${_iperf_time}" --interval 3 --omit "${_iperf_omit}" --reverse \
         --logfile "${udp_rev}" || true
     wait "${_prog_pid}" 2>/dev/null || true
 
@@ -373,12 +460,99 @@ _run_pair() {
     _prog_pid=$!
     echo "${_pwd}" | sudo -S ip netns exec "ns_${ev}" iperf3 \
         --bind "192.247.${pair_idx}.1" --client "192.247.${pair_idx}.11" \
-        --udp --bitrate "${_netspd}M" --time "${_iperf_time}" --interval 3 --omit 3 \
+        --udp --bitrate "${_netspd}M" --time "${_iperf_time}" --interval 3 --omit "${_iperf_omit}" \
         --logfile "${udp_fwd}" || true
     wait "${_prog_pid}" 2>/dev/null || true
 
     # Kill iperf3 server for this speed now that all four tests are done
     _kill_iperf3_pid "${srv_pid}"
+
+    # NET017: simultaneous bidirectional (full-duplex) TCP pass.  Two servers
+    # (odd:5201 receives even->odd, even:5202 receives odd->even) and two clients
+    # started at once so the link carries traffic both ways simultaneously.
+    local _bidir_fwd="" _bidir_rev="" _bidir_sum=""
+    if [[ "${_net_test_bidir:-1}" == "1" ]]; then
+      echo "[Bidirectional full-duplex] ${ev} <-> ${od} @ ${_netspd} Mbps" >> "${pairlog}"
+      local bi_fwd bi_rev
+      bi_fwd="${log_root}/iPerf3_${ev}_n_${od}_BIDIRfwd_${_k}of${_mm}_spd${_netspd}_${_run_ts}.log"
+      bi_rev="${log_root}/iPerf3_${ev}_n_${od}_BIDIRrev_${_k}of${_mm}_spd${_netspd}_${_run_ts}.log"
+      echo "${_pwd}" | sudo -S ip netns exec "ns_${od}" \
+        iperf3 --bind "192.247.${pair_idx}.11" --server --port 5201 --daemon 2>/dev/null || true
+      echo "${_pwd}" | sudo -S ip netns exec "ns_${ev}" \
+        iperf3 --bind "192.247.${pair_idx}.1"  --server --port 5202 --daemon 2>/dev/null || true
+      sleep 1
+      # Track these two servers by PID so cleanup never touches OTHER parallel pairs
+      # (iperf3_del would kill system-wide -- unsafe here).
+      local _bi_srv_f _bi_srv_r
+      _bi_srv_f="$(sudo ip netns exec "ns_${od}" pgrep -f "iperf3.*192\.247\.${pair_idx}\.11.*5201" 2>/dev/null | head -n1 || true)"
+      _bi_srv_r="$(sudo ip netns exec "ns_${ev}" pgrep -f "iperf3.*192\.247\.${pair_idx}\.1 .*5202" 2>/dev/null | head -n1 || true)"
+      echo "${_pwd}" | sudo -S ip netns exec "ns_${ev}" iperf3 \
+          --bind "192.247.${pair_idx}.1" --client "192.247.${pair_idx}.11" --port 5201 \
+          --bitrate "${_netspd}M" --time "${_iperf_time}" --interval 3 --omit "${_iperf_omit}" \
+          --logfile "${bi_fwd}" &
+      local _bi_pid_f=$!
+      echo "${_pwd}" | sudo -S ip netns exec "ns_${od}" iperf3 \
+          --bind "192.247.${pair_idx}.11" --client "192.247.${pair_idx}.1" --port 5202 \
+          --bitrate "${_netspd}M" --time "${_iperf_time}" --interval 3 --omit "${_iperf_omit}" \
+          --logfile "${bi_rev}" &
+      local _bi_pid_r=$!
+      _iperf3_progress "P${pair_idx} BIDIR ${ev}<->${od} @${_netspd}M" "${_iperf_time}" &
+      _prog_pid=$!
+      wait "${_bi_pid_f}" 2>/dev/null || true
+      wait "${_bi_pid_r}" 2>/dev/null || true
+      wait "${_prog_pid}" 2>/dev/null || true
+      _kill_iperf3_pid "${_bi_srv_f}"
+      _kill_iperf3_pid "${_bi_srv_r}"
+      _bidir_fwd="$(_extract_mbps_num "${bi_fwd}")"
+      _bidir_rev="$(_extract_mbps_num "${bi_rev}")"
+      _bidir_sum="$(awk -v f="${_bidir_fwd:-0}" -v r="${_bidir_rev:-0}" 'BEGIN{printf "%g", f+r}')"
+      echo "  bidir fwd=${_bidir_fwd}M rev=${_bidir_rev}M sum=${_bidir_sum}M" >> "${pairlog}"
+    fi
+
+    # NET016: snapshot error/drop counters AFTER all iperf traffic and diff.
+    local _err_total=0 _err_json="null"
+    if [[ "${_net_err_counter_check:-1}" == "1" && -n "${_err_before_ev}" ]]; then
+      local _eaft_ev _eaft_od
+      _eaft_ev="$(_nic_err_snapshot "ns_${ev}" "${ev}")"
+      _eaft_od="$(_nic_err_snapshot "ns_${od}" "${od}")"
+      read -r _b_ev_rxe _b_ev_txe _b_ev_rxd _b_ev_txd <<< "${_err_before_ev}"
+      read -r _b_od_rxe _b_od_txe _b_od_rxd _b_od_txd <<< "${_err_before_od}"
+      read -r _a_ev_rxe _a_ev_txe _a_ev_rxd _a_ev_txd <<< "${_eaft_ev}"
+      read -r _a_od_rxe _a_od_txe _a_od_rxd _a_od_txd <<< "${_eaft_od}"
+      local _d_ev_rxe=$(( _a_ev_rxe - _b_ev_rxe )) _d_ev_txe=$(( _a_ev_txe - _b_ev_txe ))
+      local _d_ev_rxd=$(( _a_ev_rxd - _b_ev_rxd )) _d_ev_txd=$(( _a_ev_txd - _b_ev_txd ))
+      local _d_od_rxe=$(( _a_od_rxe - _b_od_rxe )) _d_od_txe=$(( _a_od_txe - _b_od_txe ))
+      local _d_od_rxd=$(( _a_od_rxd - _b_od_rxd )) _d_od_txd=$(( _a_od_txd - _b_od_txd ))
+      _err_total=$(( _d_ev_rxe + _d_ev_txe + _d_od_rxe + _d_od_txe ))
+      _err_json=$(jq -n \
+        --argjson erxe "${_d_ev_rxe}" --argjson etxe "${_d_ev_txe}" \
+        --argjson erxd "${_d_ev_rxd}" --argjson etxd "${_d_ev_txd}" \
+        --argjson orxe "${_d_od_rxe}" --argjson otxe "${_d_od_txe}" \
+        --argjson orxd "${_d_od_rxd}" --argjson otxd "${_d_od_txd}" \
+        '{ even_rx_errors:$erxe, even_tx_errors:$etxe, even_rx_discards:$erxd, even_tx_discards:$etxd,
+           odd_rx_errors:$orxe, odd_tx_errors:$otxe, odd_rx_discards:$orxd, odd_tx_discards:$otxd }')
+      echo "  [counters] even rx_err=${_d_ev_rxe} tx_err=${_d_ev_txe} | odd rx_err=${_d_od_rxe} tx_err=${_d_od_txe} | total_err=${_err_total}" >> "${pairlog}"
+    fi
+
+    # NET018: jumbo-frame (MTU) verification at >=1000M.
+    local _jumbo_res="null"
+    if [[ "${_net_test_jumbo:-1}" == "1" ]] && (( _netspd >= 1000 )); then
+      local _mtu="${_net_jumbo_mtu:-9000}"
+      echo "  [jumbo] setting MTU ${_mtu} and testing DF ping..." >> "${pairlog}"
+      sudo ip netns exec "ns_${ev}" ip link set dev "${ev}" mtu "${_mtu}" 2>/dev/null || true
+      sudo ip netns exec "ns_${od}" ip link set dev "${od}" mtu "${_mtu}" 2>/dev/null || true
+      sleep 1
+      _jumbo_res="\"$(_jumbo_ping "ns_${ev}" "192.247.${pair_idx}.11" "${_mtu}")\""
+      sudo ip netns exec "ns_${ev}" ip link set dev "${ev}" mtu 1500 2>/dev/null || true
+      sudo ip netns exec "ns_${od}" ip link set dev "${od}" mtu 1500 2>/dev/null || true
+      echo "  [jumbo] MTU=${_mtu} result=${_jumbo_res}" >> "${pairlog}"
+    fi
+
+    # NET017: iperf3 quality metrics (TCP retransmits, UDP jitter/loss).
+    local _retr_fwd _retr_rev _jit_fwd _jit_rev _loss_fwd _loss_rev
+    _retr_fwd="$(_extract_retr "${tcp_fwd}")"; _retr_rev="$(_extract_retr "${tcp_rev}")"
+    _jit_fwd="$(_extract_udp_jitter "${udp_fwd}")"; _jit_rev="$(_extract_udp_jitter "${udp_rev}")"
+    _loss_fwd="$(_extract_udp_loss "${udp_fwd}")"; _loss_rev="$(_extract_udp_loss "${udp_rev}")"
 
     # Extract rates
     local rate_tcp_fwd rate_tcp_rev rate_udp_fwd rate_udp_rev
@@ -394,27 +568,60 @@ _run_pair() {
 
     # Append structured speed entry to pair_json (for result.json).
     # Numeric throughputs in canonical Mbits/sec.
-    # NET009: TCP throughput verdict — both fwd and rev must reach >= 95% of link speed.
-    local n_tcp_fwd n_tcp_rev n_udp_fwd n_udp_rev speed_verdict
+    local n_tcp_fwd n_tcp_rev n_udp_fwd n_udp_rev speed_verdict _reason
     n_tcp_fwd="$(_extract_mbps_num "${tcp_fwd}")"
     n_tcp_rev="$(_extract_mbps_num "${tcp_rev}")"
     n_udp_fwd="$(_extract_mbps_num "${udp_fwd}")"
     n_udp_rev="$(_extract_mbps_num "${udp_rev}")"
+
+    # NET009: per-speed-tier TCP PASS threshold (not a flat 95%).
+    local _pct _thr_mbps
+    _pct="$(_tcp_pass_pct_for "${_netspd}")"
+    _thr_mbps=$(awk -v s="${_netspd}" -v p="${_pct}" 'BEGIN{printf "%g", s*p/100}')
+
     if [[ "${v4_res}" != "PASS" || "${v6_res}" != "PASS" ]]; then
-      speed_verdict="FAIL"     # ping fail = real failure
+      speed_verdict="FAIL"
+      local _c=""
+      [[ "${v4_res}" != "PASS" ]] && _c="IPv4 ICMP ${v4_res}"
+      [[ "${v6_res}" != "PASS" ]] && _c="${_c:+${_c}; }IPv6 ICMP ${v6_res}"
+      _reason="FAIL: ${_c}"
     elif [[ "${n_tcp_fwd}" == "0" || "${n_tcp_rev}" == "0" ]]; then
-      speed_verdict="UNKNOWN"  # iperf3 produced no result; cannot evaluate
+      speed_verdict="UNKNOWN"
+      _reason="iperf3 returned no data (0 Mbps) for one or both TCP directions -- connection timeout or link not ready"
     else
-      # Pass threshold: both TCP directions >= 95% of nominal link speed (NET009)
-      local _thr_mbps
-      _thr_mbps=$(awk -v s="${_netspd}" 'BEGIN{printf "%g", s*0.95}')
+      # NET009: both TCP directions >= tier% of nominal link speed.
       if awk -v f="${n_tcp_fwd}" -v r="${n_tcp_rev}" -v t="${_thr_mbps}" \
             'BEGIN{exit (f>=t && r>=t) ? 0 : 1}'; then
         speed_verdict="PASS"
+        _reason="TCP fwd ${n_tcp_fwd}M and rev ${n_tcp_rev}M both >= ${_thr_mbps}M (${_pct}% of ${_netspd}M)"
       else
-        speed_verdict="FAIL"   # throughput below 95% of link speed
+        speed_verdict="FAIL"
+        local _c=""
+        if awk -v f="${n_tcp_fwd}" -v t="${_thr_mbps}" 'BEGIN{exit (f<t)?0:1}'; then
+          _c="TCP fwd ${n_tcp_fwd}M < ${_thr_mbps}M threshold"
+        fi
+        if awk -v r="${n_tcp_rev}" -v t="${_thr_mbps}" 'BEGIN{exit (r<t)?0:1}'; then
+          _c="${_c:+${_c}; }TCP rev ${n_tcp_rev}M < ${_thr_mbps}M threshold"
+        fi
+        _reason="FAIL: ${_c} (threshold ${_pct}% of ${_netspd}M = ${_thr_mbps}M)"
       fi
     fi
+
+    # NET016: a non-zero rx/tx error delta annotates the reason and, when
+    # _net_err_fail_on_delta=1, fails an otherwise-PASS speed.
+    if (( _err_total > 0 )); then
+      if [[ "${_net_err_fail_on_delta:-0}" == "1" && "${speed_verdict}" == "PASS" ]]; then
+        speed_verdict="FAIL"
+        _reason="FAIL: NIC error counters incremented (rx/tx errors total=${_err_total}) -- throughput met threshold but the link is erroring frames"
+      else
+        _reason="${_reason}  [warning: NIC rx/tx error counters +${_err_total} during run]"
+      fi
+    fi
+    # NET018: a failed jumbo test annotates the reason (informational).
+    if [[ "${_jumbo_res}" == "\"FAIL\"" ]]; then
+      _reason="${_reason}  [jumbo MTU ${_net_jumbo_mtu:-9000}: FAIL]"
+    fi
+
     local _pair_json_new
     _pair_json_new=$(jq \
       --argjson speed   "${_netspd}" \
@@ -424,7 +631,21 @@ _run_pair() {
       --argjson tcp_rev "${n_tcp_rev:-0}" \
       --argjson udp_fwd "${n_udp_fwd:-0}" \
       --argjson udp_rev "${n_udp_rev:-0}" \
+      --argjson bd_fwd  "$(_jnum "${_bidir_fwd}")" \
+      --argjson bd_rev  "$(_jnum "${_bidir_rev}")" \
+      --argjson bd_sum  "$(_jnum "${_bidir_sum}")" \
+      --argjson retr_f  "$(_jnum "${_retr_fwd}")" \
+      --argjson retr_r  "$(_jnum "${_retr_rev}")" \
+      --argjson jit_f   "$(_jnum "${_jit_fwd}")" \
+      --argjson jit_r   "$(_jnum "${_jit_rev}")" \
+      --argjson loss_f  "$(_jnum "${_loss_fwd}")" \
+      --argjson loss_r  "$(_jnum "${_loss_rev}")" \
+      --argjson errc    "${_err_json}" \
+      --argjson jumbo   "${_jumbo_res}" \
+      --argjson pct     "${_pct}" \
+      --argjson thr     "${_thr_mbps}" \
       --arg     verdict "${speed_verdict}" \
+      --arg     reason  "${_reason}" \
       '.speeds += [{
         speed_mbps: $speed,
         ipv4_ping:  $v4,
@@ -435,10 +656,20 @@ _run_pair() {
           udp_fwd_mbps: $udp_fwd,
           udp_rev_mbps: $udp_rev
         },
-        verdict: $verdict
+        bidirectional: { fwd_mbps: $bd_fwd, rev_mbps: $bd_rev, sum_mbps: $bd_sum },
+        quality: { tcp_fwd_retr: $retr_f, tcp_rev_retr: $retr_r,
+                   udp_fwd_jitter_ms: $jit_f, udp_rev_jitter_ms: $jit_r,
+                   udp_fwd_lost_pct: $loss_f, udp_rev_lost_pct: $loss_r },
+        error_counters: $errc,
+        jumbo: { mtu: ('"${_net_jumbo_mtu:-9000}"'|tonumber), result: $jumbo },
+        tcp_pass_pct: $pct,
+        tcp_pass_thr_mbps: $thr,
+        verdict: $verdict,
+        reason: $reason
       }]' "${pair_json}")
     echo "${_pair_json_new}" > "${pair_json}"
 
+    echo "Verdict: ${speed_verdict}  ${_reason}" >> "${pairlog}"
     echo "[Speed ${_netspd} Mbps done]" >> "${pairlog}"
   done
 

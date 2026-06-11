@@ -76,9 +76,27 @@ setup_session() {
 #  fi
 #}
 
-# ---------- iPerf3 Parameters ----------
-# :
-# 
+# ---------- Network test parameters (net_test.sh, NET001-NET018) ----------
+# SET001: every tunable lives here, not scattered in net_test.sh.  Command-line
+# flags still win; these are the defaults.
+: "${_net_iperf_time_sec:=60}"   # NET007: iperf3 duration per direction (seconds).
+: "${_net_iperf_omit_sec:=3}"    # NET007: seconds omitted at start (ramp-up exclusion).
+: "${_net_tcp_pass_pct:=95}"     # NET009: default TCP PASS threshold as % of link speed,
+                                 #   used for any speed not in _net_tcp_pass_pct_tiers.
+: "${_net_tcp_pass_pct_tiers:=10:90,100:90,1000:95,2500:95,5000:95,10000:95}"
+                                 # NET009: per-speed-tier override "speedMbps:pct,...".
+                                 #   TCP overhead is proportionally larger at lower link
+                                 #   speeds (~94-95% at 100M is normal), so 100M and below
+                                 #   default to 90% while 1000M+ keep 95%.
+: "${_net_err_counter_check:=1}" # NET016: 1 = diff ethtool -S error/discard counters
+                                 #   around the runs at each speed and record the delta.
+: "${_net_err_fail_on_delta:=0}" # NET016: 1 = a non-zero rx/tx error delta downgrades an
+                                 #   otherwise-PASS speed verdict to FAIL; 0 = warn only.
+: "${_net_test_bidir:=1}"        # NET017: 1 = also run a simultaneous bidirectional
+                                 #   (full-duplex) iperf3 pass at each speed.
+: "${_net_test_jumbo:=1}"        # NET018: 1 = at each >=1000M speed verify a DF jumbo
+                                 #   ping crosses the link, then restore the MTU.
+: "${_net_jumbo_mtu:=9000}"      # NET018: jumbo MTU to test (bytes); DF payload = MTU-28.
 
 # ---------- fio Parameters ----------
 # ===== Basis =====
