@@ -74,7 +74,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$_script_ver                = '00.00.21'
+$_script_ver                = '00.00.22'
 $_requires_function_ps1_api = '00.00.02'
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Write-Host "net_test.ps1 v$_script_ver" -ForegroundColor Cyan
@@ -1237,7 +1237,7 @@ $_pairJobBlock = {
             # NET018: a failed jumbo-frame test annotates the reason (does not fail the
             # speed verdict on its own -- jumbo support is informational here).
             if ($jumbo -and $jumbo -ne 'PASS' -and $jumbo -ne 'SKIP') {
-                $reason = "$reason  [jumbo MTU $JumboMtu: $jumbo]"
+                $reason = "$reason  [jumbo MTU ${JumboMtu}: $jumbo]"
             }
 
             "Verdict: $verdict  tcpFwd=${nTcpFwd}M tcpRev=${nTcpRev}M udpFwd=${nUdpFwd}M udpRev=${nUdpRev}M thr=${thr}M (${stepPct}% of ${mbps}M)" |
