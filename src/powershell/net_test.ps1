@@ -69,7 +69,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$_script_ver                = '00.00.18'
+$_script_ver                = '00.00.19'
 $_requires_function_ps1_api = '00.00.02'
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Write-Host "net_test.ps1 v$_script_ver" -ForegroundColor Cyan
@@ -226,7 +226,13 @@ function Write-HtmlReport {
             $t  = $spd.throughput
             $naReason = Get-JsonProp $spd 'na_reason'
             $note     = Get-JsonProp $spd 'note'
+            $reason   = Get-JsonProp $spd 'reason'
+            # Show the verdict reason for FAIL/UNKNOWN so the cause is visible
+            # inline; N/A rows show na_reason; PASS rows stay clean.
             $nr = if ($naReason) { '<br><small>' + $naReason + '</small>' }
+                  elseif (($spd.verdict -eq 'FAIL' -or $spd.verdict -eq 'UNKNOWN') -and $reason) {
+                      '<br><small>' + $reason + '</small>'
+                  }
                   elseif ($note)  { '<br><small>' + $note + '</small>' }
                   else { '' }
             [void]$sb.Append('<tr>')
@@ -919,14 +925,39 @@ $_pairJobBlock = {
             elseif ($nTcpFwd -ge $thr -and $nTcpRev -ge $thr) { $verdict = 'PASS' }
             else { $verdict = 'FAIL' }
 
+            # Human-readable verdict reason (NET008): explain WHY, not just the
+            # label, so the report localises a failure to its cause.
+            $reason = $null
+            if ($verdict -eq 'PASS') {
+                $reason = "TCP fwd ${nTcpFwd}M and rev ${nTcpRev}M both >= ${thr}M (${TcpPct}% of ${mbps}M)"
+            } elseif ($verdict -eq 'UNKNOWN') {
+                $zeros = @()
+                if ($nTcpFwd -eq 0.0) { $zeros += 'TCP fwd' }
+                if ($nTcpRev -eq 0.0) { $zeros += 'TCP rev' }
+                if ($nUdpFwd -eq 0.0) { $zeros += 'UDP fwd' }
+                if ($nUdpRev -eq 0.0) { $zeros += 'UDP rev' }
+                $reason = "iperf3 returned no data (0 Mbps) for: $($zeros -join ', ') -- " +
+                          'possible firewall block, connection timeout, or link not ready'
+            } else {
+                # FAIL: list every contributing cause.
+                $causes = @()
+                if ($v4Res -ne 'PASS') { $causes += "IPv4 ICMP $v4Res" }
+                if ($v6Res -ne 'PASS') { $causes += "IPv6 ICMP $v6Res" }
+                if ($nTcpFwd -lt $thr) { $causes += "TCP fwd ${nTcpFwd}M < ${thr}M threshold" }
+                if ($nTcpRev -lt $thr) { $causes += "TCP rev ${nTcpRev}M < ${thr}M threshold" }
+                if ($causes.Count -eq 0) { $causes += 'see throughput values' }
+                $reason = "FAIL: " + ($causes -join '; ') + " (threshold ${TcpPct}% of ${mbps}M = ${thr}M)"
+            }
+
             "Verdict: $verdict  tcpFwd=${nTcpFwd}M tcpRev=${nTcpRev}M udpFwd=${nUdpFwd}M udpRev=${nUdpRev}M thr=${thr}M" |
                 Add-Content $pairLog
+            "  Reason: $reason" | Add-Content $pairLog
 
             $speedResults += @{
                 speed_mbps = $mbps; ipv4_ping=$v4Res; ipv6_ping=$v6Res
                 throughput=@{ tcp_fwd_mbps=$nTcpFwd; tcp_rev_mbps=$nTcpRev
                               udp_fwd_mbps=$nUdpFwd; udp_rev_mbps=$nUdpRev }
-                verdict=$verdict; note=$autonegNote
+                verdict=$verdict; reason=$reason; note=$autonegNote
             }
         }
     } finally {
