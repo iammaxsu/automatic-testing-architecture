@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Windows network loopback endurance test (NET001-NET019).
+  Windows network loopback endurance test (NET001-NET018).
 
 .DESCRIPTION
   Enumerates physical Ethernet NICs, pairs them sequentially (NIC[0]<->NIC[1],

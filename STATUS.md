@@ -1,17 +1,17 @@
 # Project Status
 
-_Generated 2026-06-11 05:36 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-06-11 07:48 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
-**Total:** 135
+**Total:** 139
 
 ### By priority
 
 | Priority | Count |
 | --- | --- |
-| Must | 118 |
-| Should | 15 |
+| Must | 119 |
+| Should | 18 |
 | — | 2 |
 
 ### By status
@@ -19,13 +19,13 @@ _Generated 2026-06-11 05:36 · regenerate with `python scripts/stats.py > STATUS
 | Status | Count |
 | --- | --- |
 | proposed | 107 |
-| implementing | 3 |
+| implementing | 7 |
 | implemented | 25 |
 
 ```mermaid
 pie showData title Requirements by status
     "proposed" : 107
-    "implementing" : 3
+    "implementing" : 7
     "implemented" : 25
 ```
 
@@ -40,7 +40,7 @@ pie showData title Requirements by status
 | FUN | 7 | 0 | 6 |
 | FWK | 34 | 0 | 28 |
 | LOG | 24 | 0 | 24 |
-| NET | 13 | 0 | 13 |
+| NET | 17 | 0 | 17 |
 | PWR | 14 | 0 | 1 |
 | SET | 6 | 0 | 4 |
 | SLP | 5 | 0 | 5 |
@@ -136,6 +136,7 @@ pie showData title Requirements by status
 | [NET008](requirements/NET008.md) | proposed | Verdict Assignment per Test Item |
 | [NET011](requirements/NET011.md) | implementing | NIC Include/Exclude Lists |
 | [NET013](requirements/NET013.md) | proposed | iperf3 Log Filename Convention |
+| [NET016](requirements/NET016.md) | implementing | NIC Error / Discard Counter Verification |
 | [SET001](requirements/SET001.md) | proposed | Tunable Parameters in config Only |
 | [SET002](requirements/SET002.md) | proposed | Utility Functions in function Only |
 | [SET003](requirements/SET003.md) | proposed | config Contains No Executable Logic |

@@ -89,7 +89,7 @@ $_net_link_wait_autoneg_sec = 90 # NET004: 1000BASE-T and faster require auto-ne
                                  #   Negotiation and waits up to this many seconds for both
                                  #   NICs to converge on the same speed (renegotiation after
                                  #   a PHY reset is slower than a normal forced-speed wait).
-# ---------- World-class extras (NET016-NET019) ----------
+# ---------- World-class extras (NET015-NET018) ----------
 $_net_err_counter_check = 1   # NET016: 1 = snapshot NIC error/discard counters
                               #   (Get-NetAdapterStatistics) before and after the iperf3
                               #   runs at each speed and record the delta.  A link can hit
