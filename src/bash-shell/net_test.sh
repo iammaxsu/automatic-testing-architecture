@@ -17,6 +17,11 @@
 #   - Summary is assembled after all pairs complete (wait)
 #
 # Changelog:
+#   v00.00.11  NET017 robustness: kill any leftover iperf3 in the pair's netns
+#              before each speed's iperf block and after the bidirectional pass
+#              (it shares port 5201 with the regular tests), so a stale server
+#              from a previous loop can no longer absorb the readiness probe and
+#              hang every retry with "Connection timed out".
 #   v00.00.10  NET017 robustness: probe iperf3 server readiness (TCP control
 #              port) instead of a blind sleep, and retry a direction up to 3x if
 #              it returns no data -- removes spurious UNKNOWN from a server-start
@@ -44,7 +49,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
 fi
 
 export _net_test_version
-: "${_net_test_version:="00.00.10"}"
+: "${_net_test_version:="00.00.11"}"
 
 echo "[INFO] running net_test.sh v${_net_test_version}."
 
@@ -311,6 +316,21 @@ _kill_iperf3_pid() {
   sudo kill -KILL "${pid}" 2>/dev/null || true
 }
 
+# NET017 robustness: kill any leftover iperf3 inside this pair's namespaces.
+# Regular per-direction tests and the bidirectional pass (NET017) both use port
+# 5201 (bidir's even->odd server); if a previous loop's bidir server was not
+# fully reaped, the next loop's server on the same port/ns fails to bind while
+# the stale process keeps the port "open" -- the readiness probe then sees a
+# listener and reports ready, but the iperf3 client hangs against the stale
+# server until "Connection timed out", and every retry hits the same stale
+# process. Call this before each speed's iperf block and again after the
+# bidirectional pass as a safety net.
+_kill_stale_pair_iperf() {
+  local ev="$1" od="$2"
+  sudo ip netns exec "ns_${ev}" pkill -9 -f iperf3 2>/dev/null || true
+  sudo ip netns exec "ns_${od}" pkill -9 -f iperf3 2>/dev/null || true
+}
+
 # NET017 robustness: wait until an iperf3 server is actually accepting TCP
 # connections on ${ip}:${port} inside ${ns}, instead of a blind fixed sleep.
 # iperf3 always uses a TCP control channel (even for UDP tests), so a TCP
@@ -473,6 +493,10 @@ _run_pair() {
       _err_before_od="$(_nic_err_snapshot "ns_${od}" "${od}")"
     fi
 
+    # NET017 robustness: clear any iperf3 left running in these namespaces from
+    # a previous loop's bidirectional pass before starting fresh servers.
+    _kill_stale_pair_iperf "${ev}" "${od}"
+
     # Start iperf3 server on odd side (no --pidfile; use pgrep after start)
     echo "${_pwd}" | sudo -S ip netns exec "ns_${od}" \
       iperf3 --bind "192.247.${pair_idx}.11" --server --daemon 2>/dev/null || true
@@ -553,6 +577,9 @@ _run_pair() {
       _bidir_rev="$(_extract_mbps_num "${bi_rev}")"
       _bidir_sum="$(awk -v f="${_bidir_fwd:-0}" -v r="${_bidir_rev:-0}" 'BEGIN{printf "%g", f+r}')"
       echo "  bidir fwd=${_bidir_fwd}M rev=${_bidir_rev}M sum=${_bidir_sum}M" >> "${pairlog}"
+      # Safety net: port 5201 (bidir's even->odd server) == the regular tests'
+      # port, so make sure nothing from this pass survives into the next speed/loop.
+      _kill_stale_pair_iperf "${ev}" "${od}"
     fi
 
     # NET016: snapshot error/drop counters AFTER all iperf traffic and diff.

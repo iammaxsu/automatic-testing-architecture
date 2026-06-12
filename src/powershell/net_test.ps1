@@ -97,7 +97,7 @@ trap {
     break
 }
 
-$_script_ver                = '00.00.26'
+$_script_ver                = '00.00.27'
 $_requires_function_ps1_api = '00.00.02'
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Write-Host "net_test.ps1 v$_script_ver" -ForegroundColor Cyan
@@ -888,6 +888,24 @@ $_pairJobBlock = {
         }
     }
 
+    # NET017 robustness: kill any leftover iperf3.exe bound to this pair's IPs.
+    # Regular per-direction tests and the bidirectional pass (NET017) share port
+    # 5201 (bidir's PortA == $port); if a previous loop's bidir server on
+    # $v4odd:5201 was not fully reaped, the next loop's Start-IperfServer call on
+    # the same port/IP fails to bind while the stale process keeps the port
+    # "open" -- Test-IperfPortReady then sees a listener and reports ready, but
+    # the iperf3 client hangs against the stale server until "Connection timed
+    # out", and every retry hits the same stale process. Call this before each
+    # speed's iperf block and again after the bidirectional pass as a safety net.
+    function Stop-StalePairIperf {
+        param([string]$EvenIp, [string]$OddIp)
+        try {
+            Get-CimInstance Win32_Process -Filter "Name='iperf3.exe'" -ErrorAction Stop |
+                Where-Object { $_.CommandLine -and ($_.CommandLine -like "*$EvenIp*" -or $_.CommandLine -like "*$OddIp*") } |
+                ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        } catch { }
+    }
+
     function Start-IperfServer {
         param([string]$BindIp, [int]$Port, [bool]$Dry)
         if ($Dry) { return 0 }
@@ -1206,6 +1224,8 @@ $_pairJobBlock = {
                 $errBeforeOdd  = Get-NicErrCounters -Nic $OddNic
             }
 
+            if (-not $Dry) { Stop-StalePairIperf -EvenIp $v4even -OddIp $v4odd }
+
             "[TCP Reverse]" | Add-Content $pairLog
             Invoke-IperfMeasured -ClientIp $v4even -ServerIp $v4odd -Port $port -SpeedM $mbps `
                 -TimeSec $IperfTime -Omit $IperfOmit -Reverse $true -Udp $false -LogFile $logTcpRev -Dry $Dry -PairLog $pairLog
@@ -1238,6 +1258,9 @@ $_pairJobBlock = {
                 $bidirRev = (Get-IperfStats $logBiRev).mbps
                 $bidirSum = [Math]::Round($bidirFwd + $bidirRev, 2)
                 "  bidir fwd=${bidirFwd}M rev=${bidirRev}M sum=${bidirSum}M" | Add-Content $pairLog
+                # Safety net: PortA (bidir) == $port (regular tests) on $v4odd, so
+                # make sure nothing from this pass survives into the next speed/loop.
+                Stop-StalePairIperf -EvenIp $v4even -OddIp $v4odd
             }
 
             # NET017: collect iperf3 quality metrics (retransmits / jitter / loss).
