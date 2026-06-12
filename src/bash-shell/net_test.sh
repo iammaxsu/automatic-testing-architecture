@@ -17,6 +17,12 @@
 #   - Summary is assembled after all pairs complete (wait)
 #
 # Changelog:
+#   v00.00.13  Per-loop init/recover (kill leftover iperf3 for this pair's
+#              subnet before/after each loop) and per-loop port rotation
+#              (5201/5202 .. wrapping after 10 loops) so a stale server/socket
+#              from a previous loop can never shadow the current one; pairlog
+#              now appends across loops instead of being overwritten; iperf3
+#              servers now log to their own *_server.log for diagnostics.
 #   v00.00.12  Revert v00.00.11's broad iperf3 pkill (it was the Windows port's
 #              counterpart to a change that endangered the management NIC); the
 #              readiness probe + per-direction retry from v00.00.10 already cover
@@ -50,7 +56,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
 fi
 
 export _net_test_version
-: "${_net_test_version:="00.00.12"}"
+: "${_net_test_version:="00.00.13"}"
 
 echo "[INFO] running net_test.sh v${_net_test_version}."
 
@@ -344,13 +350,13 @@ _iperf_wait_ready() {
 _iperf_run_dir() {
   local label="$1" logfile="$2" extra="$3"
   local ip_cli="192.247.${pair_idx}.1" ip_srv="192.247.${pair_idx}.11"
-  local attempt mbps _pp
+  local attempt mbps _pp srvlog="${logfile%.log}_server.log"
   for attempt in 1 2 3; do
     _iperf3_progress "${label}" "${_iperf_time}" &
     _pp=$!
     # shellcheck disable=SC2086
     echo "${_pwd}" | sudo -S ip netns exec "ns_${ev}" iperf3 \
-        --bind "${ip_cli}" --client "${ip_srv}" \
+        --bind "${ip_cli}" --client "${ip_srv}" --port "${_pair_port}" \
         --bitrate "${_netspd}M" --time "${_iperf_time}" --interval 3 --omit "${_iperf_omit}" ${extra} \
         --logfile "${logfile}" || true
     wait "${_pp}" 2>/dev/null || true
@@ -359,12 +365,19 @@ _iperf_run_dir() {
     if (( attempt < 3 )); then
       echo "  [retry] iperf3 no data (attempt ${attempt}/3) -- restarting server and retrying" >> "${pairlog}"
       _kill_iperf3_pid "${srv_pid}"
+      rm -f "${srvlog}"
       echo "${_pwd}" | sudo -S ip netns exec "ns_${od}" \
-        iperf3 --bind "${ip_srv}" --server --daemon 2>/dev/null || true
-      _iperf_wait_ready "ns_${od}" "${ip_srv}" 5201 || true
+        iperf3 --bind "${ip_srv}" --server --port "${_pair_port}" --daemon --logfile "${srvlog}" 2>/dev/null || true
+      _iperf_wait_ready "ns_${od}" "${ip_srv}" "${_pair_port}" || true
       srv_pid="$(sudo ip netns exec "ns_${od}" \
-        pgrep -f "iperf3.*192\.247\.${pair_idx}\.11" 2>/dev/null | head -n1 || true)"
+        pgrep -f "iperf3.*192\.247\.${pair_idx}\.11.*${_pair_port}" 2>/dev/null | head -n1 || true)"
     fi
+  done
+  # Diagnostics: dump both client and server log tails so a connection-timeout
+  # is root-causeable without opening every per-run log file.
+  echo "  [diag] iperf3 returned 0 Mbps after 3 attempts; log tails:" >> "${pairlog}"
+  for f in "${logfile}" "${srvlog}"; do
+    [[ -f "${f}" ]] && echo "    $(basename "${f}"): $(tail -n 3 "${f}" | tr '\n' '|')" >> "${pairlog}"
   done
   return 0
 }
@@ -410,9 +423,32 @@ _run_pair() {
 
   {
     echo "============= Pair ${pair_idx}: ${pair} ============="
-    echo "Start: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "Start: $(date '+%Y-%m-%d %H:%M:%S')   Iteration: ${_k}/${_mm}"
     echo "====================================================="
-  } > "${pairlog}"
+  } >> "${pairlog}"
+
+  # The iperf3 port rotates per loop (loop1: 5201/5202, loop2: 5203/5204, ...,
+  # wrapping after 10 loops) so a loop can never collide with a socket the
+  # previous loop left behind (TIME_WAIT, or a ghost server in the netns whose
+  # bind IP was since removed/re-added).
+  local _pair_port=$(( 5201 + ((( 10#${_k} - 1 ) % 10) * 2) ))
+
+  # Per-loop init/recover: terminate any iperf3 process still bound to this
+  # pair's test subnet in either namespace.  A leftover server from an aborted
+  # run or an earlier loop silently holds its port while its socket is dead,
+  # and every later connect to it times out.  Scoped to this pair's addresses,
+  # so parallel pairs are untouched.
+  _stop_pair_iperf() {
+    local tag="$1" ns pid
+    for ns in "ns_${ev}" "ns_${od}"; do
+      for pid in $(sudo ip netns exec "${ns}" \
+          pgrep -f "iperf3.*192\.247\.${pair_idx}\.(1|11)" 2>/dev/null || true); do
+        sudo kill -KILL "${pid}" 2>/dev/null || true
+        echo "  [${tag}] killed leftover iperf3 pid=${pid} in ${ns}" >> "${pairlog}"
+      done
+    done
+  }
+  _stop_pair_iperf init
 
   _main_log "[Pair ${pair_idx}] START  ${pair}"
 
@@ -479,22 +515,24 @@ _run_pair() {
       _err_before_od="$(_nic_err_snapshot "ns_${od}" "${od}")"
     fi
 
+    # iperf3 log filenames include speed so parallel runs don't collide
+    local tcp_fwd tcp_rev udp_fwd udp_rev srv_log
+    tcp_fwd="${log_root}/iPerf3_${ev}_n_${od}_TCP_${_k}of${_mm}_spd${_netspd}_${_run_ts}.log"
+    tcp_rev="${log_root}/iPerf3_${ev}_n_${od}_TCPRev_${_k}of${_mm}_spd${_netspd}_${_run_ts}.log"
+    srv_log="${log_root}/iPerf3_${ev}_n_${od}_SRV_${_k}of${_mm}_spd${_netspd}_${_run_ts}.log"
+
     # Start iperf3 server on odd side (no --pidfile; use pgrep after start)
+    rm -f "${srv_log}"
     echo "${_pwd}" | sudo -S ip netns exec "ns_${od}" \
-      iperf3 --bind "192.247.${pair_idx}.11" --server --daemon 2>/dev/null || true
+      iperf3 --bind "192.247.${pair_idx}.11" --server --port "${_pair_port}" --daemon --logfile "${srv_log}" 2>/dev/null || true
     # NET017 robustness: wait until the server actually accepts connections
     # rather than assuming 1s is enough.
-    _iperf_wait_ready "ns_${od}" "192.247.${pair_idx}.11" 5201 || true
+    _iperf_wait_ready "ns_${od}" "192.247.${pair_idx}.11" "${_pair_port}" || true
 
     # Find the server PID: look for iperf3 listening on our bind address inside the ns
     local srv_pid=""
     srv_pid="$(sudo ip netns exec "ns_${od}" \
-      pgrep -f "iperf3.*192\.247\.${pair_idx}\.11" 2>/dev/null | head -n1 || true)"
-
-    # iperf3 log filenames include speed so parallel runs don't collide
-    local tcp_fwd tcp_rev udp_fwd udp_rev
-    tcp_fwd="${log_root}/iPerf3_${ev}_n_${od}_TCP_${_k}of${_mm}_spd${_netspd}_${_run_ts}.log"
-    tcp_rev="${log_root}/iPerf3_${ev}_n_${od}_TCPRev_${_k}of${_mm}_spd${_netspd}_${_run_ts}.log"
+      pgrep -f "iperf3.*192\.247\.${pair_idx}\.11.*${_pair_port}" 2>/dev/null | head -n1 || true)"
     udp_fwd="${log_root}/iPerf3_${ev}_n_${od}_UDP_${_k}of${_mm}_spd${_netspd}_${_run_ts}.log"
     udp_rev="${log_root}/iPerf3_${ev}_n_${od}_UDPRev_${_k}of${_mm}_spd${_netspd}_${_run_ts}.log"
 
@@ -526,25 +564,26 @@ _run_pair() {
       local bi_fwd bi_rev
       bi_fwd="${log_root}/iPerf3_${ev}_n_${od}_BIDIRfwd_${_k}of${_mm}_spd${_netspd}_${_run_ts}.log"
       bi_rev="${log_root}/iPerf3_${ev}_n_${od}_BIDIRrev_${_k}of${_mm}_spd${_netspd}_${_run_ts}.log"
+      local _bi_port_a=${_pair_port} _bi_port_b=$((_pair_port + 1))
       echo "${_pwd}" | sudo -S ip netns exec "ns_${od}" \
-        iperf3 --bind "192.247.${pair_idx}.11" --server --port 5201 --daemon 2>/dev/null || true
+        iperf3 --bind "192.247.${pair_idx}.11" --server --port "${_bi_port_a}" --daemon 2>/dev/null || true
       echo "${_pwd}" | sudo -S ip netns exec "ns_${ev}" \
-        iperf3 --bind "192.247.${pair_idx}.1"  --server --port 5202 --daemon 2>/dev/null || true
+        iperf3 --bind "192.247.${pair_idx}.1"  --server --port "${_bi_port_b}" --daemon 2>/dev/null || true
       # NET017 robustness: wait until both bidir servers accept connections.
-      _iperf_wait_ready "ns_${od}" "192.247.${pair_idx}.11" 5201 || true
-      _iperf_wait_ready "ns_${ev}" "192.247.${pair_idx}.1"  5202 || true
+      _iperf_wait_ready "ns_${od}" "192.247.${pair_idx}.11" "${_bi_port_a}" || true
+      _iperf_wait_ready "ns_${ev}" "192.247.${pair_idx}.1"  "${_bi_port_b}" || true
       # Track these two servers by PID so cleanup never touches OTHER parallel pairs
       # (iperf3_del would kill system-wide -- unsafe here).
       local _bi_srv_f _bi_srv_r
-      _bi_srv_f="$(sudo ip netns exec "ns_${od}" pgrep -f "iperf3.*192\.247\.${pair_idx}\.11.*5201" 2>/dev/null | head -n1 || true)"
-      _bi_srv_r="$(sudo ip netns exec "ns_${ev}" pgrep -f "iperf3.*192\.247\.${pair_idx}\.1 .*5202" 2>/dev/null | head -n1 || true)"
+      _bi_srv_f="$(sudo ip netns exec "ns_${od}" pgrep -f "iperf3.*192\.247\.${pair_idx}\.11.*${_bi_port_a}" 2>/dev/null | head -n1 || true)"
+      _bi_srv_r="$(sudo ip netns exec "ns_${ev}" pgrep -f "iperf3.*192\.247\.${pair_idx}\.1 .*${_bi_port_b}" 2>/dev/null | head -n1 || true)"
       echo "${_pwd}" | sudo -S ip netns exec "ns_${ev}" iperf3 \
-          --bind "192.247.${pair_idx}.1" --client "192.247.${pair_idx}.11" --port 5201 \
+          --bind "192.247.${pair_idx}.1" --client "192.247.${pair_idx}.11" --port "${_bi_port_a}" \
           --bitrate "${_netspd}M" --time "${_iperf_time}" --interval 3 --omit "${_iperf_omit}" \
           --logfile "${bi_fwd}" &
       local _bi_pid_f=$!
       echo "${_pwd}" | sudo -S ip netns exec "ns_${od}" iperf3 \
-          --bind "192.247.${pair_idx}.11" --client "192.247.${pair_idx}.1" --port 5202 \
+          --bind "192.247.${pair_idx}.11" --client "192.247.${pair_idx}.1" --port "${_bi_port_b}" \
           --bitrate "${_netspd}M" --time "${_iperf_time}" --interval 3 --omit "${_iperf_omit}" \
           --logfile "${bi_rev}" &
       local _bi_pid_r=$!
@@ -735,6 +774,10 @@ _run_pair() {
     echo "Verdict: ${speed_verdict}  ${_reason}" >> "${pairlog}"
     echo "[Speed ${_netspd} Mbps done]" >> "${pairlog}"
   done
+
+  # Per-loop recover: reap any iperf3 process this pair left running so the
+  # next loop (or the final teardown) starts from a clean slate.
+  _stop_pair_iperf recover
 
   echo "End: $(date '+%Y-%m-%d %H:%M:%S')" >> "${pairlog}"
   _main_log "[Pair ${pair_idx}] DONE   ${pair}"

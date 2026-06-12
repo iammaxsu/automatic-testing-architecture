@@ -50,8 +50,9 @@
   ARTEFACTS (in logs\) - FWK028: result.json is the canonical source of truth
     net_test_<ts>.result.json              canonical machine-readable result
     net_test_<ts>.log                      main log (pair START/DONE events)
-    net_test_pair<N>_<ts>.log              per-pair detail log
-    iPerf3_<ev>_n_<od>_<n>of<m>_<type>_spd<spd>_<ts>.log  per-run (NET013)
+    net_test_pair<N>_<ts>.log              per-pair detail log (all loops, appended)
+    iPerf3_<ev>_n_<od>_<n>of<m>_<type>_spd<spd>_<ts>.log         per-run client (NET013)
+    iPerf3_<ev>_n_<od>_<n>of<m>_<type>_spd<spd>_<ts>_server.log  per-run server (NET013)
 
 .EXAMPLE
   .\net_test.ps1
@@ -101,7 +102,7 @@ trap {
     break
 }
 
-$_script_ver                = '00.00.29'
+$_script_ver                = '00.00.30'
 $_requires_function_ps1_api = '00.00.02'
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Write-Host "net_test.ps1 v$_script_ver" -ForegroundColor Cyan
@@ -898,17 +899,35 @@ $_pairJobBlock = {
     }
 
     function Start-IperfServer {
-        param([string]$BindIp, [int]$Port, [bool]$Dry)
+        param([string]$BindIp, [int]$Port, [bool]$Dry, [string]$LogFile = '', [string]$PairLog = '')
         if ($Dry) { return 0 }
-        $p = Start-Process iperf3 -ArgumentList (ConvertTo-ArgString @('--server','--bind',$BindIp,'--port',$Port)) `
+        $a = @('--server','--bind',$BindIp,'--port',$Port)
+        if ($LogFile) { $a += @('--logfile',$LogFile,'--forceflush') }
+        $p = Start-Process iperf3 -ArgumentList (ConvertTo-ArgString $a) `
              -PassThru -WindowStyle Hidden
         # Poll the control port until the server is actually listening (up to
         # ~5s) instead of assuming 1s is enough.  After an adapter Disable/Enable
         # the bind sometimes needs a moment, and a blind sleep was producing
         # spurious "Connection timed out" / UNKNOWN verdicts (NET008).
+        $ready = $false
         for ($i = 0; $i -lt 25; $i++) {
-            if (Test-IperfPortReady -IpAddr $BindIp -Port $Port) { break }
+            if (Test-IperfPortReady -IpAddr $BindIp -Port $Port) { $ready = $true; break }
             Start-Sleep -Milliseconds 200
+        }
+        if (-not $ready -and $PairLog) {
+            # The server never came up -- record WHY.  From the client side this
+            # is indistinguishable from a firewall drop (stealth mode swallows
+            # the SYN either way -> "Connection timed out"), so the server's exit
+            # state and own log are the only place the real cause shows up
+            # (e.g. "Address already in use" from a ghost listener, or
+            # "Cannot assign requested address" when the bind IP is not ready).
+            $st = 'process still running but not accepting (probe failed)'
+            try { if ($p.HasExited) { $st = "process exited rc=$($p.ExitCode)" } } catch {}
+            "  [server] iperf3 server on ${BindIp}:${Port} NOT ready after 5s -- $st" | Add-Content $PairLog
+            if ($LogFile -and (Test-Path $LogFile)) {
+                $tl = (Get-Content $LogFile -Tail 3 -ErrorAction SilentlyContinue) -join ' | '
+                "  [server] server log tail: $tl" | Add-Content $PairLog
+            }
         }
         return $p.Id
     }
@@ -928,8 +947,13 @@ $_pairJobBlock = {
         param([string]$ClientIp, [string]$ServerIp, [int]$Port, [int]$SpeedM,
               [int]$TimeSec, [int]$Omit, [bool]$Reverse, [bool]$Udp,
               [string]$LogFile, [bool]$Dry, [string]$PairLog, [int]$MaxTries = 3)
+        # The server gets its own log artefact beside the client one (NET013):
+        # a client "Connection timed out" alone cannot distinguish firewall drop /
+        # bind failure / server crash -- the server log can.
+        $srvLog = $LogFile -replace '\.log$', '_server.log'
+        if (-not $Dry) { Remove-Item $srvLog -Force -ErrorAction SilentlyContinue }
         for ($attempt = 1; $attempt -le $MaxTries; $attempt++) {
-            $srv = Start-IperfServer -BindIp $ServerIp -Port $Port -Dry $Dry
+            $srv = Start-IperfServer -BindIp $ServerIp -Port $Port -Dry $Dry -LogFile $srvLog -PairLog $PairLog
             Invoke-IperfClient -ClientIp $ClientIp -ServerIp $ServerIp -Port $Port -SpeedM $SpeedM `
                 -TimeSec $TimeSec -Omit $Omit -Reverse $Reverse -Udp $Udp -LogFile $LogFile -Dry $Dry
             Stop-IperfServer -ServerPid $srv
@@ -1002,21 +1026,37 @@ $_pairJobBlock = {
     # rate in BOTH directions at once.
     function Invoke-IperfBidir {
         param([string]$EvenIp, [string]$OddIp, [int]$PortA, [int]$PortB, [int]$SpeedM,
-              [int]$TimeSec, [int]$Omit, [string]$LogFwd, [string]$LogRev, [bool]$Dry)
+              [int]$TimeSec, [int]$Omit, [string]$LogFwd, [string]$LogRev, [bool]$Dry,
+              [string]$PairLog = '')
         if ($Dry) {
             "DRY-RUN iperf3 bidir $EvenIp<->$OddIp ${TimeSec}s" | Set-Content $LogFwd
             "DRY-RUN iperf3 bidir $EvenIp<->$OddIp ${TimeSec}s" | Set-Content $LogRev
             return
         }
         # Two servers: PortA on odd (receives even->odd), PortB on even (receives odd->even).
-        $srvA = Start-Process iperf3 -ArgumentList (ConvertTo-ArgString @('--server','--bind',$OddIp,'--port',$PortA))  -PassThru -WindowStyle Hidden
-        $srvB = Start-Process iperf3 -ArgumentList (ConvertTo-ArgString @('--server','--bind',$EvenIp,'--port',$PortB)) -PassThru -WindowStyle Hidden
+        # Each gets its own log artefact so a start failure is diagnosable (NET013).
+        $srvLogA = $LogFwd -replace '\.log$', '_server.log'
+        $srvLogB = $LogRev -replace '\.log$', '_server.log'
+        Remove-Item $srvLogA, $srvLogB -Force -ErrorAction SilentlyContinue
+        $srvA = Start-Process iperf3 -ArgumentList (ConvertTo-ArgString @('--server','--bind',$OddIp,'--port',$PortA,'--logfile',$srvLogA,'--forceflush'))  -PassThru -WindowStyle Hidden
+        $srvB = Start-Process iperf3 -ArgumentList (ConvertTo-ArgString @('--server','--bind',$EvenIp,'--port',$PortB,'--logfile',$srvLogB,'--forceflush')) -PassThru -WindowStyle Hidden
         # Wait until both servers are actually accepting connections (NET017),
         # rather than assuming 1s is enough after an adapter restart.
+        $ready = $false
         for ($i = 0; $i -lt 25; $i++) {
             if ((Test-IperfPortReady -IpAddr $OddIp -Port $PortA) -and
-                (Test-IperfPortReady -IpAddr $EvenIp -Port $PortB)) { break }
+                (Test-IperfPortReady -IpAddr $EvenIp -Port $PortB)) { $ready = $true; break }
             Start-Sleep -Milliseconds 200
+        }
+        if (-not $ready -and $PairLog) {
+            "  [server] bidir servers not both ready after 5s (${OddIp}:${PortA}=$(Test-IperfPortReady -IpAddr $OddIp -Port $PortA) ${EvenIp}:${PortB}=$(Test-IperfPortReady -IpAddr $EvenIp -Port $PortB))" |
+                Add-Content $PairLog
+            foreach ($sl in @($srvLogA, $srvLogB)) {
+                if (Test-Path $sl) {
+                    $tl = (Get-Content $sl -Tail 2 -ErrorAction SilentlyContinue) -join ' | '
+                    "  [server] $(Split-Path -Leaf $sl): $tl" | Add-Content $PairLog
+                }
+            }
         }
         # Each direction is capped at the full link rate (a direct back-to-back link
         # is non-blocking, so full-duplex should sustain both at once).
@@ -1100,15 +1140,44 @@ $_pairJobBlock = {
     $pair    = "$EvenNic<->$OddNic"
     $v4even  = "192.247.$PairIdx.1";    $v4odd = "192.247.$PairIdx.11"
     $v6even  = "fd00:2470::${PairIdx}:1"; $v6odd = "fd00:2470::${PairIdx}:11"
-    $port    = 5201
+    # The iperf3 port rotates per loop (loop1: 5201/5202, loop2: 5203/5204, ...)
+    # so a loop can never collide with a socket the previous loop left behind
+    # (TIME_WAIT, or a ghost server whose bound IP was since removed/re-added).
+    # Wraps after 10 loops; the firewall allow rule covers all of 5201-5220.
+    $port    = 5201 + ((($LoopN - 1) % 10) * 2)
     $pairLog = Join-Path $LogRoot "net_test_pair${PairIdx}_${RunTs}.log"
 
+    # Append across loops (one pair log per run) -- overwriting per loop threw
+    # away the earlier iterations, which is exactly the part needed to diagnose
+    # a failure that only appears in later loops.
+    if (Test-Path $pairLog) { "" | Add-Content $pairLog }
     @(
         "============= Pair ${PairIdx}: ${pair} ============="
         "Start: $(Now-Iso)   Iteration: $LoopN/$TotalLoops"
         "Speeds planned: $(@($SpeedPlan | ForEach-Object { if ($_.testable) { "$($_.mbps)M" } else { "$($_.mbps)M(N/A)" } }) -join ', ')"
         "====================================================="
-    ) | Set-Content $pairLog
+    ) | Add-Content $pairLog
+
+    # Per-loop init/recover: terminate any iperf3 process still referencing this
+    # pair's test subnet.  A leftover server (e.g. from an aborted run or an
+    # earlier loop) silently holds the port while its socket is dead, and every
+    # later connect to it times out.  Scoped to this pair's addresses via the
+    # process command line, so parallel pairs -- and anything else on the host --
+    # are untouched.
+    function Stop-PairIperf {
+        param([string]$Tag)
+        if ($Dry) { return }
+        try {
+            $pat = "192\.247\.$PairIdx\.|fd00:2470::${PairIdx}:"
+            $stale = @(Get-CimInstance Win32_Process -Filter "Name='iperf3.exe'" -ErrorAction SilentlyContinue |
+                       Where-Object { $_.CommandLine -match $pat })
+            foreach ($pr in $stale) {
+                Stop-Process -Id $pr.ProcessId -Force -ErrorAction SilentlyContinue
+                "  [$Tag] killed leftover iperf3 pid=$($pr.ProcessId): $($pr.CommandLine)" | Add-Content $pairLog
+            }
+        } catch {}
+    }
+    Stop-PairIperf -Tag 'init'
 
     $speedResults = @()
 
@@ -1242,7 +1311,7 @@ $_pairJobBlock = {
                 "[Bidirectional full-duplex (TCP, both directions at once)]" | Add-Content $pairLog
                 $logBiFwd = Get-Log 'BIDIRfwd'; $logBiRev = Get-Log 'BIDIRrev'
                 Invoke-IperfBidir -EvenIp $v4even -OddIp $v4odd -PortA $port -PortB ($port + 1) -SpeedM $mbps `
-                    -TimeSec $IperfTime -Omit $IperfOmit -LogFwd $logBiFwd -LogRev $logBiRev -Dry $Dry
+                    -TimeSec $IperfTime -Omit $IperfOmit -LogFwd $logBiFwd -LogRev $logBiRev -Dry $Dry -PairLog $pairLog
                 $bidirFwd = (Get-IperfStats $logBiFwd).mbps
                 $bidirRev = (Get-IperfStats $logBiRev).mbps
                 $bidirSum = [Math]::Round($bidirFwd + $bidirRev, 2)
@@ -1346,11 +1415,30 @@ $_pairJobBlock = {
             if ($nTcpFwd -eq 0.0 -or $nTcpRev -eq 0.0 -or $nUdpFwd -eq 0.0 -or $nUdpRev -eq 0.0) {
                 "[diag] iperf3 reported 0 Mbps for >=1 direction; per-run log tails:" | Add-Content $pairLog
                 foreach ($lf in @($logTcpFwd, $logTcpRev, $logUdpFwd, $logUdpRev)) {
-                    if (Test-Path $lf) {
-                        $tl = (Get-Content $lf -Tail 3 -ErrorAction SilentlyContinue) -join ' | '
-                        ("  " + (Split-Path -Leaf $lf) + ": " + $tl) | Add-Content $pairLog
+                    foreach ($f in @($lf, ($lf -replace '\.log$', '_server.log'))) {
+                        if (Test-Path $f) {
+                            $tl = (Get-Content $f -Tail 3 -ErrorAction SilentlyContinue) -join ' | '
+                            ("  " + (Split-Path -Leaf $f) + ": " + $tl) | Add-Content $pairLog
+                        }
                     }
                 }
+                # Snapshot the environment at failure time: who (if anyone) is
+                # listening on the test port, whether the run's firewall rules
+                # still exist, and the NICs' network profile -- the three things
+                # that make a connect silently time out while ping still passes.
+                try {
+                    $lsn = @(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)
+                    $lsnTxt = if ($lsn.Count -gt 0) {
+                        (@($lsn | ForEach-Object { "$($_.LocalAddress) pid=$($_.OwningProcess)" }) -join ', ')
+                    } else { 'none' }
+                    "  [diag] listeners on :${port}: $lsnTxt" | Add-Content $pairLog
+                    $fw = @(Get-NetFirewallRule -DisplayName 'net_test_iperf3*' -ErrorAction SilentlyContinue)
+                    "  [diag] net_test firewall rules present: $($fw.Count)" | Add-Content $pairLog
+                    foreach ($n in @($EvenNic, $OddNic)) {
+                        $prof = Get-NetConnectionProfile -InterfaceAlias $n -ErrorAction SilentlyContinue
+                        if ($prof) { "  [diag] ${n}: network profile = $($prof.NetworkCategory)" | Add-Content $pairLog }
+                    }
+                } catch {}
             }
 
             # Per-speed-tier TCP PASS threshold (NET009): each plan step carries its
@@ -1427,7 +1515,10 @@ $_pairJobBlock = {
             }
         }
     } finally {
-        # Restore Auto Negotiation and DHCP so the NICs are usable after the test.
+        # Per-loop recover: reap this pair's iperf3 processes, then restore Auto
+        # Negotiation and DHCP so the NICs are usable after the test and the next
+        # loop starts from a clean state.
+        Stop-PairIperf -Tag 'recover'
         if (-not $Dry) {
             Set-NicSpeed -Nic $EvenNic -Display 'Auto Negotiation' -Dry $Dry -LogPath $pairLog | Out-Null
             Set-NicSpeed -Nic $OddNic  -Display 'Auto Negotiation' -Dry $Dry -LogPath $pairLog | Out-Null
@@ -1475,16 +1566,16 @@ if (-not $DryRun) {
         }
     }
     try {
-        # 5201 is the unidirectional port; 5202 is the second port the bidirectional
-        # full-duplex test (NET017) uses, so allow the small range 5201-5202.
+        # The pair job rotates ports per loop (loop1: 5201/5202, loop2: 5203/5204,
+        # ..., wrapping after 10 loops), so allow the whole rotation range.
         New-NetFirewallRule -DisplayName $_fwRuleNamePort -Direction Inbound -Action Allow `
-            -Protocol TCP -LocalPort '5201-5202' -Profile Any -ErrorAction Stop | Out-Null
+            -Protocol TCP -LocalPort '5201-5220' -Profile Any -ErrorAction Stop | Out-Null
         New-NetFirewallRule -DisplayName "${_fwRuleNamePort}_udp" -Direction Inbound -Action Allow `
-            -Protocol UDP -LocalPort '5201-5202' -Profile Any -ErrorAction Stop | Out-Null
+            -Protocol UDP -LocalPort '5201-5220' -Profile Any -ErrorAction Stop | Out-Null
         $_fwRulePortAdded = $true
-        Write-Host ("         Firewall       : allow rule added for TCP/UDP 5201-5202 ($_fwRuleNamePort)") -ForegroundColor DarkGray
+        Write-Host ("         Firewall       : allow rule added for TCP/UDP 5201-5220 ($_fwRuleNamePort)") -ForegroundColor DarkGray
     } catch {
-        Write-Warning "Could not add firewall allow rule for iperf3 (ports 5201-5202): $($_.Exception.Message)"
+        Write-Warning "Could not add firewall allow rule for iperf3 (ports 5201-5220): $($_.Exception.Message)"
     }
     $_fwStatus = if ($_fwRuleAdded -or $_fwRulePortAdded) { 'added' } else { 'FAILED (not elevated?)' }
     Write-MainLog "[firewall] program-rule=$_fwRuleAdded  port-rule=$_fwRulePortAdded  status=$_fwStatus"
