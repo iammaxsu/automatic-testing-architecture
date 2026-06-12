@@ -274,6 +274,9 @@ function Update-PathFromEnv {
 # Like function.sh iperf3_install: already in PATH -> use it; missing -> install.
 # Returns the resolved iperf3.exe path, or $null if all methods fail.
 # Install fan-out (closest to bash __pkg_install apt-get/dnf/yum order):
+#   0. Local offline cache: a copy already unpacked into ToolsDir\iperf3 (placed
+#      manually, or left over from a previous successful download) -- checked
+#      first so an offline DUT never needs network access on subsequent runs.
 #   1. winget  (built into Win10 1809+/11)
 #   2. Chocolatey
 #   3. Scoop
@@ -294,6 +297,20 @@ function Ensure-Iperf3 {
     if ($AutoInstall -ne 1) { return $null }
 
     Write-Host '         iperf3 missing -- attempting auto-install...' -ForegroundColor Yellow
+
+    # Step 0: offline cache -- e.g. on an air-gapped DUT, copy the iperf3.exe
+    # release zip's contents into ToolsDir\iperf3 once (via USB or any reachable
+    # machine) and every subsequent run picks it up with no network access.
+    $localDir = Join-Path $ToolsDir 'iperf3'
+    if (Test-Path $localDir) {
+        $localExe = Get-ChildItem -Path $localDir -Filter 'iperf3.exe' -Recurse -ErrorAction SilentlyContinue |
+                    Select-Object -First 1
+        if ($null -ne $localExe) {
+            Write-Host ("         Found cached iperf3 : " + $localExe.FullName) -ForegroundColor DarkGray
+            $env:PATH = (Split-Path -Parent $localExe.FullName) + ';' + $env:PATH
+            return $localExe.FullName
+        }
+    }
 
     if ($WingetId -ne '' -and $null -ne (Get-Command winget -ErrorAction SilentlyContinue)) {
         Write-Host ("         winget install $WingetId") -ForegroundColor DarkGray

@@ -37,6 +37,10 @@
     - iperf3.exe -- auto-installed if missing (winget / choco / scoop, then a
       portable-zip download), mirroring net_test.sh's iperf3_install.  Override
       via the $_net_iperf3_* keys in config.ps1.
+      OFFLINE DUTs: if the DUT has no internet access, all of the above fail.
+      Copy a working iperf3.exe (and its DLLs) into the script folder's
+      tools\iperf3\ directory once (e.g. via USB); every subsequent run finds
+      it there with no network access required.
     - NICs physically cabled in pairs for loopback.
 
   CONFIGURATION (two methods, parameters win) - SET001
@@ -97,7 +101,7 @@ trap {
     break
 }
 
-$_script_ver                = '00.00.28'
+$_script_ver                = '00.00.29'
 $_requires_function_ps1_api = '00.00.02'
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Write-Host "net_test.ps1 v$_script_ver" -ForegroundColor Cyan
