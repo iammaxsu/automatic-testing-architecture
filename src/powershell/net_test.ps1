@@ -97,7 +97,7 @@ trap {
     break
 }
 
-$_script_ver                = '00.00.25'
+$_script_ver                = '00.00.26'
 $_requires_function_ps1_api = '00.00.02'
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Write-Host "net_test.ps1 v$_script_ver" -ForegroundColor Cyan
@@ -865,12 +865,42 @@ $_pairJobBlock = {
         }) -join ' '
     }
 
+    # NET017 robustness: probe whether something is actually accepting TCP
+    # connections on $IpAddr:$Port.  iperf3 always uses a TCP control channel
+    # (even for UDP tests), so this confirms the server is ready before we
+    # launch the client -- replacing a blind fixed sleep that loses the race
+    # after an adapter restart.
+    function Test-IperfPortReady {
+        param([string]$IpAddr, [int]$Port, [int]$TimeoutMs = 300)
+        $client = $null
+        try {
+            $client = [System.Net.Sockets.TcpClient]::new()
+            $iar = $client.BeginConnect($IpAddr, $Port, $null, $null)
+            if ($iar.AsyncWaitHandle.WaitOne($TimeoutMs) -and $client.Connected) {
+                $client.EndConnect($iar)
+                return $true
+            }
+            return $false
+        } catch {
+            return $false
+        } finally {
+            if ($client) { $client.Close() }
+        }
+    }
+
     function Start-IperfServer {
         param([string]$BindIp, [int]$Port, [bool]$Dry)
         if ($Dry) { return 0 }
         $p = Start-Process iperf3 -ArgumentList (ConvertTo-ArgString @('--server','--bind',$BindIp,'--port',$Port)) `
              -PassThru -WindowStyle Hidden
-        Start-Sleep -Seconds 1
+        # Poll the control port until the server is actually listening (up to
+        # ~5s) instead of assuming 1s is enough.  After an adapter Disable/Enable
+        # the bind sometimes needs a moment, and a blind sleep was producing
+        # spurious "Connection timed out" / UNKNOWN verdicts (NET008).
+        for ($i = 0; $i -lt 25; $i++) {
+            if (Test-IperfPortReady -IpAddr $BindIp -Port $Port) { break }
+            Start-Sleep -Milliseconds 200
+        }
         return $p.Id
     }
 
@@ -878,6 +908,30 @@ $_pairJobBlock = {
         param([int]$ServerPid)
         if ($ServerPid -le 0) { return }
         Stop-Process -Id $ServerPid -Force -ErrorAction SilentlyContinue
+    }
+
+    # NET017 robustness: run one iperf3 measurement (start server, run client,
+    # stop server) and, if it still comes back with no data (0 Mbps -- server
+    # died, or the link/bind was not ready), restart the server and retry up to
+    # $MaxTries times before giving up.  This turns the transient post-adapter-
+    # restart race into a self-healing retry instead of a spurious UNKNOWN.
+    function Invoke-IperfMeasured {
+        param([string]$ClientIp, [string]$ServerIp, [int]$Port, [int]$SpeedM,
+              [int]$TimeSec, [int]$Omit, [bool]$Reverse, [bool]$Udp,
+              [string]$LogFile, [bool]$Dry, [string]$PairLog, [int]$MaxTries = 3)
+        for ($attempt = 1; $attempt -le $MaxTries; $attempt++) {
+            $srv = Start-IperfServer -BindIp $ServerIp -Port $Port -Dry $Dry
+            Invoke-IperfClient -ClientIp $ClientIp -ServerIp $ServerIp -Port $Port -SpeedM $SpeedM `
+                -TimeSec $TimeSec -Omit $Omit -Reverse $Reverse -Udp $Udp -LogFile $LogFile -Dry $Dry
+            Stop-IperfServer -ServerPid $srv
+            if ($Dry) { return }
+            if ((Get-IperfStats $LogFile).mbps -gt 0) { return }
+            if ($attempt -lt $MaxTries -and $PairLog) {
+                "  [retry] iperf3 no data (attempt $attempt/$MaxTries) -- restarting server and retrying" |
+                    Add-Content $PairLog
+            }
+            Start-Sleep -Seconds 2
+        }
     }
 
     function Invoke-IperfClient {
@@ -948,7 +1002,13 @@ $_pairJobBlock = {
         # Two servers: PortA on odd (receives even->odd), PortB on even (receives odd->even).
         $srvA = Start-Process iperf3 -ArgumentList (ConvertTo-ArgString @('--server','--bind',$OddIp,'--port',$PortA))  -PassThru -WindowStyle Hidden
         $srvB = Start-Process iperf3 -ArgumentList (ConvertTo-ArgString @('--server','--bind',$EvenIp,'--port',$PortB)) -PassThru -WindowStyle Hidden
-        Start-Sleep -Seconds 1
+        # Wait until both servers are actually accepting connections (NET017),
+        # rather than assuming 1s is enough after an adapter restart.
+        for ($i = 0; $i -lt 25; $i++) {
+            if ((Test-IperfPortReady -IpAddr $OddIp -Port $PortA) -and
+                (Test-IperfPortReady -IpAddr $EvenIp -Port $PortB)) { break }
+            Start-Sleep -Milliseconds 200
+        }
         # Each direction is capped at the full link rate (a direct back-to-back link
         # is non-blocking, so full-duplex should sustain both at once).
         $argFwd = @('--client',$OddIp, '--bind',$EvenIp,'--port',$PortA,'--bitrate',"${SpeedM}M",'--time',$TimeSec,'--interval','3','--omit',$Omit,'--logfile',$LogFwd,'--forceflush')
@@ -1147,28 +1207,20 @@ $_pairJobBlock = {
             }
 
             "[TCP Reverse]" | Add-Content $pairLog
-            $srv = Start-IperfServer -BindIp $v4odd -Port $port -Dry $Dry
-            Invoke-IperfClient -ClientIp $v4even -ServerIp $v4odd -Port $port -SpeedM $mbps `
-                -TimeSec $IperfTime -Omit $IperfOmit -Reverse $true -Udp $false -LogFile $logTcpRev -Dry $Dry
-            Stop-IperfServer -ServerPid $srv
+            Invoke-IperfMeasured -ClientIp $v4even -ServerIp $v4odd -Port $port -SpeedM $mbps `
+                -TimeSec $IperfTime -Omit $IperfOmit -Reverse $true -Udp $false -LogFile $logTcpRev -Dry $Dry -PairLog $pairLog
 
             "[TCP Forward]" | Add-Content $pairLog
-            $srv = Start-IperfServer -BindIp $v4odd -Port $port -Dry $Dry
-            Invoke-IperfClient -ClientIp $v4even -ServerIp $v4odd -Port $port -SpeedM $mbps `
-                -TimeSec $IperfTime -Omit $IperfOmit -Reverse $false -Udp $false -LogFile $logTcpFwd -Dry $Dry
-            Stop-IperfServer -ServerPid $srv
+            Invoke-IperfMeasured -ClientIp $v4even -ServerIp $v4odd -Port $port -SpeedM $mbps `
+                -TimeSec $IperfTime -Omit $IperfOmit -Reverse $false -Udp $false -LogFile $logTcpFwd -Dry $Dry -PairLog $pairLog
 
             "[UDP Reverse]" | Add-Content $pairLog
-            $srv = Start-IperfServer -BindIp $v4odd -Port $port -Dry $Dry
-            Invoke-IperfClient -ClientIp $v4even -ServerIp $v4odd -Port $port -SpeedM $mbps `
-                -TimeSec $IperfTime -Omit $IperfOmit -Reverse $true -Udp $true -LogFile $logUdpRev -Dry $Dry
-            Stop-IperfServer -ServerPid $srv
+            Invoke-IperfMeasured -ClientIp $v4even -ServerIp $v4odd -Port $port -SpeedM $mbps `
+                -TimeSec $IperfTime -Omit $IperfOmit -Reverse $true -Udp $true -LogFile $logUdpRev -Dry $Dry -PairLog $pairLog
 
             "[UDP Forward]" | Add-Content $pairLog
-            $srv = Start-IperfServer -BindIp $v4odd -Port $port -Dry $Dry
-            Invoke-IperfClient -ClientIp $v4even -ServerIp $v4odd -Port $port -SpeedM $mbps `
-                -TimeSec $IperfTime -Omit $IperfOmit -Reverse $false -Udp $true -LogFile $logUdpFwd -Dry $Dry
-            Stop-IperfServer -ServerPid $srv
+            Invoke-IperfMeasured -ClientIp $v4even -ServerIp $v4odd -Port $port -SpeedM $mbps `
+                -TimeSec $IperfTime -Omit $IperfOmit -Reverse $false -Udp $true -LogFile $logUdpFwd -Dry $Dry -PairLog $pairLog
 
             $sTcpFwd = Get-IperfStats $logTcpFwd; $nTcpFwd = $sTcpFwd.mbps
             $sTcpRev = Get-IperfStats $logTcpRev; $nTcpRev = $sTcpRev.mbps

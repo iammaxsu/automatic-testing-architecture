@@ -17,6 +17,10 @@
 #   - Summary is assembled after all pairs complete (wait)
 #
 # Changelog:
+#   v00.00.10  NET017 robustness: probe iperf3 server readiness (TCP control
+#              port) instead of a blind sleep, and retry a direction up to 3x if
+#              it returns no data -- removes spurious UNKNOWN from a server-start
+#              race after a link change.
 #   v00.00.09  NET018: distinguish PASS/FAIL-FRAG/FAIL/SKIP for jumbo DF-ping
 #              (SKIP when the NIC rejects the jumbo MTU outright, instead of a
 #              misleading FAIL); jumbo report cell shows SKIP as N/A, not FAIL.
@@ -40,7 +44,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
 fi
 
 export _net_test_version
-: "${_net_test_version:="00.00.09"}"
+: "${_net_test_version:="00.00.10"}"
 
 echo "[INFO] running net_test.sh v${_net_test_version}."
 
@@ -307,6 +311,58 @@ _kill_iperf3_pid() {
   sudo kill -KILL "${pid}" 2>/dev/null || true
 }
 
+# NET017 robustness: wait until an iperf3 server is actually accepting TCP
+# connections on ${ip}:${port} inside ${ns}, instead of a blind fixed sleep.
+# iperf3 always uses a TCP control channel (even for UDP tests), so a TCP
+# connect probe confirms readiness for both.  Returns 0 once reachable, 1 on
+# timeout (~5s).
+_iperf_wait_ready() {
+  local ns="$1" ip="$2" port="${3:-5201}" i
+  for ((i=0; i<25; i++)); do
+    if echo "${_pwd}" | sudo -S ip netns exec "${ns}" \
+         timeout 1 bash -c "exec 3<>/dev/tcp/${ip}/${port}" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.2
+  done
+  return 1
+}
+
+# NET017 robustness: run one iperf3 direction against the shared odd-side server.
+# If the run yields no data (server died / link not ready), restart the shared
+# server and retry, up to 3 attempts, before giving up -- turning a transient
+# race into a self-healing retry instead of a spurious UNKNOWN verdict (NET008).
+# Relies on bash dynamic scope for ev/od/pair_idx/srv_pid/_netspd/_iperf_time/
+# _iperf_omit/pairlog (all locals of the calling _run_pair).
+# Usage: _iperf_run_dir <progress_label> <logfile> <extra_client_args>
+_iperf_run_dir() {
+  local label="$1" logfile="$2" extra="$3"
+  local ip_cli="192.247.${pair_idx}.1" ip_srv="192.247.${pair_idx}.11"
+  local attempt mbps _pp
+  for attempt in 1 2 3; do
+    _iperf3_progress "${label}" "${_iperf_time}" &
+    _pp=$!
+    # shellcheck disable=SC2086
+    echo "${_pwd}" | sudo -S ip netns exec "ns_${ev}" iperf3 \
+        --bind "${ip_cli}" --client "${ip_srv}" \
+        --bitrate "${_netspd}M" --time "${_iperf_time}" --interval 3 --omit "${_iperf_omit}" ${extra} \
+        --logfile "${logfile}" || true
+    wait "${_pp}" 2>/dev/null || true
+    mbps="$(_extract_mbps_num "${logfile}")"
+    [[ -n "${mbps}" && "${mbps}" != "0" ]] && return 0
+    if (( attempt < 3 )); then
+      echo "  [retry] iperf3 no data (attempt ${attempt}/3) -- restarting server and retrying" >> "${pairlog}"
+      _kill_iperf3_pid "${srv_pid}"
+      echo "${_pwd}" | sudo -S ip netns exec "ns_${od}" \
+        iperf3 --bind "${ip_srv}" --server --daemon 2>/dev/null || true
+      _iperf_wait_ready "ns_${od}" "${ip_srv}" 5201 || true
+      srv_pid="$(sudo ip netns exec "ns_${od}" \
+        pgrep -f "iperf3.*192\.247\.${pair_idx}\.11" 2>/dev/null | head -n1 || true)"
+    fi
+  done
+  return 0
+}
+
 # Show a progress line on the terminal while an iperf3 test runs.
 # Runs in the background alongside the iperf3 client; caller must wait for it.
 # Usage: _iperf3_progress <label> <duration_sec> &
@@ -420,7 +476,9 @@ _run_pair() {
     # Start iperf3 server on odd side (no --pidfile; use pgrep after start)
     echo "${_pwd}" | sudo -S ip netns exec "ns_${od}" \
       iperf3 --bind "192.247.${pair_idx}.11" --server --daemon 2>/dev/null || true
-    sleep 1
+    # NET017 robustness: wait until the server actually accepts connections
+    # rather than assuming 1s is enough.
+    _iperf_wait_ready "ns_${od}" "192.247.${pair_idx}.11" 5201 || true
 
     # Find the server PID: look for iperf3 listening on our bind address inside the ns
     local srv_pid=""
@@ -439,40 +497,16 @@ _run_pair() {
     local _prog_pid
 
     echo "[TCP Reverse] ${ev} <- ${od} @ ${_netspd} Mbps" >> "${pairlog}"
-    _iperf3_progress "P${pair_idx} TCP Rev  ${ev}<-${od} @${_netspd}M" "${_iperf_time}" &
-    _prog_pid=$!
-    echo "${_pwd}" | sudo -S ip netns exec "ns_${ev}" iperf3 \
-        --bind "192.247.${pair_idx}.1" --client "192.247.${pair_idx}.11" \
-        --bitrate "${_netspd}M" --time "${_iperf_time}" --interval 3 --omit "${_iperf_omit}" --reverse \
-        --logfile "${tcp_rev}" || true
-    wait "${_prog_pid}" 2>/dev/null || true
+    _iperf_run_dir "P${pair_idx} TCP Rev  ${ev}<-${od} @${_netspd}M" "${tcp_rev}" "--reverse"
 
     echo "[TCP Forward] ${ev} -> ${od} @ ${_netspd} Mbps" >> "${pairlog}"
-    _iperf3_progress "P${pair_idx} TCP Fwd  ${ev}->${od} @${_netspd}M" "${_iperf_time}" &
-    _prog_pid=$!
-    echo "${_pwd}" | sudo -S ip netns exec "ns_${ev}" iperf3 \
-        --bind "192.247.${pair_idx}.1" --client "192.247.${pair_idx}.11" \
-        --bitrate "${_netspd}M" --time "${_iperf_time}" --interval 3 --omit "${_iperf_omit}" \
-        --logfile "${tcp_fwd}" || true
-    wait "${_prog_pid}" 2>/dev/null || true
+    _iperf_run_dir "P${pair_idx} TCP Fwd  ${ev}->${od} @${_netspd}M" "${tcp_fwd}" ""
 
     echo "[UDP Reverse] ${ev} <- ${od} @ ${_netspd} Mbps" >> "${pairlog}"
-    _iperf3_progress "P${pair_idx} UDP Rev  ${ev}<-${od} @${_netspd}M" "${_iperf_time}" &
-    _prog_pid=$!
-    echo "${_pwd}" | sudo -S ip netns exec "ns_${ev}" iperf3 \
-        --bind "192.247.${pair_idx}.1" --client "192.247.${pair_idx}.11" \
-        --udp --bitrate "${_netspd}M" --time "${_iperf_time}" --interval 3 --omit "${_iperf_omit}" --reverse \
-        --logfile "${udp_rev}" || true
-    wait "${_prog_pid}" 2>/dev/null || true
+    _iperf_run_dir "P${pair_idx} UDP Rev  ${ev}<-${od} @${_netspd}M" "${udp_rev}" "--udp --reverse"
 
     echo "[UDP Forward] ${ev} -> ${od} @ ${_netspd} Mbps" >> "${pairlog}"
-    _iperf3_progress "P${pair_idx} UDP Fwd  ${ev}->${od} @${_netspd}M" "${_iperf_time}" &
-    _prog_pid=$!
-    echo "${_pwd}" | sudo -S ip netns exec "ns_${ev}" iperf3 \
-        --bind "192.247.${pair_idx}.1" --client "192.247.${pair_idx}.11" \
-        --udp --bitrate "${_netspd}M" --time "${_iperf_time}" --interval 3 --omit "${_iperf_omit}" \
-        --logfile "${udp_fwd}" || true
-    wait "${_prog_pid}" 2>/dev/null || true
+    _iperf_run_dir "P${pair_idx} UDP Fwd  ${ev}->${od} @${_netspd}M" "${udp_fwd}" "--udp"
 
     # Kill iperf3 server for this speed now that all four tests are done
     _kill_iperf3_pid "${srv_pid}"
@@ -490,7 +524,9 @@ _run_pair() {
         iperf3 --bind "192.247.${pair_idx}.11" --server --port 5201 --daemon 2>/dev/null || true
       echo "${_pwd}" | sudo -S ip netns exec "ns_${ev}" \
         iperf3 --bind "192.247.${pair_idx}.1"  --server --port 5202 --daemon 2>/dev/null || true
-      sleep 1
+      # NET017 robustness: wait until both bidir servers accept connections.
+      _iperf_wait_ready "ns_${od}" "192.247.${pair_idx}.11" 5201 || true
+      _iperf_wait_ready "ns_${ev}" "192.247.${pair_idx}.1"  5202 || true
       # Track these two servers by PID so cleanup never touches OTHER parallel pairs
       # (iperf3_del would kill system-wide -- unsafe here).
       local _bi_srv_f _bi_srv_r
