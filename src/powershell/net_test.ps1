@@ -97,7 +97,7 @@ trap {
     break
 }
 
-$_script_ver                = '00.00.27'
+$_script_ver                = '00.00.28'
 $_requires_function_ps1_api = '00.00.02'
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Write-Host "net_test.ps1 v$_script_ver" -ForegroundColor Cyan
@@ -506,31 +506,36 @@ foreach ($ln in ($Lifeline -split '[,;]+' | Where-Object { $_ -ne '' })) {
     }
 }
 
-# Step 3: fallback -- exclude the NIC carrying the active remote session (SSH 22 /
-# RDP 3389).  Runs only when nothing was specified above.  Local-console runs have
-# no such session, so this correctly excludes nothing.
-if ($_excluded.Count -eq 0) {
-    try {
-        $mgmtPorts = @(22, 3389)
-        $sessionIps = @(Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
-            Where-Object { $mgmtPorts -contains $_.LocalPort -and
-                           $_.RemoteAddress -notin @('127.0.0.1', '::1') } |
-            Select-Object -ExpandProperty LocalAddress -Unique)
-        foreach ($lip in $sessionIps) {
-            $own = Get-NetIPAddress -IPAddress $lip -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($null -ne $own) {
-                $nicName = (Get-NetAdapter -InterfaceIndex $own.InterfaceIndex -ErrorAction SilentlyContinue).Name
-                if ($null -ne $nicName -and -not $_excluded.Contains($nicName)) {
-                    [void]$_excluded.Add($nicName)
-                    Write-Host ("         Excl (session)  : $nicName  (carries active SSH/RDP session, local $lip)") -ForegroundColor DarkGray
-                }
+# Step 3: ALWAYS exclude the NIC carrying the active remote session (SSH 22 /
+# RDP 3389), in addition to anything specified above.  This must NOT be a
+# fallback that only runs when no MAC/-Lifeline was given: if the operator pins
+# a management MAC but their live SSH actually terminates on a different NIC
+# (e.g. an Intel test NIC, because routing chose it), skipping this detection
+# would leave that NIC testable -- the first speed change then forces a static
+# IP + adapter bounce on the wire carrying SSH and the session drops with no way
+# back until the run ends.  Detecting and excluding the genuine session NIC
+# unconditionally guarantees the lifeline is never reconfigured.  A local-console
+# run has no such session, so this correctly excludes nothing.
+try {
+    $mgmtPorts = @(22, 3389)
+    $sessionIps = @(Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
+        Where-Object { $mgmtPorts -contains $_.LocalPort -and
+                       $_.RemoteAddress -notin @('127.0.0.1', '::1') } |
+        Select-Object -ExpandProperty LocalAddress -Unique)
+    foreach ($lip in $sessionIps) {
+        $own = Get-NetIPAddress -IPAddress $lip -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($null -ne $own) {
+            $nicName = (Get-NetAdapter -InterfaceIndex $own.InterfaceIndex -ErrorAction SilentlyContinue).Name
+            if ($null -ne $nicName -and -not $_excluded.Contains($nicName)) {
+                [void]$_excluded.Add($nicName)
+                Write-Host ("         Excl (session)  : $nicName  (carries active SSH/RDP session, local $lip)") -ForegroundColor DarkGray
             }
         }
-        if ($_excluded.Count -eq 0) {
-            Write-Host ("         Lifeline       : none detected (local console; no NIC excluded)") -ForegroundColor DarkGray
-        }
-    } catch {}
-}
+    }
+    if ($_excluded.Count -eq 0) {
+        Write-Host ("         Lifeline       : none detected (local console; no NIC excluded)") -ForegroundColor DarkGray
+    }
+} catch {}
 
 # -- Build skip set (NET011) ---------------------------------------------------
 $_skipSet = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -888,24 +893,6 @@ $_pairJobBlock = {
         }
     }
 
-    # NET017 robustness: kill any leftover iperf3.exe bound to this pair's IPs.
-    # Regular per-direction tests and the bidirectional pass (NET017) share port
-    # 5201 (bidir's PortA == $port); if a previous loop's bidir server on
-    # $v4odd:5201 was not fully reaped, the next loop's Start-IperfServer call on
-    # the same port/IP fails to bind while the stale process keeps the port
-    # "open" -- Test-IperfPortReady then sees a listener and reports ready, but
-    # the iperf3 client hangs against the stale server until "Connection timed
-    # out", and every retry hits the same stale process. Call this before each
-    # speed's iperf block and again after the bidirectional pass as a safety net.
-    function Stop-StalePairIperf {
-        param([string]$EvenIp, [string]$OddIp)
-        try {
-            Get-CimInstance Win32_Process -Filter "Name='iperf3.exe'" -ErrorAction Stop |
-                Where-Object { $_.CommandLine -and ($_.CommandLine -like "*$EvenIp*" -or $_.CommandLine -like "*$OddIp*") } |
-                ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-        } catch { }
-    }
-
     function Start-IperfServer {
         param([string]$BindIp, [int]$Port, [bool]$Dry)
         if ($Dry) { return 0 }
@@ -1224,8 +1211,6 @@ $_pairJobBlock = {
                 $errBeforeOdd  = Get-NicErrCounters -Nic $OddNic
             }
 
-            if (-not $Dry) { Stop-StalePairIperf -EvenIp $v4even -OddIp $v4odd }
-
             "[TCP Reverse]" | Add-Content $pairLog
             Invoke-IperfMeasured -ClientIp $v4even -ServerIp $v4odd -Port $port -SpeedM $mbps `
                 -TimeSec $IperfTime -Omit $IperfOmit -Reverse $true -Udp $false -LogFile $logTcpRev -Dry $Dry -PairLog $pairLog
@@ -1258,9 +1243,6 @@ $_pairJobBlock = {
                 $bidirRev = (Get-IperfStats $logBiRev).mbps
                 $bidirSum = [Math]::Round($bidirFwd + $bidirRev, 2)
                 "  bidir fwd=${bidirFwd}M rev=${bidirRev}M sum=${bidirSum}M" | Add-Content $pairLog
-                # Safety net: PortA (bidir) == $port (regular tests) on $v4odd, so
-                # make sure nothing from this pass survives into the next speed/loop.
-                Stop-StalePairIperf -EvenIp $v4even -OddIp $v4odd
             }
 
             # NET017: collect iperf3 quality metrics (retransmits / jitter / loss).
