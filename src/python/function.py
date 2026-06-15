@@ -158,8 +158,9 @@ def notify_dut(
     dry_run: bool = False,
     max_wait: int = 60,
     retry_interval: float = 10.0,
+    dut_os: str = "windows",
 ) -> Optional[threading.Thread]:
-    """Send a msg.exe popup to the DUT's interactive desktop after boot.
+    """Display an in-progress notification on the DUT (FWK032).
 
     Runs in a background daemon thread.  Returns the Thread object so the
     caller can optionally join() it before starting the next action.
@@ -169,12 +170,18 @@ def notify_dut(
     reboot.py: join(timeout=N) before the next reboot command, otherwise
       the shutdown races ahead of the notification delivery.
 
-    Before sending msg.exe, polls 'query session' until an Active desktop
-    session exists (up to max_wait seconds).  This handles the race where
-    sshd starts before the interactive logon session is ready.
+    dut_os selects the per-platform mechanism (FWK032):
+      "windows" — polls 'query session' until an Active desktop session
+        exists (up to max_wait seconds), then sends 'msg * <message>'.
+        This handles the race where sshd starts before the interactive
+        logon session is ready.
+      "linux"   — polls SSH readiness with a no-op command (up to max_wait
+        seconds), then broadcasts the message to all TTYs with
+        'wall <message>'. 'wall' does not require an active GUI/login
+        session, so no session-detection step is needed.
 
-    Fails silently throughout — msg.exe may be absent (Windows Home) or
-    no user may be logged in.  Returns None when dry_run or no ssh_user.
+    Fails silently throughout — msg.exe/wall may be unavailable or no user
+    may be logged in.  Returns None when dry_run or no ssh_user.
     """
     if dry_run or not ssh_user or not host:
         return None
@@ -205,6 +212,23 @@ def notify_dut(
 
         deadline = time.monotonic() + max_wait
         attempt = 0
+
+        if dut_os == "linux":
+            while time.monotonic() < deadline:
+                rc, _ = _ssh("true")
+                log.debug("notify_dut: ssh readiness rc=%d", rc)
+                if rc == 0:
+                    _ssh(f"wall {message!r}")
+                    log.info("notify_dut: wall sent on attempt %d", attempt + 1)
+                    return
+                attempt += 1
+                log.info("notify_dut: SSH not ready yet (attempt %d/%d), retry in %.0fs",
+                         attempt, int(max_wait / retry_interval), retry_interval)
+                time.sleep(min(retry_interval, deadline - time.monotonic()))
+
+            log.warning("notify_dut: SSH not ready within %ds — wall notification skipped", max_wait)
+            return
+
         while time.monotonic() < deadline:
             rc, out = _ssh("query session")
             log.debug("notify_dut: query session rc=%d out=%r", rc, out)

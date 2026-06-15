@@ -253,6 +253,7 @@ def run_one_cycle(
             args.ssh_user, args.host, args.port,
             f"Reboot test in progress - cycle {n}/{total}. Do not use.",
             dry_run=args.dry_run,
+            dut_os=args.dut_os,
         )
         # Join the notification thread before starting the next reboot: without
         # this, the next shutdown /r /t 0 races ahead and the DUT is already

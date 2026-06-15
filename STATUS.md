@@ -1,16 +1,16 @@
 # Project Status
 
-_Generated 2026-06-15 02:14 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-06-15 05:37 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
-**Total:** 139
+**Total:** 140
 
 ### By priority
 
 | Priority | Count |
 | --- | --- |
-| Must | 119 |
+| Must | 120 |
 | Should | 18 |
 | — | 2 |
 
@@ -20,13 +20,13 @@ _Generated 2026-06-15 02:14 · regenerate with `python scripts/stats.py > STATUS
 | --- | --- |
 | proposed | 107 |
 | implementing | 7 |
-| implemented | 25 |
+| implemented | 26 |
 
 ```mermaid
 pie showData title Requirements by status
     "proposed" : 107
     "implementing" : 7
-    "implemented" : 25
+    "implemented" : 26
 ```
 
 ### By section
@@ -42,7 +42,7 @@ pie showData title Requirements by status
 | LOG | 24 | 0 | 24 |
 | NET | 17 | 0 | 17 |
 | PWR | 14 | 0 | 1 |
-| SET | 6 | 0 | 4 |
+| SET | 7 | 0 | 4 |
 | SLP | 5 | 0 | 5 |
 
 ### Must-priority requirements not yet implemented
@@ -270,4 +270,5 @@ _(may indicate untested code paths — worth a review)_
 | [PWR013](requirements/PWR013.md) | implemented | Reboot Test Initial State Normalisation |
 | [SET005](requirements/SET005.md) | implemented | Windows DUT Pre-test Bootstrap Script |
 | [SET006](requirements/SET006.md) | implemented | Dual-Layer Configuration: config.py as Default Reference |
+| [SET007](requirements/SET007.md) | implemented | Linux DUT Pre-test Bootstrap Script |
 

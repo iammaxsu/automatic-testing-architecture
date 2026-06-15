@@ -184,6 +184,7 @@ def run_one_cycle(
             args.ssh_user, args.host, args.port,
             f"Power cycle test in progress - cycle {n}/{_total}. Do not use.",
             dry_run=args.dry_run,
+            dut_os=args.dut_os,
         )
     else:
         log.info("Cycle %d: liveness check disabled — sleeping %d s for boot", n, 30)
