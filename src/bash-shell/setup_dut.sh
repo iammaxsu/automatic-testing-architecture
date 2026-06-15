@@ -28,13 +28,18 @@
 # Usage:
 #   sudo ./setup_dut.sh [options]
 #
-# Options:
-#   --test-user USERNAME       Account the Pi controller logs in as
-#                               (default: $SUDO_USER, or current user if not under sudo)
+# Options (all optional — zero-argument runs are supported, FWK034):
+#   --test-user USERNAME       Account the Pi controller logs in as.
+#                               Auto-detected when omitted: the sudo invoker
+#                               ($SUDO_USER), else the first regular human account
+#                               (UID >= 1000 with a /home directory).
 #   --pi-key "ssh-ed25519 AAAA...key... pi@raspberrypi"
 #                               Public key of the Pi controller (contents of
 #                               ~/.ssh/id_ed25519.pub on the Pi). Installed into
 #                               --test-user's authorized_keys (idempotent).
+#                               Auto-detected when omitted: a single *.pub file
+#                               sitting next to this script, else an interactive
+#                               paste prompt when run on a terminal.
 #   --pi-key-file PATH          Same as --pi-key but read the key from a file.
 #   --dev-detect-script PATH    Path to dev_detect.sh to register as a boot-time
 #                               systemd service. Default: auto-detect a sibling
@@ -87,20 +92,21 @@ echo "setup_dut.sh v${_script_ver}"
 _entry="$(readlink -f "${BASH_SOURCE[0]:-$0}")"
 _script_root="$(cd "$(dirname "${_entry}")" && pwd)"
 
-_test_user="${SUDO_USER:-${USER}}"
+_test_user=""           # empty = auto-detect after parsing (see below)
 _pi_key=""
+_pi_key_source=""       # human-readable origin of the key, for log messages
 _dev_detect_script=""
 _dev_detect_delay=30
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --test-user)         _test_user="$2"; shift 2 ;;
-    --pi-key)            _pi_key="$2"; shift 2 ;;
-    --pi-key-file)       _pi_key="$(cat "$2")"; shift 2 ;;
+    --pi-key)            _pi_key="$2"; _pi_key_source="--pi-key argument"; shift 2 ;;
+    --pi-key-file)       _pi_key="$(cat "$2")"; _pi_key_source="$2"; shift 2 ;;
     --dev-detect-script) _dev_detect_script="$2"; shift 2 ;;
     --dev-detect-delay)  _dev_detect_delay="$2"; shift 2 ;;
     -h|--help)
-      sed -n '2,55p' "${_entry}" | sed 's/^# \{0,1\}//'
+      sed -n '2,60p' "${_entry}" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -119,10 +125,66 @@ if [[ -z "${_dev_detect_script}" ]]; then
   fi
 fi
 
+# ---------- Auto-detect the test user (FWK034) ---------------------------------
+# The account the Pi controller logs in as. Priority:
+#   1. --test-user (explicit)
+#   2. the sudo invoker ($SUDO_USER), when it is a real (non-root) account
+#   3. the first regular human account (UID 1000-59999 with a /home directory)
+if [[ -z "${_test_user}" ]]; then
+  if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    _test_user="${SUDO_USER}"
+    echo "         Auto-detected test user (sudo invoker)      : ${_test_user}"
+  else
+    _test_user="$(getent passwd \
+      | awk -F: '$3>=1000 && $3<60000 && $6 ~ /^\/home\// {print $1; exit}')"
+    if [[ -n "${_test_user}" ]]; then
+      echo "         Auto-detected test user (first human account): ${_test_user}"
+    else
+      echo "ERROR: could not auto-detect a test user; pass --test-user USERNAME" >&2
+      exit 1
+    fi
+  fi
+fi
+
 _target_home="$(getent passwd "${_test_user}" | cut -d: -f6)"
 if [[ -z "${_target_home}" ]]; then
   echo "ERROR: user '${_test_user}' not found (pass --test-user)" >&2
   exit 1
+fi
+
+# ---------- Auto-detect the Pi public key (FWK034) -----------------------------
+# Resolve the controller's SSH public key when --pi-key/--pi-key-file was not
+# given. Priority:
+#   1. explicit --pi-key / --pi-key-file (handled above)
+#   2. a single *.pub file deployed next to this script (the Pi can drop its
+#      public key into the same folder it copies the scripts into)
+#   3. an interactive paste prompt, only when running attached to a terminal
+# If none is found the SSH-key step reports it and continues (see step 3).
+if [[ -z "${_pi_key}" ]]; then
+  shopt -s nullglob
+  _pub_candidates=( "${_script_root}"/*.pub )
+  shopt -u nullglob
+  if (( ${#_pub_candidates[@]} == 1 )); then
+    _pi_key="$(cat "${_pub_candidates[0]}")"
+    _pi_key_source="${_pub_candidates[0]}"
+    echo "         Auto-detected Pi public key file             : ${_pub_candidates[0]}"
+  elif (( ${#_pub_candidates[@]} > 1 )); then
+    echo "         Multiple *.pub files next to the script — not guessing:"
+    printf '           - %s\n' "${_pub_candidates[@]}"
+    echo "         Pass --pi-key-file to choose one."
+  fi
+
+  if [[ -z "${_pi_key}" && -t 0 ]]; then
+    echo
+    echo "  No Pi public key supplied and none found next to the script."
+    echo "  On the Raspberry Pi controller run:  cat ~/.ssh/id_ed25519.pub"
+    echo "  then paste that single line here (or press Enter to skip):"
+    read -r -p "  Pi public key> " _pasted || true
+    if [[ -n "${_pasted:-}" ]]; then
+      _pi_key="${_pasted}"
+      _pi_key_source="interactive paste"
+    fi
+  fi
 fi
 
 
@@ -180,6 +242,13 @@ _step "3 / 8  SSH key for ${_test_user}"
 _ssh_dir="${_target_home}/.ssh"
 _auth_file="${_ssh_dir}/authorized_keys"
 
+# Count keys already authorized (non-comment, non-blank lines).
+_existing_keys=0
+if [[ -f "${_auth_file}" ]]; then
+  _existing_keys="$(grep -cE '^[^#[:space:]]' "${_auth_file}" 2>/dev/null)" || true
+  _existing_keys="${_existing_keys:-0}"
+fi
+
 if [[ -n "${_pi_key}" ]]; then
   mkdir -p "${_ssh_dir}"
   chmod 700 "${_ssh_dir}"
@@ -187,19 +256,27 @@ if [[ -n "${_pi_key}" ]]; then
   chmod 600 "${_auth_file}"
 
   if grep -qF "${_pi_key}" "${_auth_file}" 2>/dev/null; then
-    _skip "Pi SSH public key already present in ${_auth_file}"
+    _skip "Pi SSH public key already authorized (${_pi_key_source}) — nothing to do"
   else
     echo "${_pi_key}" >> "${_auth_file}"
-    _ok "Pi SSH public key appended to ${_auth_file}"
+    _ok "Pi SSH public key installed from ${_pi_key_source}"
   fi
 
   chown -R "${_test_user}:${_test_user}" "${_ssh_dir}"
   _ok "ownership/permissions fixed: ${_ssh_dir} (700), authorized_keys (600)"
   echo "         Test from the Pi: ssh ${_test_user}@<this-host>"
+elif (( _existing_keys > 0 )); then
+  # No key resolved this run, but the account already has authorized keys —
+  # treat SSH authorization as already configured and move on.
+  _skip "SSH authorization already present: ${_existing_keys} key(s) in ${_auth_file}"
+  echo "         No --pi-key given and no *.pub beside the script; assuming this DUT"
+  echo "         is already authorized. Pass --pi-key to add/verify a specific key."
 else
-  _skip "SSH key install skipped (no --pi-key / --pi-key-file supplied)"
-  echo "         Obtain the key on the Pi with: cat ~/.ssh/id_ed25519.pub"
-  echo "         then re-run: sudo ./setup_dut.sh --test-user ${_test_user} --pi-key \"<key>\""
+  _warn "No SSH key authorized for ${_test_user}, and none was supplied or found"
+  echo "         Passwordless SSH from the Pi will NOT work until a key is added."
+  echo "         On the Pi:   cat ~/.ssh/id_ed25519.pub"
+  echo "         Then either drop that .pub file next to setup_dut.sh and re-run,"
+  echo "         or:  sudo ./setup_dut.sh --test-user ${_test_user} --pi-key \"<key>\""
 fi
 
 
@@ -377,11 +454,14 @@ echo
 echo "========================================================"
 echo "  DUT Setup Complete"
 echo "========================================================"
+echo "  Test user         : ${_test_user}"
 echo "  SSH (TCP 22)      : installed + running"
 if [[ -n "${_pi_key}" ]]; then
-  echo "  Pi SSH key        : installed (${_auth_file})"
+  echo "  Pi SSH key        : authorized (${_auth_file}, source: ${_pi_key_source})"
+elif (( ${_existing_keys:-0} > 0 )); then
+  echo "  Pi SSH key        : already authorized (${_existing_keys} key(s) — left as-is)"
 else
-  echo "  Pi SSH key        : not installed (pass --pi-key to enable passwordless SSH)"
+  echo "  Pi SSH key        : NOT authorized (pass --pi-key to enable passwordless SSH)"
 fi
 echo "  NOPASSWD sudo     : shutdown/reboot/poweroff for ${_test_user}"
 echo "  Power management  : no sleep / suspend / hibernate"
