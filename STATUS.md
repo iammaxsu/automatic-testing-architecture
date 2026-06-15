@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-06-12 15:35 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-06-15 02:14 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -127,7 +127,7 @@ pie showData title Requirements by status
 | [LOG022](requirements/LOG022.md) | proposed | ISO 8601 Timestamp Consistency |
 | [LOG023](requirements/LOG023.md) | proposed | Test Session Identity and Resume |
 | [NET001](requirements/NET001.md) | proposed | Enumerate enp and eno Interfaces |
-| [NET002](requirements/NET002.md) | proposed | Namespace-Based Loopback Testing |
+| [NET002](requirements/NET002.md) | proposed | Isolated Loopback Testing (Namespace / Weak Host Model) |
 | [NET003](requirements/NET003.md) | proposed | Clean Namespace State Before Testing |
 | [NET004](requirements/NET004.md) | proposed | Test at All Advertised Link Speeds |
 | [NET005](requirements/NET005.md) | proposed | ICMP Connectivity Verification |

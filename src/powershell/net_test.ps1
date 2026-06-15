@@ -32,6 +32,17 @@
     bound to those addresses, so traffic follows the physical cable path and not
     the OS default route.  Addresses are cleaned up on exit.
 
+    Because BOTH NICs of a pair sit on the same host in the same /24 (no kernel
+    namespace to separate them), the *weak host model* is enabled on both
+    interfaces (Set-NetIPInterface -WeakHostSend/-WeakHostReceive Enabled).
+    Without it, Windows' default strong host model only accepts a packet for a
+    local IP on the exact interface that owns it; after repeated adapter
+    Disable/Enable cycles the duplicate on-link route and the neighbor cache
+    drift and the iperf3 control SYN starts being dropped -- the link still
+    pings but every iperf3 connect "times out", progressively across loops.
+    The pair's neighbor (ARP/ND) cache is also flushed after each adapter bounce
+    so a stale entry cannot shadow the re-linked interface.
+
   PREREQUISITES
     - Administrator rights (IP + speed changes require elevation).
     - iperf3.exe -- auto-installed if missing (winget / choco / scoop, then a
@@ -102,7 +113,7 @@ trap {
     break
 }
 
-$_script_ver                = '00.00.30'
+$_script_ver                = '00.00.31'
 $_requires_function_ps1_api = '00.00.02'
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Write-Host "net_test.ps1 v$_script_ver" -ForegroundColor Cyan
@@ -833,6 +844,42 @@ $_pairJobBlock = {
             try { New-NetIPAddress -InterfaceAlias $x.Alias -IPAddress $x.IP `
                     -PrefixLength $x.PL -ErrorAction Stop | Out-Null } catch {}
         }
+
+        # CRITICAL for single-host back-to-back testing.  Both NICs of the pair
+        # live on the SAME host in the SAME /24 -- there is no network-namespace
+        # isolation like the Linux side has.  Under Windows' DEFAULT *strong host
+        # model*, a TCP SYN sent to 192.247.$Idx.11 (a LOCAL address) is only
+        # accepted if it arrives on the exact interface that owns that address;
+        # after repeated adapter Disable/Enable cycles the duplicate on-link route
+        # and the neighbor (ARP/ND) cache drift, so the SYN starts being dropped
+        # while ICMP -- which re-resolves ARP on every ping -- still succeeds.
+        # That is exactly the "ping PASS but iperf3 Connection timed out, getting
+        # worse every loop" failure.  Enabling the *weak host model* on both
+        # interfaces makes each NIC send/accept packets for the pair regardless of
+        # which interface they traverse, which is what actually forces the traffic
+        # across the physical cable and keeps it stable across bounces.
+        foreach ($n in @($Even, $Odd)) {
+            foreach ($af in @('IPv4','IPv6')) {
+                try {
+                    Set-NetIPInterface -InterfaceAlias $n -AddressFamily $af `
+                        -WeakHostSend Enabled -WeakHostReceive Enabled -ErrorAction Stop
+                } catch {}
+            }
+        }
+    }
+
+    # Flush the neighbor (ARP / ND) cache entries for this pair's test IPs.  After
+    # an adapter Disable/Enable the cached entry can go stale or "Unreachable",
+    # and a fresh TCP connect (unlike ping) will not always force re-resolution
+    # before its connect timeout -- so a stale entry is one of the things that
+    # makes iperf3 time out on an otherwise-up link.  Called right after every
+    # bounce, before the priming ping re-resolves the addresses cleanly.
+    function Clear-PairNeighbors {
+        param([int]$Idx, [string]$Even, [string]$Odd, [bool]$Dry)
+        if ($Dry) { return }
+        foreach ($ip in @("192.247.$Idx.1","192.247.$Idx.11","fd00:2470::${Idx}:1","fd00:2470::${Idx}:11")) {
+            try { Remove-NetNeighbor -IPAddress $ip -Confirm:$false -ErrorAction SilentlyContinue } catch {}
+        }
     }
 
     # Restore a NIC to DHCP / automatic addressing.  Assigning a static test IP
@@ -844,6 +891,12 @@ $_pairJobBlock = {
         param([string]$Nic, [bool]$Dry, [string]$LogPath)
         if ($Dry) { return }
         try {
+            # Restore the strong host model (Windows default) we changed in
+            # Add-PairIPs, so the NIC is returned to its pre-test state.
+            foreach ($af in @('IPv4','IPv6')) {
+                Set-NetIPInterface -InterfaceAlias $Nic -AddressFamily $af `
+                    -WeakHostSend Disabled -WeakHostReceive Disabled -ErrorAction SilentlyContinue
+            }
             Set-NetIPInterface -InterfaceAlias $Nic -AddressFamily IPv4 -Dhcp Enabled -ErrorAction SilentlyContinue
             Set-NetIPInterface -InterfaceAlias $Nic -AddressFamily IPv6 -Dhcp Enabled -ErrorAction SilentlyContinue
             Set-DnsClientServerAddress -InterfaceAlias $Nic -ResetServerAddresses -ErrorAction SilentlyContinue
@@ -1233,7 +1286,12 @@ $_pairJobBlock = {
             }
             $linkOk = Wait-PairLink -A $EvenNic -B $OddNic -Mbps $mbps -TimeoutSec $AutonegWait -Dry $Dry -LogPath $pairLog
 
-            # (Re-)assert the test IPs; a speed change bounces the link.
+            # (Re-)assert the test IPs; a speed change bounces the link.  Flush the
+            # pair's stale neighbor entries FIRST (the bounce can leave them
+            # Unreachable, which makes the iperf3 connect time out while ping still
+            # works), then re-add the IPs (which also re-enables the weak host
+            # model the bounce may have reset).
+            Clear-PairNeighbors -Idx $PairIdx -Even $EvenNic -Odd $OddNic -Dry $Dry
             Add-PairIPs -Idx $PairIdx -Even $EvenNic -Odd $OddNic -Dry $Dry
             if (-not $Dry) { Start-Sleep -Seconds 3 }   # NDP / DAD settle
 
@@ -1437,6 +1495,21 @@ $_pairJobBlock = {
                     foreach ($n in @($EvenNic, $OddNic)) {
                         $prof = Get-NetConnectionProfile -InterfaceAlias $n -ErrorAction SilentlyContinue
                         if ($prof) { "  [diag] ${n}: network profile = $($prof.NetworkCategory)" | Add-Content $pairLog }
+                    }
+                    # The single-host / shared-subnet root cause shows up here: the
+                    # route to the peer test IP, the neighbor (ARP) state, and the
+                    # weak-host-model flag.  A peer neighbor in 'Unreachable', or a
+                    # route pointing at the wrong/disabled interface, is the actual
+                    # reason a connect times out while ping still passes.
+                    foreach ($ip in @("192.247.$PairIdx.1","192.247.$PairIdx.11")) {
+                        $nb = Get-NetNeighbor -IPAddress $ip -ErrorAction SilentlyContinue | Select-Object -First 1
+                        if ($nb) { "  [diag] neighbor $ip -> $($nb.LinkLayerAddress) state=$($nb.State) if=$($nb.InterfaceAlias)" | Add-Content $pairLog }
+                        $rt = Get-NetRoute -DestinationPrefix "$ip/32" -ErrorAction SilentlyContinue | Select-Object -First 1
+                        if ($rt) { "  [diag] route $ip via if=$($rt.InterfaceAlias) metric=$($rt.RouteMetric)" | Add-Content $pairLog }
+                    }
+                    foreach ($n in @($EvenNic, $OddNic)) {
+                        $wh = Get-NetIPInterface -InterfaceAlias $n -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
+                        if ($wh) { "  [diag] ${n}: WeakHostSend=$($wh.WeakHostSend) WeakHostReceive=$($wh.WeakHostReceive)" | Add-Content $pairLog }
                     }
                 } catch {}
             }
