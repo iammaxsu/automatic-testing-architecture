@@ -524,6 +524,11 @@ def main() -> int:
         log.info("  %s : %s", state, v)
     overall_ok = all(v == PASS for v in verdicts.values()) and len(verdicts) > 0
     log.info("OVERALL: %s", "PASS" if overall_ok else "FAIL")
+
+    # Restore DUT test-environment settings (reverses setup_dut.sh changes).
+    if not _stop_requested and args.ssh_user:
+        function.restore_dut_env(args.host, args.port, args.ssh_user)
+
     return 0 if overall_ok else 2
 
 

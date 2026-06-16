@@ -48,6 +48,44 @@ def detect_dut_os(host: str, port: int, ssh_user: str, timeout: int = 10) -> str
         return "unknown"
 
 
+def restore_dut_env(host: str, port: int, ssh_user: str, timeout: int = 30) -> bool:
+    """SSH into the Linux DUT and run the test-environment restore helper.
+
+    The helper (config.DUT_RESTORE_HELPER, installed by setup_dut.sh) reverses
+    the logind drop-in and sleep-target masks without touching framework
+    infrastructure (SSH key, sudoers, dev-detect autorun). Never raises.
+    Returns True on success, False on any failure (caller logs a manual fallback
+    hint in the warning message).
+    """
+    log = logging.getLogger("function")
+    cmd = [
+        "ssh",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "BatchMode=yes",
+        "-o", f"ConnectTimeout={timeout}",
+        "-p", str(port),
+        f"{ssh_user}@{host}",
+        f"sudo {config.DUT_RESTORE_HELPER}",
+    ]
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout + 10
+        )
+        if result.returncode == 0:
+            log.info("DUT test-environment restored (%s@%s).", ssh_user, host)
+            return True
+        log.warning(
+            "DUT restore failed (exit %d) — run manually: sudo ./setup_dut.sh --restore\n%s",
+            result.returncode, result.stderr.strip(),
+        )
+        return False
+    except Exception as exc:
+        log.warning(
+            "DUT restore failed: %s — run manually: sudo ./setup_dut.sh --restore", exc
+        )
+        return False
+
+
 # ---------- DUT initialisation (FWK031) ----------
 
 def init_dut(

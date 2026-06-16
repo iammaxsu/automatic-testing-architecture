@@ -489,6 +489,10 @@ def main() -> int:
     session["updated_at"] = function.now_iso()
     function.write_json(str(session_path), session)
 
+    # Restore DUT test-environment settings (reverses setup_dut.sh changes).
+    if session.get("status") == "complete" and args.ssh_user:
+        function.restore_dut_env(args.host, args.port, args.ssh_user)
+
     result["ended_at"] = function.now_iso()
     summary = _build_summary(result["cycles"], m)
     result["summary"] = summary

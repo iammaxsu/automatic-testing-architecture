@@ -55,6 +55,12 @@ ON_TIME_SEC   = 90          # CLI: --on   Phase 2: how long to keep DUT on after
                             #   operator to abort the test before the next power-off.
 OFF_TIME_SEC  = 60          # CLI: --off   Phase 4: fixed wait after power-off
 
+# ---------- DUT test-environment restore ----------
+# Fixed path of the restore helper installed on the Linux DUT by setup_dut.sh.
+# Called via SSH (with sudo, NOPASSWD) when a test session completes to revert
+# logind and sleep-target changes. Manual fallback: sudo ./setup_dut.sh --restore
+DUT_RESTORE_HELPER    = "/usr/local/lib/automatic-testing/dut-restore-test-env"
+
 # ---------- DUT liveness (network) ----------
 DUT_HOST              = ""  # CLI: --host   IP/hostname; "" disables liveness checks
 DUT_PORT              = 22  # CLI: --port   TCP port to probe (22 = SSH)

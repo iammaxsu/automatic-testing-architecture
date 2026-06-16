@@ -310,17 +310,20 @@ else
 fi
 
 
-# ---------- 4. NOPASSWD sudo for shutdown / reboot --------------------------------
+# ---------- 4. NOPASSWD sudo for shutdown / reboot / restore --------------------
 #
 # shutdown.py's SSH shutdown method and reboot.py both run "sudo shutdown -h now"
 # / "sudo reboot" over a non-interactive SSH session (config._OS_SHUTDOWN_CMD /
 # _OS_REBOOT_CMD for dut_os=linux). Without NOPASSWD these hang waiting for a
 # password that BatchMode will never supply.
+# The restore helper is also included so the Pi can trigger test-environment
+# restore over SSH when a test session completes.
 
-_step "4 / 8  NOPASSWD sudo (shutdown / reboot / poweroff)"
+_step "4 / 8  NOPASSWD sudo (shutdown / reboot / poweroff / restore)"
 
+_restore_helper="/usr/local/lib/automatic-testing/dut-restore-test-env"
 _sudoers_file="/etc/sudoers.d/99-automatic-testing-${_test_user}"
-_sudoers_line="${_test_user} ALL=(ALL) NOPASSWD: /sbin/shutdown, /sbin/reboot, /sbin/poweroff, /usr/sbin/shutdown, /usr/sbin/reboot, /usr/sbin/poweroff"
+_sudoers_line="${_test_user} ALL=(ALL) NOPASSWD: /sbin/shutdown, /sbin/reboot, /sbin/poweroff, /usr/sbin/shutdown, /usr/sbin/reboot, /usr/sbin/poweroff, ${_restore_helper}"
 
 if [[ -f "${_sudoers_file}" ]] && grep -qF "${_sudoers_line}" "${_sudoers_file}"; then
   _skip "NOPASSWD sudo already configured: ${_sudoers_file}"
@@ -335,6 +338,42 @@ else
     _warn "visudo validation failed — sudoers file NOT written"
   fi
 fi
+
+# ---------- 4b. Deploy DUT restore helper ----------------------------------------
+#
+# A minimal script installed at a fixed well-known path so the Pi can call
+#   ssh user@dut "sudo /usr/local/lib/automatic-testing/dut-restore-test-env"
+# and reverse the test-environment changes without knowing where setup_dut.sh
+# lives. This is the only file placed in /usr/local; everything else stays in the
+# user's chosen deployment folder.
+
+_restore_helper_dir="$(dirname "${_restore_helper}")"
+mkdir -p "${_restore_helper_dir}"
+
+cat > "${_restore_helper}" <<'RESTORE_HELPER'
+#!/usr/bin/env bash
+# DUT test-environment restore helper — auto-installed by setup_dut.sh.
+# Reverses only the test-specific logind and sleep-target changes made by
+# setup_dut.sh. Framework infrastructure (SSH key, sudoers, dev-detect autorun)
+# is intentionally left in place.
+# Called by the Pi over SSH on test-session complete, or manually via:
+#   sudo ./setup_dut.sh --restore
+set -euo pipefail
+echo "[restore] Removing logind drop-in…"
+rm -f /etc/systemd/logind.conf.d/99-automatic-testing.conf
+for k in HandleLidSwitch HandleLidSwitchExternalPower HandleLidSwitchDocked \
+          HandleSuspendKey HandleHibernateKey IdleAction \
+          HandlePowerKey HandlePowerKeyLongPress; do
+  sed -i "/^${k}=/d" /etc/systemd/logind.conf 2>/dev/null || true
+done
+systemctl restart systemd-logind
+echo "[restore] Unmasking sleep targets…"
+systemctl unmask sleep.target suspend.target hibernate.target hybrid-sleep.target
+echo "[restore] DUT test-environment restored."
+RESTORE_HELPER
+
+chmod +x "${_restore_helper}"
+_ok "Restore helper deployed: ${_restore_helper}"
 
 
 # ---------- 5. Power management: disable sleep / suspend / hibernate -------------
@@ -493,7 +532,8 @@ elif (( ${_existing_keys:-0} > 0 )); then
 else
   echo "  Pi SSH key        : NOT authorized (pass --pi-key to enable passwordless SSH)"
 fi
-echo "  NOPASSWD sudo     : shutdown/reboot/poweroff for ${_test_user}"
+echo "  NOPASSWD sudo     : shutdown/reboot/poweroff/restore for ${_test_user}"
+echo "  Restore helper    : ${_restore_helper}  (auto-called by Pi on test complete)"
 echo "  Power management  : no sleep/suspend/hibernate; HandlePowerKey=poweroff"
 echo "  logind drop-in    : ${TEST_ENV_LOGIND_DROPIN}"
 echo "  Unattended-upgrades auto-reboot : disabled (if installed)"
