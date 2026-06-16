@@ -14,7 +14,7 @@
 #      (required by shutdown.py / reboot.py: "sudo shutdown -h now", "sudo reboot")
 #   5. Disables sleep/suspend/hibernate (systemd targets + logind idle action)
 #   6. Disables unattended-upgrades automatic reboot
-#   7. (Optional) Registers a systemd oneshot+timer to run dev_detect.sh at boot
+#   7. (Optional) Registers a systemd oneshot service to run dev_detect.sh at boot
 #   8. Ensures Python 3 is present and downloads report.py for HTML rendering
 #
 # This script is intentionally idempotent: running it multiple times is safe.
@@ -44,8 +44,8 @@
 #   --dev-detect-script PATH    Path to dev_detect.sh to register as a boot-time
 #                               systemd service. Default: auto-detect a sibling
 #                               dev_detect.sh next to this script (FWK034).
-#   --dev-detect-delay SEC      Delay after boot before running dev_detect.sh
-#                               (default: 30).
+#   --dev-detect-delay SEC      Seconds to sleep inside the service before
+#                               running dev_detect.sh (default: 30).
 #   -h, --help                  Show this help and exit.
 #
 # Examples:
@@ -366,8 +366,23 @@ fi
 
 
 # ---------- 7. dev_detect.sh at boot (optional) ------------------------------------
+#
+# The unit name MUST match what autorun_service_name_for("dev_detect.sh") derives:
+#   dev_detect.sh → strip extension → dev_detect → replace _ with - → dev-detect
+# This ensures dev_detect.sh's own autorun_setup() sees the service as already
+# installed and skips the redundant re-installation on its first manual run.
 
 _step "7 / 8  dev_detect.sh at boot"
+
+# --- Migrate: remove old dut-dev-detect.{timer,service} from previous versions ---
+_unit_dir="/etc/systemd/system"
+for _old_unit in dut-dev-detect.timer dut-dev-detect.service; do
+  if [[ -e "${_unit_dir}/${_old_unit}" ]]; then
+    systemctl disable --now "${_old_unit}" 2>/dev/null || true
+    rm -f "${_unit_dir}/${_old_unit}"
+    _ok "Removed obsolete unit: ${_old_unit}"
+  fi
+done
 
 if [[ -n "${_dev_detect_script}" ]]; then
   if [[ ! -f "${_dev_detect_script}" ]]; then
@@ -375,40 +390,44 @@ if [[ -n "${_dev_detect_script}" ]]; then
     echo "         Copy dev_detect.sh to the DUT first, then re-run with --dev-detect-script."
   else
     _dev_detect_script="$(readlink -f "${_dev_detect_script}")"
-    _unit_dir="/etc/systemd/system"
+    _dev_detect_workdir="$(cd "$(dirname "${_dev_detect_script}")" && pwd)"
+    _dev_detect_svc="dev-detect"
+    _dev_detect_unit="${_unit_dir}/${_dev_detect_svc}.service"
+    _dev_detect_log="${_dev_detect_workdir}/logs/systemd_${_dev_detect_svc}.log"
 
-    cat > "${_unit_dir}/dut-dev-detect.service" <<EOF
+    if systemctl is-enabled --quiet "${_dev_detect_svc}.service" 2>/dev/null; then
+      _skip "dev-detect.service already installed and enabled — nothing to do"
+    else
+      mkdir -p "$(dirname "${_dev_detect_log}")"
+      cat > "${_dev_detect_unit}" <<EOF
 [Unit]
-Description=Run dev_detect.sh for hardware baseline verification (DET012)
+Description=dev-detect (run once per boot until done)
 After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/bash ${_dev_detect_script}
-WorkingDirectory=$(dirname "${_dev_detect_script}")
-EOF
-
-    cat > "${_unit_dir}/dut-dev-detect.timer" <<EOF
-[Unit]
-Description=Run dut-dev-detect.service ${_dev_detect_delay}s after boot
-
-[Timer]
-OnBootSec=${_dev_detect_delay}s
-AccuracySec=1s
+User=root
+WorkingDirectory=${_dev_detect_workdir}
+ExecStartPre=/usr/bin/mkdir -p $(dirname "${_dev_detect_log}")
+ExecStartPre=/usr/bin/sleep ${_dev_detect_delay}
+StandardOutput=append:${_dev_detect_log}
+StandardError=append:${_dev_detect_log}
+ExecStart=/usr/bin/env bash -lc '${_dev_detect_script}'
 
 [Install]
-WantedBy=timers.target
+WantedBy=multi-user.target
 EOF
-
-    systemctl daemon-reload
-    systemctl enable --now dut-dev-detect.timer >/dev/null
-    _ok "systemd timer 'dut-dev-detect.timer' registered (boot + ${_dev_detect_delay}s, runs as root)"
-    echo "         Script : ${_dev_detect_script}"
+      systemctl daemon-reload
+      systemctl enable "${_dev_detect_svc}.service" >/dev/null 2>&1
+      _ok "systemd service 'dev-detect.service' registered (boot + ${_dev_detect_delay}s sleep, runs as root)"
+      echo "         Script : ${_dev_detect_script}"
+    fi
   fi
 else
   _skip "dev_detect.sh not configured (not found next to setup_dut.sh)"
   echo "         Place dev_detect.sh in the same folder as setup_dut.sh, or pass"
-  echo "         --dev-detect-script with its full path, to register the boot timer."
+  echo "         --dev-detect-script with its full path, to register the boot service."
 fi
 
 
@@ -467,9 +486,9 @@ echo "  NOPASSWD sudo     : shutdown/reboot/poweroff for ${_test_user}"
 echo "  Power management  : no sleep / suspend / hibernate"
 echo "  Unattended-upgrades auto-reboot : disabled (if installed)"
 if [[ -n "${_dev_detect_script}" && -f "${_dev_detect_script}" ]]; then
-  echo "  systemd timer     : dut-dev-detect.timer (boot + ${_dev_detect_delay}s, as root)"
+  echo "  dev-detect service: dev-detect.service (boot + ${_dev_detect_delay}s sleep, as root)"
 else
-  echo "  systemd timer     : dut-dev-detect.timer not configured"
+  echo "  dev-detect service: dev-detect.service not configured"
 fi
 if [[ "${_python_ready:-0}" -eq 1 ]]; then
   echo "  Python runtime    : available"
