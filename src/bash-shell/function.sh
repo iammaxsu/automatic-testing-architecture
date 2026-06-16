@@ -1221,6 +1221,121 @@ autorun_uninstall() {
   echo "[INFO] Service ${svc}.service uninstalled."
 }
 
+# ---------- DUT test-environment mutations (reversible) ----------
+#
+# 為了「測試」而對 DUT 做的環境改動，一律成對提供 apply / restore，讓
+# setup_dut.sh（套用）與 restore 入口（還原）共用同一份邏輯，不再各自
+# 手刻、不再有名稱/行為不一致的問題。
+#
+# 範圍原則：
+#   - 屬於「為單次測試而暫時改變使用者日常行為」的設定（電源鍵、合蓋、
+#     睡眠、idle）→ 納入，測完必須能完整還原。
+#   - 讓自動框架本身能運作的基礎設施（Pi SSH 公鑰、NOPASSWD sudoers、
+#     dev-detect autorun）→ 不屬於此範圍，由各自的生命週期管理，restore
+#     不會動它們。
+#
+# 這些函式假設呼叫者具 root 權限（setup_dut.sh 與 restore 入口都有
+# FWK033 root 檢查）。每個函式回傳 0；是否實際變更以 echo 訊息呈現。
+
+TEST_ENV_LOGIND_DROPIN="/etc/systemd/logind.conf.d/99-automatic-testing.conf"
+TEST_ENV_SLEEP_TARGETS="sleep.target suspend.target hibernate.target hybrid-sleep.target"
+
+# 清掉舊版本曾直接寫進 /etc/systemd/logind.conf 的測試用 key（migration）。
+# 回傳：有刪到任何一行 → 0，否則 → 1
+_test_env_logind_strip_inline() {
+  local conf="/etc/systemd/logind.conf" k changed=1
+  local keys=(HandleLidSwitch HandleLidSwitchExternalPower HandleLidSwitchDocked
+              HandleSuspendKey HandleHibernateKey IdleAction
+              HandlePowerKey HandlePowerKeyLongPress)
+  for k in "${keys[@]}"; do
+    if grep -qE "^${k}=" "$conf" 2>/dev/null; then
+      sed -i "/^${k}=/d" "$conf"; changed=0
+    fi
+  done
+  return "$changed"
+}
+
+# 套用 logind 測試設定：電源鍵直接 poweroff（繞過 GNOME 互動關機，
+# 避免 HANG_SHUTDOWN）、合蓋/睡眠/休眠鍵/idle 一律 ignore。
+# 全部寫進單一 drop-in 檔，不動主 logind.conf。
+test_env_logind_apply() {
+  local dropin="${TEST_ENV_LOGIND_DROPIN}" changed=0
+  mkdir -p "$(dirname "$dropin")"
+  _test_env_logind_strip_inline && changed=1
+
+  cat > "${dropin}.tmp" <<'LOGIND'
+# Managed by automatic-testing-architecture.
+# Apply  : test_env_logind_apply   (setup_dut.sh)
+# Restore: test_env_logind_restore  (setup_dut.sh --restore)
+[Login]
+HandleLidSwitch=ignore
+HandleLidSwitchExternalPower=ignore
+HandleLidSwitchDocked=ignore
+HandleSuspendKey=ignore
+HandleHibernateKey=ignore
+IdleAction=ignore
+HandlePowerKey=poweroff
+HandlePowerKeyLongPress=poweroff
+LOGIND
+
+  if [[ -f "$dropin" ]] && diff -q "${dropin}.tmp" "$dropin" >/dev/null 2>&1; then
+    rm -f "${dropin}.tmp"
+  else
+    mv "${dropin}.tmp" "$dropin"; changed=1
+  fi
+
+  if (( changed )); then
+    systemctl restart systemd-logind >/dev/null 2>&1 || true
+    echo "[test-env] logind: applied (HandlePowerKey=poweroff; lid/suspend/idle=ignore)"
+  else
+    echo "[test-env] logind: already current — no change"
+  fi
+  return 0
+}
+
+# 還原 logind：刪除 drop-in 並清掉任何殘留的 inline key，restart logind。
+test_env_logind_restore() {
+  local dropin="${TEST_ENV_LOGIND_DROPIN}" changed=0
+  if [[ -e "$dropin" ]]; then
+    rm -f "$dropin"; changed=1
+    echo "[test-env] logind: drop-in removed (${dropin})"
+  else
+    echo "[test-env] logind: no drop-in present"
+  fi
+  _test_env_logind_strip_inline && changed=1
+  if (( changed )); then
+    systemctl restart systemd-logind >/dev/null 2>&1 || true
+    echo "[test-env] logind: restored to system defaults"
+  fi
+  return 0
+}
+
+# mask 睡眠相關 target（避免 DUT 在 ON_TIME 進入低耗電被誤判為 CRASH）。
+test_env_sleep_mask() {
+  # shellcheck disable=SC2086
+  systemctl mask ${TEST_ENV_SLEEP_TARGETS} >/dev/null 2>&1 || true
+  echo "[test-env] sleep/suspend/hibernate/hybrid-sleep targets masked"
+  return 0
+}
+
+# unmask 睡眠相關 target。
+test_env_sleep_unmask() {
+  # shellcheck disable=SC2086
+  systemctl unmask ${TEST_ENV_SLEEP_TARGETS} >/dev/null 2>&1 || true
+  echo "[test-env] sleep/suspend/hibernate/hybrid-sleep targets unmasked"
+  return 0
+}
+
+# 聚合還原：把所有「為測試而做的暫時改動」改回來。restore 入口（setup_dut.sh
+# --restore，或測試完成後由 Pi 透過 SSH 呼叫）只需呼叫這一個函式。
+test_env_restore_all() {
+  echo "[test-env] Restoring DUT test-environment changes…"
+  test_env_logind_restore
+  test_env_sleep_unmask
+  echo "[test-env] Done. Framework infrastructure (SSH key, sudoers, dev-detect) left in place."
+  return 0
+}
+
 # ---------- Test progress notification ----------
 # 同時通知三個管道：
 #   1. terminal（進度條格式，含 ETA）

@@ -92,6 +92,20 @@ echo "setup_dut.sh v${_script_ver}"
 _entry="$(readlink -f "${BASH_SOURCE[0]:-$0}")"
 _script_root="$(cd "$(dirname "${_entry}")" && pwd)"
 
+# Reusable apply/restore logic lives in function.sh (single source of truth).
+# function.sh ships alongside the test scripts, so it is always present on a DUT
+# that runs tests; setup_dut.sh is deployed next to it.
+_fn_lib="${_script_root}/function.sh"
+if [[ -f "${_fn_lib}" ]]; then
+  # shellcheck disable=SC1090
+  source "${_fn_lib}"
+else
+  echo "ERROR: function.sh not found next to setup_dut.sh (${_fn_lib})." >&2
+  echo "       Copy function.sh into the same folder and re-run." >&2
+  exit 1
+fi
+
+_mode="setup"           # setup | restore
 _test_user=""           # empty = auto-detect after parsing (see below)
 _pi_key=""
 _pi_key_source=""       # human-readable origin of the key, for log messages
@@ -100,6 +114,7 @@ _dev_detect_delay=30
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --restore)           _mode="restore"; shift ;;
     --test-user)         _test_user="$2"; shift 2 ;;
     --pi-key)            _pi_key="$2"; _pi_key_source="--pi-key argument"; shift 2 ;;
     --pi-key-file)       _pi_key="$(cat "$2")"; _pi_key_source="$2"; shift 2 ;;
@@ -115,6 +130,21 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# ---------- Restore mode: undo test-environment mutations and exit ------------
+# Reverts only the "temporary, for-testing" changes (logind power-key/lid/idle
+# behavior, masked sleep targets). Framework infrastructure (SSH key, sudoers,
+# dev-detect autorun) is intentionally left in place. This entry point is what
+# the Pi calls over SSH once a test session completes, or what an operator runs
+# by hand when retiring the DUT.
+if [[ "${_mode}" == "restore" ]]; then
+  echo "Restore mode: reverting DUT test-environment changes…"
+  echo
+  test_env_restore_all
+  echo
+  echo "  Restore complete. Re-apply test settings any time with: sudo ./setup_dut.sh"
+  exit 0
+fi
 
 # ---------- Auto-detect sibling dev_detect.sh (FWK034) --------------------------
 if [[ -z "${_dev_detect_script}" ]]; then
@@ -309,75 +339,20 @@ fi
 
 # ---------- 5. Power management: disable sleep / suspend / hibernate -------------
 #
-# All logind power-key settings are written to a single drop-in file rather than
-# modifying /etc/systemd/logind.conf directly. Benefits:
-#   - Drop-in files take precedence over logind.conf (man logind.conf.d).
-#   - The main logind.conf is never modified — system upgrades won't conflict.
-#   - Fully reversible: delete the drop-in and restart systemd-logind.
-# HandlePowerKey=poweroff makes logind handle the ATX short-press immediately
-# (kernel→logind→poweroff), bypassing the GNOME session manager's interactive
-# shutdown dialog which causes HANG_SHUTDOWN during power_cycle.py tests.
+# The apply/restore logic lives in function.sh (test_env_* helpers) so that
+# `setup_dut.sh` (apply) and `setup_dut.sh --restore` (revert) share one source
+# of truth. All logind settings go into a single drop-in file
+# (/etc/systemd/logind.conf.d/99-automatic-testing.conf), never the main
+# logind.conf, so the change is fully reversible. HandlePowerKey=poweroff makes
+# logind handle the ATX short-press immediately (kernel→logind→poweroff),
+# bypassing the GNOME session manager's interactive shutdown dialog that causes
+# HANG_SHUTDOWN during power_cycle.py tests.
 
 _step "5 / 8  Power management (no sleep / suspend / hibernate)"
 
-systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target >/dev/null 2>&1
-_ok "systemd sleep/suspend/hibernate/hybrid-sleep targets masked"
-
-_logind_conf="/etc/systemd/logind.conf"
-_logind_dropin_dir="/etc/systemd/logind.conf.d"
-_logind_dropin="${_logind_dropin_dir}/99-automatic-testing.conf"
-_logind_changed=0
-
-# --- Migrate: remove any keys we previously wrote directly into logind.conf ------
-_old_keys=(HandleLidSwitch HandleLidSwitchExternalPower HandleLidSwitchDocked
-           HandleSuspendKey HandleHibernateKey IdleAction
-           HandlePowerKey HandlePowerKeyLongPress)
-for _key in "${_old_keys[@]}"; do
-  if grep -qE "^${_key}=" "${_logind_conf}" 2>/dev/null; then
-    sed -i "/^${_key}=/d" "${_logind_conf}"
-    _logind_changed=1
-  fi
-done
-if [[ "${_logind_changed}" -eq 1 ]]; then
-  _ok "Removed old logind.conf direct entries (migrating to drop-in)"
-fi
-
-# --- Write drop-in file (idempotent; all settings in one reversible place) -------
-mkdir -p "${_logind_dropin_dir}"
-cat > "${_logind_dropin}.tmp" <<'LOGIND'
-# Managed by automatic-testing-architecture (setup_dut.sh).
-# To restore defaults:
-#   sudo rm /etc/systemd/logind.conf.d/99-automatic-testing.conf
-#   sudo systemctl restart systemd-logind
-[Login]
-HandleLidSwitch=ignore
-HandleLidSwitchExternalPower=ignore
-HandleLidSwitchDocked=ignore
-HandleSuspendKey=ignore
-HandleHibernateKey=ignore
-IdleAction=ignore
-HandlePowerKey=poweroff
-HandlePowerKeyLongPress=poweroff
-LOGIND
-
-if [[ -f "${_logind_dropin}" ]] && diff -q "${_logind_dropin}.tmp" "${_logind_dropin}" >/dev/null 2>&1; then
-  rm "${_logind_dropin}.tmp"
-  if [[ "${_logind_changed}" -eq 0 ]]; then
-    _skip "logind drop-in already up to date: ${_logind_dropin}"
-  fi
-else
-  mv "${_logind_dropin}.tmp" "${_logind_dropin}"
-  _logind_changed=1
-  _ok "logind drop-in written: ${_logind_dropin}"
-  echo "         lid/suspend/hibernate/idle → ignore"
-  echo "         HandlePowerKey/LongPress   → poweroff (bypasses GNOME interactive dialog)"
-fi
-
-if [[ "${_logind_changed}" -eq 1 ]]; then
-  systemctl restart systemd-logind >/dev/null 2>&1 || true
-  echo "         systemd-logind restarted"
-  echo "         Restore: sudo rm ${_logind_dropin} && sudo systemctl restart systemd-logind"
-fi
+test_env_sleep_mask
+test_env_logind_apply
+echo "         Restore: sudo ./setup_dut.sh --restore"
 
 
 # ---------- 6. Disable unattended-upgrades automatic reboot -----------------------
@@ -520,7 +495,7 @@ else
 fi
 echo "  NOPASSWD sudo     : shutdown/reboot/poweroff for ${_test_user}"
 echo "  Power management  : no sleep/suspend/hibernate; HandlePowerKey=poweroff"
-echo "  logind drop-in    : ${_logind_dropin}"
+echo "  logind drop-in    : ${TEST_ENV_LOGIND_DROPIN}"
 echo "  Unattended-upgrades auto-reboot : disabled (if installed)"
 if [[ -n "${_dev_detect_script}" && -f "${_dev_detect_script}" ]]; then
   echo "  dev-detect service: dev-detect.service (boot + ${_dev_detect_delay}s sleep, as root)"
