@@ -425,6 +425,10 @@ def main() -> int:
         log.warning("DUT_HOST is not set — liveness checks disabled")
 
     # Resolve DUT OS: probe via SSH when "auto", then pick the right shutdown command.
+    # Note: probing runs before warmup, so the DUT may still be off.  If SSH fails
+    # (exit 255, connection refused), detect_dut_os() returns "unknown" and we fall
+    # back to config.DUT_OS.  Set DUT_OS = "linux" in config.py so the fallback is
+    # correct when the DUT is offline at startup.
     if args.dut_os == "auto":
         if args.dry_run or args.no_check or not args.ssh_user or not args.host:
             args.dut_os = config.DUT_OS

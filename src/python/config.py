@@ -137,8 +137,10 @@ INIT_WAIT_SEC = 0           # CLI: --init-wait
 # This selects the correct default SSH commands for reboot and graceful shutdown.
 # Override the individual commands at runtime with --ssh-cmd if needed.
 # When SHUTDOWN_SSH_USER is set, the OS is auto-detected via SSH at startup
-# (uname -s) and this default is used only as a fallback.
-DUT_OS = "windows"
+# (uname -s) and this default is used as a fallback when the DUT is offline
+# at test start (SSH returns exit 255 → "unknown" → falls back to this value).
+# Set this to match your DUT's OS so the fallback is always correct.
+DUT_OS = "linux"
 
 # OS-specific SSH command defaults.  Not intended to be set directly;
 # scripts derive their defaults from these dicts using DUT_OS or --dut-os.

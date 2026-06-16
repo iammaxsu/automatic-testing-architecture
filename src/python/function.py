@@ -19,10 +19,13 @@ def detect_dut_os(host: str, port: int, ssh_user: str, timeout: int = 10) -> str
 
     Sends 'uname -s':
       Linux  → exits 0, stdout contains "Linux"  → returns "linux"
-      Windows cmd.exe / PowerShell → uname not found, exit ≠ 0 → returns "windows"
+      Windows cmd.exe / PowerShell → uname not found, exit 1  → returns "windows"
+      SSH unreachable (exit 255, timeout, exception)           → returns "unknown"
 
-    Returns "linux", "windows", or "unknown" (SSH unreachable or unexpected output).
-    Never raises.
+    Exit 255 means the SSH layer itself failed (connection refused, host offline)
+    and says nothing about the OS — treated as "unknown", not "windows".
+
+    Returns "linux", "windows", or "unknown". Never raises.
     """
     log = logging.getLogger("function")
     cmd = [
@@ -41,6 +44,11 @@ def detect_dut_os(host: str, port: int, ssh_user: str, timeout: int = 10) -> str
         if result.returncode == 0 and "Linux" in result.stdout:
             log.info("DUT OS detected: linux (uname -s → %s)", result.stdout.strip())
             return "linux"
+        if result.returncode == 255:
+            # SSH transport failure (connection refused, host unreachable, auth failure
+            # in BatchMode).  This tells us nothing about the OS.
+            log.warning("DUT OS detection: SSH failed (exit 255, host offline?) — unknown")
+            return "unknown"
         log.info("DUT OS detected: windows (uname -s exit %d)", result.returncode)
         return "windows"
     except Exception as exc:
