@@ -105,7 +105,22 @@ def parse_args() -> argparse.Namespace:
                    help="Initialization cycles before counted test (default: %(default)s)")
     p.add_argument("--boot-timeout", default=config.BOOT_TIMEOUT_SEC, type=int,
                    dest="boot_timeout",
-                   help="Max seconds waiting for DUT to boot (default: %(default)s)")
+                   help="Boot ceiling for the main counted test in seconds. "
+                        "Overridden by auto-calibration when --calibrate > 0. "
+                        "(default: %(default)s)")
+    p.add_argument("--boot-ceiling", default=config.BOOT_CEILING_SEC, type=int,
+                   dest="boot_ceiling",
+                   help="Absolute maximum boot wait for the calibration phase and hard "
+                        "fallback when calibration is disabled. "
+                        "Any platform not alive within this limit is NO_BOOT. "
+                        "(default: %(default)s)")
+    p.add_argument("--calibrate", default=config.CALIBRATE_CYCLES, type=int,
+                   dest="calibrate_cycles",
+                   help="Calibration cycles to run after warmup (0 = disabled). "
+                        "Measures actual boot time and auto-sets --boot-timeout for the "
+                        "main test as max(observed) × %(const)s. "
+                        "(default: %(default)s)",
+                   const=config.CALIBRATE_SAFETY_FACTOR)
     p.add_argument("--dut-os",   default="auto",
                    choices=["auto", "windows", "linux"], dest="dut_os",
                    help="DUT operating system: auto (probe via SSH), windows, or linux. "
@@ -270,6 +285,69 @@ def run_one_cycle(
     return rec
 
 
+def _run_calibrate_phase(
+    args: argparse.Namespace,
+    relay: RelayController,
+    checker,
+    shutdown_coord: ShutdownCoordinator,
+    result: dict,
+) -> None:
+    """Run calibrate cycles to measure actual boot time, then update args.boot_timeout.
+
+    Each calibrate cycle: power on → wait alive (ceiling) → shutdown immediately.
+    After all cycles, boot_timeout = max(observed) × CALIBRATE_SAFETY_FACTOR,
+    capped at boot_ceiling.  Result is stored in result["calibrate"] for the report.
+    Calibrate cycles are NOT counted in the main summary.
+    """
+    import copy
+    n_cal = args.calibrate_cycles
+    log.info("=== Calibrate: %d cycle(s) — measuring boot time (ceiling %ds) ===",
+             n_cal, args.boot_ceiling)
+
+    # Temporary args: ceiling for boot, minimal on_time so we shut down right away
+    cal_args = copy.copy(args)
+    cal_args.boot_timeout = args.boot_ceiling
+    cal_args.on_time      = 5  # just enough for the DUT to settle before shutdown
+
+    boot_times = []
+    for c in range(1, n_cal + 1):
+        if _stop_requested:
+            break
+        log.info("[CAL %d/%d] ──────────────────────────────────────", c, n_cal)
+        rec = run_one_cycle(c, cal_args, relay, checker, shutdown_coord,
+                            total=n_cal, is_warmup=True)
+        boot_t = rec.get("boot_time_sec")
+        log.info("[CAL %d/%d] verdict: %s  boot: %s s",
+                 c, n_cal, rec["verdict"],
+                 f"{boot_t:.1f}" if boot_t and boot_t < args.boot_ceiling else "—")
+        result["calibrate"]["cycles"].append({
+            "n":            c,
+            "verdict":      rec["verdict"],
+            "boot_time_sec": boot_t,
+        })
+        if rec["verdict"] == PASS and boot_t and boot_t < args.boot_ceiling:
+            boot_times.append(boot_t)
+
+    if boot_times:
+        computed = round(max(boot_times) * config.CALIBRATE_SAFETY_FACTOR)
+        calibrated = min(computed, args.boot_ceiling)
+        log.info(
+            "=== Calibrate complete — boot times: min=%.1fs max=%.1fs "
+            "→ boot_timeout set to %ds (max × %.1f, capped at %ds) ===",
+            min(boot_times), max(boot_times),
+            calibrated, config.CALIBRATE_SAFETY_FACTOR, args.boot_ceiling,
+        )
+        args.boot_timeout = calibrated
+        result["calibrate"]["boot_timeout_sec"] = calibrated
+        result["config"]["boot_timeout_sec"]    = calibrated
+    else:
+        log.warning(
+            "=== Calibrate: no successful boots — keeping boot_timeout=%ds ===",
+            args.boot_timeout,
+        )
+        result["calibrate"]["boot_timeout_sec"] = None
+
+
 def _force_off(args: argparse.Namespace, relay: RelayController) -> None:
     """Best-effort force power off before next cycle."""
     try:
@@ -308,22 +386,28 @@ def _build_summary(cycles: list, target: int) -> dict:
 def _new_result(args: argparse.Namespace, session_id: str, m: int) -> dict:
     """Build a fresh result.json structure for a new session."""
     return {
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "test_name":      "power_cycle",
         "session_id":     session_id,
         "started_at":     function.now_iso(),
         "ended_at":       None,
         "config": {
-            "power_type":       args.type,
-            "dut_host":         args.host,
-            "dut_port":         args.port,
-            "cycles_target":    m,
-            "on_time_sec":      args.on_time,
-            "off_time_sec":     args.off_time,
-            "boot_timeout_sec": args.boot_timeout,
-            "dead_timeout_sec": config.DEAD_TIMEOUT_SEC,
-            "warmup_cycles":    args.warmup,
-            "ssh_user":         args.ssh_user or None,
+            "power_type":            args.type,
+            "dut_host":              args.host,
+            "dut_port":              args.port,
+            "cycles_target":         m,
+            "on_time_sec":           args.on_time,
+            "off_time_sec":          args.off_time,
+            "boot_timeout_sec":      args.boot_timeout,
+            "boot_ceiling_sec":      args.boot_ceiling,
+            "dead_timeout_sec":      config.DEAD_TIMEOUT_SEC,
+            "warmup_cycles":         args.warmup,
+            "calibrate_cycles":      args.calibrate_cycles,
+            "ssh_user":              args.ssh_user or None,
+        },
+        "calibrate": {
+            "cycles":            [],       # each calibrate cycle's boot_time_sec
+            "boot_timeout_sec":  None,     # computed from calibrate; None if skipped
         },
         "cycles":          [],
         "summary":         {},
@@ -390,8 +474,12 @@ def main() -> int:
     log.info("  GPIO pin: %d",     args.pin)
     log.info("  Warmup  : %d cycle(s)%s", args.warmup,
              "  (skipped on resume)" if resuming else "")
-    log.info("  Boot TO : %ds",    args.boot_timeout)
+    log.info("  Boot TO : %ds (ceiling %ds)",  args.boot_timeout, args.boot_ceiling)
     log.info("  SSH user: %s",     args.ssh_user or "(none — ATX relay only)")
+    log.info("  Calibrate: %d cycle(s)%s",
+             args.calibrate_cycles,
+             " (skipped on resume)" if resuming else
+             " (disabled — using --boot-timeout directly)" if args.calibrate_cycles == 0 else "")
     log.info("  Log     : %s",     log_path)
     log.info("  JSON    : %s",     json_path)
     log.info("  Report  : %s",     html_path)
@@ -489,7 +577,13 @@ def main() -> int:
             rec = run_one_cycle(w, args, relay, checker, shutdown_coord,
                                 total=args.warmup, is_warmup=True)
             log.info("[WARMUP %d/%d] verdict: %s (not counted)", w, args.warmup, rec["verdict"])
-        log.info("=== Warmup complete — starting counted cycle(s) ===")
+        log.info("=== Warmup complete ===")
+
+    # ── Calibrate phase (new session only) ────────────────────────────────────
+    # Measures DUT boot time and sets boot_timeout for the main test automatically.
+    if args.calibrate_cycles > 0 and not resuming and checker and not args.no_check:
+        _run_calibrate_phase(args, relay, checker, shutdown_coord, result)
+        function.write_result_json(str(json_path), result)  # persist calibrate data
 
     consecutive_fails = 0
     has_had_success   = any(c.get("verdict") == PASS

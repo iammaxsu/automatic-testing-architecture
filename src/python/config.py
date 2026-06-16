@@ -67,13 +67,29 @@ DUT_PORT              = 22  # CLI: --port   TCP port to probe (22 = SSH)
 PING_COUNT            = 2   # ping -c N (ICMP echo count per probe)
 PING_TIMEOUT_SEC      = 2   # ping -W N (per-echo timeout)
 TCP_TIMEOUT_SEC       = 3   # TCP connect timeout for the SSH-port probe
-BOOT_TIMEOUT_SEC      = 120 # CLI: --boot-timeout   Phase 1 UPPER LIMIT. DUT should
-                            #   reach desktop + answer ping+SSH within ~120 s; longer
-                            #   counts as NO_BOOT (a slow boot is treated as a quality
-                            #   defect, not a pass).
+BOOT_TIMEOUT_SEC      = 120 # CLI: --boot-timeout   Used as the boot ceiling in the
+                            #   main counted test. If calibration is enabled
+                            #   (CALIBRATE_CYCLES > 0), this value is replaced by the
+                            #   auto-calibrated ceiling (max observed × CALIBRATE_SAFETY_FACTOR).
+                            #   Counts as NO_BOOT if DUT is not alive by this deadline.
+BOOT_CEILING_SEC      = 360 # CLI: --boot-ceiling   Hard absolute maximum for any boot wait.
+                            #   Used during the calibrate phase (before the platform's
+                            #   typical boot time is known). 360 s (6 min) covers the
+                            #   slowest known server + BMC initialisation.
+                            #   Also caps the auto-calibrated timeout.
 DEAD_TIMEOUT_SEC      = 30  # Phase 3 UPPER LIMIT: max wait for DUT to go offline after
                             #   a shutdown request; exceeding it -> force-off + HANG_SHUTDOWN
 HEALTH_CHECK_INTERVAL = 30  # Seconds between liveness probes during ON_TIME (phase 2)
+
+# ---------- Calibration ----------
+# Before the counted test, power_cycle.py runs CALIBRATE_CYCLES short cycles
+# (power on → wait alive → immediate shutdown) to measure the DUT's actual boot
+# time.  The measured max × CALIBRATE_SAFETY_FACTOR becomes the boot_timeout for
+# the main test, removing the need to guess platform-specific values.
+#
+# Set CALIBRATE_CYCLES = 0 to disable and use BOOT_TIMEOUT_SEC directly.
+CALIBRATE_CYCLES        = 3    # CLI: --calibrate   0 = disabled
+CALIBRATE_SAFETY_FACTOR = 1.5  # boot_timeout = max(calibrate times) × this
 
 # ---------- Shutdown ----------
 SHUTDOWN_SSH_USER = ""      # CLI: --ssh-user   SSH login for graceful OS shutdown.
