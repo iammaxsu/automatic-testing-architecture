@@ -96,12 +96,19 @@ _script_root="$(cd "$(dirname "${_entry}")" && pwd)"
 # function.sh ships alongside the test scripts, so it is always present on a DUT
 # that runs tests; setup_dut.sh is deployed next to it.
 _fn_lib="${_script_root}/function.sh"
-if [[ -f "${_fn_lib}" ]]; then
-  # shellcheck disable=SC1090
-  source "${_fn_lib}"
-else
+if [[ ! -f "${_fn_lib}" ]]; then
   echo "ERROR: function.sh not found next to setup_dut.sh (${_fn_lib})." >&2
   echo "       Copy function.sh into the same folder and re-run." >&2
+  exit 1
+fi
+# shellcheck disable=SC1090
+source "${_fn_lib}"
+# Guard against a stale function.sh that predates the test_env_* helpers:
+# fail fast with a clear message instead of a cryptic 'command not found'.
+if ! declare -F test_env_restore_all >/dev/null 2>&1; then
+  echo "ERROR: function.sh next to setup_dut.sh is outdated —" >&2
+  echo "       it is missing the test_env_* helpers (test_env_restore_all)." >&2
+  echo "       Update function.sh on this DUT to match setup_dut.sh, then re-run." >&2
   exit 1
 fi
 
