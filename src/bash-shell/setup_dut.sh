@@ -308,6 +308,15 @@ fi
 
 
 # ---------- 5. Power management: disable sleep / suspend / hibernate -------------
+#
+# All logind power-key settings are written to a single drop-in file rather than
+# modifying /etc/systemd/logind.conf directly. Benefits:
+#   - Drop-in files take precedence over logind.conf (man logind.conf.d).
+#   - The main logind.conf is never modified — system upgrades won't conflict.
+#   - Fully reversible: delete the drop-in and restart systemd-logind.
+# HandlePowerKey=poweroff makes logind handle the ATX short-press immediately
+# (kernel→logind→poweroff), bypassing the GNOME session manager's interactive
+# shutdown dialog which causes HANG_SHUTDOWN during power_cycle.py tests.
 
 _step "5 / 8  Power management (no sleep / suspend / hibernate)"
 
@@ -315,32 +324,59 @@ systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target 
 _ok "systemd sleep/suspend/hibernate/hybrid-sleep targets masked"
 
 _logind_conf="/etc/systemd/logind.conf"
+_logind_dropin_dir="/etc/systemd/logind.conf.d"
+_logind_dropin="${_logind_dropin_dir}/99-automatic-testing.conf"
 _logind_changed=0
-declare -A _logind_settings=(
-  [HandleLidSwitch]=ignore
-  [HandleLidSwitchExternalPower]=ignore
-  [HandleLidSwitchDocked]=ignore
-  [HandleSuspendKey]=ignore
-  [HandleHibernateKey]=ignore
-  [IdleAction]=ignore
-)
-for _key in "${!_logind_settings[@]}"; do
-  _val="${_logind_settings[$_key]}"
+
+# --- Migrate: remove any keys we previously wrote directly into logind.conf ------
+_old_keys=(HandleLidSwitch HandleLidSwitchExternalPower HandleLidSwitchDocked
+           HandleSuspendKey HandleHibernateKey IdleAction
+           HandlePowerKey HandlePowerKeyLongPress)
+for _key in "${_old_keys[@]}"; do
   if grep -qE "^${_key}=" "${_logind_conf}" 2>/dev/null; then
-    if ! grep -qE "^${_key}=${_val}$" "${_logind_conf}"; then
-      sed -i "s/^${_key}=.*/${_key}=${_val}/" "${_logind_conf}"
-      _logind_changed=1
-    fi
-  else
-    echo "${_key}=${_val}" >> "${_logind_conf}"
+    sed -i "/^${_key}=/d" "${_logind_conf}"
     _logind_changed=1
   fi
 done
 if [[ "${_logind_changed}" -eq 1 ]]; then
-  systemctl restart systemd-logind >/dev/null 2>&1 || true
-  _ok "logind.conf updated (lid/idle actions ignored); systemd-logind restarted"
+  _ok "Removed old logind.conf direct entries (migrating to drop-in)"
+fi
+
+# --- Write drop-in file (idempotent; all settings in one reversible place) -------
+mkdir -p "${_logind_dropin_dir}"
+cat > "${_logind_dropin}.tmp" <<'LOGIND'
+# Managed by automatic-testing-architecture (setup_dut.sh).
+# To restore defaults:
+#   sudo rm /etc/systemd/logind.conf.d/99-automatic-testing.conf
+#   sudo systemctl restart systemd-logind
+[Login]
+HandleLidSwitch=ignore
+HandleLidSwitchExternalPower=ignore
+HandleLidSwitchDocked=ignore
+HandleSuspendKey=ignore
+HandleHibernateKey=ignore
+IdleAction=ignore
+HandlePowerKey=poweroff
+HandlePowerKeyLongPress=poweroff
+LOGIND
+
+if [[ -f "${_logind_dropin}" ]] && diff -q "${_logind_dropin}.tmp" "${_logind_dropin}" >/dev/null 2>&1; then
+  rm "${_logind_dropin}.tmp"
+  if [[ "${_logind_changed}" -eq 0 ]]; then
+    _skip "logind drop-in already up to date: ${_logind_dropin}"
+  fi
 else
-  _skip "logind.conf already configured"
+  mv "${_logind_dropin}.tmp" "${_logind_dropin}"
+  _logind_changed=1
+  _ok "logind drop-in written: ${_logind_dropin}"
+  echo "         lid/suspend/hibernate/idle → ignore"
+  echo "         HandlePowerKey/LongPress   → poweroff (bypasses GNOME interactive dialog)"
+fi
+
+if [[ "${_logind_changed}" -eq 1 ]]; then
+  systemctl restart systemd-logind >/dev/null 2>&1 || true
+  echo "         systemd-logind restarted"
+  echo "         Restore: sudo rm ${_logind_dropin} && sudo systemctl restart systemd-logind"
 fi
 
 
@@ -483,7 +519,8 @@ else
   echo "  Pi SSH key        : NOT authorized (pass --pi-key to enable passwordless SSH)"
 fi
 echo "  NOPASSWD sudo     : shutdown/reboot/poweroff for ${_test_user}"
-echo "  Power management  : no sleep / suspend / hibernate"
+echo "  Power management  : no sleep/suspend/hibernate; HandlePowerKey=poweroff"
+echo "  logind drop-in    : ${_logind_dropin}"
 echo "  Unattended-upgrades auto-reboot : disabled (if installed)"
 if [[ -n "${_dev_detect_script}" && -f "${_dev_detect_script}" ]]; then
   echo "  dev-detect service: dev-detect.service (boot + ${_dev_detect_delay}s sleep, as root)"
