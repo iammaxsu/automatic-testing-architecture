@@ -250,6 +250,13 @@ def run_one_cycle(
             f"(force_used={sd['force_used']})"
         )
         log.warning("Cycle %d: HANG_SHUTDOWN (method=%s)", n, sd["method"])
+        # force-off was already applied inside shutdown_coord; wait off_time so
+        # the next cycle's power-on has adequate settling time after force-off.
+        if args.off_time > 0 and not _stop_requested:
+            log.info("Cycle %d: waiting %ds off-time after force-off ...", n, args.off_time)
+            off_deadline = time.monotonic() + args.off_time
+            while time.monotonic() < off_deadline and not _stop_requested:
+                time.sleep(1)
         return rec
 
     # ── 6. OFF_TIME wait ─────────────────────────────────────────────────
