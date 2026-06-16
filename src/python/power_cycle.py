@@ -4,7 +4,21 @@
 # Usage:
 #   python power_cycle.py [options]
 #
-# Options (all optional; defaults come from config.py):
+# All options are optional; defaults come from config.py.  Set DUT_HOST,
+# SHUTDOWN_SSH_USER, and DUT_OS there once so you can run without arguments.
+#
+# Quick-start by OS:
+#   Windows DUT  →  python power_cycle.py --host <IP>
+#                   (ATX short-press handles both power-on and power-off)
+#
+#   Linux DUT    →  python power_cycle.py --host <IP> --ssh-user <login>
+#                   (ATX short-press powers ON; SSH "sudo shutdown -h now" powers OFF)
+#                   Without --ssh-user on Linux, GNOME intercepts the ATX press and
+#                   shows an interactive dialog → HANG_SHUTDOWN every cycle.
+#                   Tip: set SHUTDOWN_SSH_USER = "<login>" in config.py so you
+#                   don't need to pass --ssh-user each run.
+#
+# Key options:
 #   --type    ATX|AT          PSU type
 #   --host    IP_OR_HOST      DUT IP/hostname for liveness checks
 #   --port    N               TCP port for liveness check (default 22)
@@ -12,13 +26,12 @@
 #   --on      SECONDS         DUT on-time per cycle
 #   --off     SECONDS         wait time after power-off
 #   --pin     BOARD_PIN       GPIO board pin number
+#   --ssh-user USERNAME       SSH login for graceful OS shutdown (required for Linux DUT)
 #   --out     DIR             output directory for logs & reports
-#   --report  DIR             report directory (default same as --out)
 #   --no-check                skip network liveness checks
 #   --dry-run                 run logic without touching GPIO (for testing)
 #   --warmup  N               initialization cycles before the counted test begins (default: 1)
 #   --boot-timeout SECONDS    max wait for DUT to come online (default: 120)
-#   --ssh-user USERNAME       SSH login for graceful OS shutdown (default: none, use ATX press)
 #   --new-session             force a new session instead of resuming an incomplete one (LOG023)
 #
 # Verdicts per cycle:
@@ -99,7 +112,12 @@ def parse_args() -> argparse.Namespace:
                         "Selects the default SSH shutdown command. (default: %(default)s)")
     p.add_argument("--ssh-user", default=config.SHUTDOWN_SSH_USER,
                    dest="ssh_user",
-                   help="SSH username for graceful shutdown (empty = skip SSH method)")
+                   help="SSH login for graceful shutdown via 'sudo shutdown -h now'. "
+                        "REQUIRED for Linux DUT with GNOME desktop — without it, "
+                        "the ATX power-button press is intercepted by GNOME and causes "
+                        "HANG_SHUTDOWN every cycle. "
+                        "Windows DUT: leave empty to use ATX press for shutdown. "
+                        "(default from config.SHUTDOWN_SSH_USER)")
     p.add_argument("--ssh-cmd",  default=None,
                    dest="ssh_cmd",
                    help="Shutdown command to run over SSH "
@@ -409,6 +427,18 @@ def main() -> int:
 
     shutdown_cmd = args.ssh_cmd or config._OS_SHUTDOWN_CMD.get(args.dut_os,
                                                                 "shutdown /s /t 5")
+
+    # Guardrail: Linux DUT without SSH user → ATX short-press is intercepted by
+    # GNOME's endSessionDialog; DUT never shuts down within dead_timeout_sec →
+    # every cycle ends HANG_SHUTDOWN.  Warn loudly so the user knows what to fix.
+    if args.dut_os == "linux" and not args.ssh_user and not args.dry_run:
+        log.error(
+            "Linux DUT but --ssh-user is not set — ATX power-button press will be\n"
+            "  intercepted by GNOME and cause HANG_SHUTDOWN every cycle.\n"
+            "  Fix: set  SHUTDOWN_SSH_USER = \"<login>\"  in config.py\n"
+            "       or pass  --ssh-user <login>  on the command line.\n"
+            "  (setup_dut.sh already configured NOPASSWD sudo on the DUT.)"
+        )
 
     # Shutdown coordinator (constructed once; reused every cycle)
     shutdown_coord = ShutdownCoordinator(

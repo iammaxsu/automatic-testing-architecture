@@ -77,10 +77,19 @@ HEALTH_CHECK_INTERVAL = 30  # Seconds between liveness probes during ON_TIME (ph
 
 # ---------- Shutdown ----------
 SHUTDOWN_SSH_USER = ""      # CLI: --ssh-user   SSH login for graceful OS shutdown.
-                            #   Set -> phase 3 sends "shutdown /s /t 5" over SSH and the
-                            #     power button is used ONLY to power on.
-                            #   Empty -> phase 3 powers off with an ATX button press
-                            #     instead (two presses per cycle: on, then off).
+                            #
+                            #   *** IMPORTANT for Linux DUT ***
+                            #   On Linux with a GNOME desktop session, the ATX power-button
+                            #   short-press is intercepted by GNOME (endSessionDialog), so
+                            #   the OS does NOT shut down within dead_timeout → HANG_SHUTDOWN.
+                            #   Set this to the DUT's SSH login user (e.g. "ubuntu", "adlink")
+                            #   so phase 3 uses "sudo shutdown -h now" via SSH instead of the
+                            #   power button.  The power button then handles only power-ON.
+                            #   sudoers NOPASSWD for /sbin/shutdown is set up by setup_dut.sh.
+                            #
+                            #   Set   → phase 3 shuts down via SSH command; power button = ON only.
+                            #   Empty → phase 3 uses ATX power-button press (fine for Windows;
+                            #             causes HANG_SHUTDOWN on Linux+GNOME).
                             #   ATX force-off remains the fallback in both modes.
 
 # ---------- Safety ----------
@@ -123,11 +132,12 @@ INIT_WAIT_SEC = 0           # CLI: --init-wait
                             #   0 = fail immediately. Ignored when a GPIO pin is available
                             #   (GPIO power recovery is used instead).
 
-# ---------- Reboot test (reboot.py) ----------
 # ---------- DUT operating system ----------
 # CLI: --dut-os   Set to "windows" or "linux" to match the DUT.
 # This selects the correct default SSH commands for reboot and graceful shutdown.
 # Override the individual commands at runtime with --ssh-cmd if needed.
+# When SHUTDOWN_SSH_USER is set, the OS is auto-detected via SSH at startup
+# (uname -s) and this default is used only as a fallback.
 DUT_OS = "windows"
 
 # OS-specific SSH command defaults.  Not intended to be set directly;
