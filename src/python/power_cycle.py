@@ -118,9 +118,8 @@ def parse_args() -> argparse.Namespace:
                    dest="calibrate_cycles",
                    help="Calibration cycles to run after warmup (0 = disabled). "
                         "Measures actual boot time and auto-sets --boot-timeout for the "
-                        "main test as max(observed) × %(const)s. "
-                        "(default: %(default)s)",
-                   const=config.CALIBRATE_SAFETY_FACTOR)
+                        "main test as max(observed) × %.1f. (default: %%(default)s)"
+                        % config.CALIBRATE_SAFETY_FACTOR)
     p.add_argument("--dut-os",   default="auto",
                    choices=["auto", "windows", "linux"], dest="dut_os",
                    help="DUT operating system: auto (probe via SSH), windows, or linux. "
