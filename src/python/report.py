@@ -40,6 +40,7 @@ import logging
 import math
 import statistics
 import sys
+from datetime import datetime
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -71,6 +72,19 @@ _FAIL_ORDER = ["NO_BOOT", "CRASH", "HANG_SHUTDOWN", "RELAY_ERROR", "SSH_ERROR"]
 
 def _verdict_colour(v: str) -> str:
     return _COLOUR.get(v, "#999")
+
+
+def _format_duration(started: str, ended: str) -> str:
+    """'Hh Mm Ss' between two LOG022-style timestamps ('-' if either is missing)."""
+    try:
+        delta_sec = (datetime.fromisoformat(ended) - datetime.fromisoformat(started)).total_seconds()
+    except (TypeError, ValueError):
+        return "-"
+    if delta_sec < 0:
+        return "-"
+    h, rem = divmod(int(delta_sec), 3600)
+    m, s   = divmod(rem, 60)
+    return f"{h}h {m}m {s}s" if h else f"{m}m {s}s"
 
 
 def generate_report(result: dict, output_path: str) -> None:
@@ -315,6 +329,7 @@ def _render(result: dict) -> str:
     overall_col  = _verdict_colour(overall)
     started      = result.get("started_at", "-")
     ended        = result.get("ended_at", "-")
+    duration     = _format_duration(result.get("started_at"), result.get("ended_at"))
     total_ran    = summary.get("total_ran", len(cycles))
     total_target = summary.get("cycles_target", cfg.get("cycles_target", "-"))
     n_pass       = summary.get("pass", 0)
@@ -497,7 +512,7 @@ def _render(result: dict) -> str:
 <p class="subtitle">
   {cfg.get("power_type", test_name)} &nbsp;|&nbsp;
   DUT: {cfg.get("dut_host") or "(liveness disabled)"} &nbsp;|&nbsp;
-  Started: {started} &nbsp;|&nbsp; Ended: {ended}
+  Started: {started} &nbsp;|&nbsp; Ended: {ended} &nbsp;|&nbsp; Duration: {duration}
 </p>
 
 <!-- Summary + verdict cards -->
