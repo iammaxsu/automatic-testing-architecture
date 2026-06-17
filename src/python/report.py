@@ -356,7 +356,9 @@ def _render(result: dict) -> str:
     first_fail   = streaks["first_fail"]
     first_fail_s = str(first_fail) if first_fail is not None else "none"
 
-    # Per-failure-type cards (only those present)
+    # Per-failure-type cards (only those present), shown as a clearly separate
+    # "breakdown of Fail" section so it's never mistaken for additional cycles.
+    fail_breakdown_section = ""
     fail_cards = ""
     for k in _FAIL_ORDER:
         if fb.get(k, 0) > 0:
@@ -364,6 +366,12 @@ def _render(result: dict) -> str:
                 f'<div class="card"><div class="label">{k}</div>'
                 f'<div class="value" style="color:{_verdict_colour(k)}">{fb[k]}</div></div>'
             )
+    if fail_cards:
+        fail_breakdown_section = f"""
+<div class="section-title">Fail breakdown (sums to Fail = {n_fail} above)</div>
+<div class="cards">
+  {fail_cards}
+</div>"""
 
     # Shutdown-time statistics cards (power_cycle only)
     def sdstat(key, unit="s"):
@@ -504,8 +512,9 @@ def _render(result: dict) -> str:
     <div class="value" style="color:{_verdict_colour("PASS")}">{n_pass}</div></div>
   <div class="card"><div class="label">Fail</div>
     <div class="value" style="color:{_verdict_colour("NO_BOOT")}">{n_fail}</div></div>
-  {fail_cards}
 </div>
+
+{fail_breakdown_section}
 
 <!-- Boot-time statistics cards -->
 <div class="section-title">Boot-time statistics (passing cycles with recorded boot time)</div>

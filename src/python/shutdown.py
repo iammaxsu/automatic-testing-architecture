@@ -74,20 +74,28 @@ class ShutdownCoordinator:
         Returns a dict:
           method       — "ssh" | "atx" | "force" | "time"
           success      — True if DUT confirmed offline; False for time-based or errors
-          elapsed_sec  — seconds from first action to DUT offline (or blind wait)
+          elapsed_sec  — seconds from the FIRST action (e.g. the SSH attempt) to DUT
+                         offline, even if later fallback methods (ATX press, force-off)
+                         were needed. A long elapsed_sec on a fallback method IS the
+                         cost of that failure and must not be truncated to only the
+                         last stage's duration.
           force_used   — True if force-off had to be applied after soft press timeout
         """
+        t0 = time.monotonic()
+
         # ── 1. SSH shutdown command ───────────────────────────────────
         if self.ssh_user and self.ssh_host:
-            ok, elapsed = self._try_ssh()
+            ok, _ = self._try_ssh()
             if ok:
+                elapsed = time.monotonic() - t0
                 log.info("Shutdown via SSH completed in %.1f s", elapsed)
                 return _rec(METHOD_SSH, True, elapsed, False)
             log.warning("SSH shutdown failed — falling back to ATX press")
 
         # ── 2. Relay soft press ───────────────────────────────────────
         if self.relay:
-            ok, elapsed, force = self._try_relay_soft()
+            ok, _, force = self._try_relay_soft()
+            elapsed = time.monotonic() - t0
             method = METHOD_FORCE if force else METHOD_ATX
             return _rec(method, ok, elapsed, force)
 
@@ -103,7 +111,8 @@ class ShutdownCoordinator:
         log.warning("No relay available — time-based shutdown fallback (%ds)",
                     self.time_based_delay_sec)
         time.sleep(self.time_based_delay_sec)
-        return _rec(METHOD_TIME, False, float(self.time_based_delay_sec), False)
+        elapsed = time.monotonic() - t0
+        return _rec(METHOD_TIME, False, elapsed, False)
 
     # ------------------------------------------------------------------
     # Private helpers
