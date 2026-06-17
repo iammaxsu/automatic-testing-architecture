@@ -216,9 +216,9 @@ def _streaks(cycles: list) -> dict:
 
 # -- chart data builders (Chart.js JS literals) --------------------------------
 
-def _boot_datasets(series: list, stats: dict) -> str:
-    """Datasets JS for the boot-time chart: raw points (normal/outlier),
-    moving average, and flat mean / +-3 sigma reference lines."""
+def _boot_datasets(series: list, stats: dict, value_label: str = "Boot time (s)") -> str:
+    """Datasets JS for a time-series chart (boot or shutdown): raw points
+    (normal/outlier), moving average, and flat mean / +-3 sigma reference lines."""
     if not series:
         return "[]"
 
@@ -245,7 +245,7 @@ def _boot_datasets(series: list, stats: dict) -> str:
 
     green = _verdict_colour("PASS")
     parts = [
-        f'{{label:"Boot time (s)",type:"scatter",data:{json.dumps(normal)},'
+        f'{{label:"{value_label}",type:"scatter",data:{json.dumps(normal)},'
         f'backgroundColor:"{green}",pointRadius:3,pointHoverRadius:5,order:3}}',
         f'{{label:"Moving avg (w={window})",type:"line",data:{json.dumps(ma)},'
         f'borderColor:"#2196f3",borderWidth:2,pointRadius:0,fill:false,'
@@ -336,7 +336,7 @@ def _render(result: dict) -> str:
     sd_series  = _shutdown_series(cycles)
     sd_values  = [y for _, y in sd_series]
     sd_stats   = _boot_stats(sd_values) if sd_values else {}
-    sd_ds      = _boot_datasets(sd_series, sd_stats) if sd_values else "[]"
+    sd_ds      = _boot_datasets(sd_series, sd_stats, "Shutdown time (s)") if sd_values else "[]"
     sd_fail_mk = _failure_markers(cycles)   # same failure positions
     method_counts = _shutdown_method_counts(cycles)
     has_shutdown  = bool(sd_series)
