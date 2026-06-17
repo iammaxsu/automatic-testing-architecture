@@ -427,14 +427,38 @@ def main() -> int:
     rep_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Session resolution (LOG023) ────────────────────────────────────────────
+    # A resumed session must target the same DUT as the one that created it —
+    # otherwise cycles from two different physical hosts get merged into one
+    # result.json (e.g. a stale aborted session on host A silently "resuming"
+    # hours later against host B). Identify the target by the same fields that
+    # actually change DUT behaviour: host, port, ssh_user, type.
+    target = {
+        "host":     args.host or None,
+        "port":     args.port,
+        "ssh_user": args.ssh_user or None,
+        "type":     args.type,
+    }
+
     session_path = out_dir / "power_cycle_session.json"
     session = function.read_json(str(session_path))
-    resuming = bool(
+    candidate_resume = bool(
         session
         and session.get("status") == "running"
         and session.get("n", 0) < session.get("m", 0)
         and not args.new_session
     )
+
+    if candidate_resume and session.get("target") != target:
+        log.error(
+            "Refusing to resume session %s: target mismatch "
+            "(session target=%s, current target=%s). "
+            "Re-run with --host/--ssh-user/--type matching the original session, "
+            "or pass --new-session to start a fresh one.",
+            session.get("session_id"), session.get("target"), target,
+        )
+        return 1
+
+    resuming = candidate_resume
 
     if resuming:
         session_id = session["session_id"]
@@ -452,6 +476,7 @@ def main() -> int:
             "status":     "running",
             "started_at": function.now_iso(),
             "updated_at": function.now_iso(),
+            "target":     target,
         }
         function.write_json(str(session_path), session)
 
