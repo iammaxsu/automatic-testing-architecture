@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+import config
+
 _COUNTER_FILE = "counter.log"
 
 
