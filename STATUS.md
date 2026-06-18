@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-06-16 05:18 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-06-18 08:32 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -149,21 +149,21 @@ pie showData title Requirements by status
 
 ## Bugs
 
-**Total:** 29
+**Total:** 30
 
 ### By status
 
 | Status | Count |
 | --- | --- |
 | open | 15 |
-| resolved | 2 |
+| resolved | 3 |
 | closed | 10 |
 | invalid | 2 |
 
 ```mermaid
 pie showData title Bugs by status
     "open" : 15
-    "resolved" : 2
+    "resolved" : 3
     "closed" : 10
     "invalid" : 2
 ```
@@ -177,6 +177,7 @@ pie showData title Bugs by status
 | Windows 11 | 4 |
 | Windows 11 (English / en-US) | 1 |
 | Windows 11 (Traditional Chinese / zh-TW) | 1 |
+| Windows 11 (zh-TW) | 1 |
 
 ### Open bugs (oldest first)
 
@@ -211,6 +212,7 @@ pie showData title Bugs by status
 | FWK026 | [BUG0002](bugs/closed/BUG0002-cannot-open-dev-detect-sh-html-report.md) | closed |
 | FWK026 | [BUG0014](bugs/closed/BUG0014-root-requirement-of-detection-scripts-not-formalis.md) | closed |
 | FWK027 | [BUG0019](bugs/closed/BUG0019-result-json-metadata-corruption-session-id-unknown.md) | closed |
+| FWK028 | [BUG0030](bugs/closed/BUG0030-os-detect-utf8-decode-crash.md) | resolved |
 | FWK032 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
 | FWK034 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
 | LOG008 | [BUG0004](bugs/open/BUG0004-fio-log-filenames-missing-timestamp-and-result.md) | open |
@@ -255,7 +257,6 @@ _(may indicate untested code paths — worth a review)_
 | [DSK009](requirements/DSK009.md) | implemented | fio Engine and Write-Consistency Flags Aligned with KDiskMark v3.2.0 |
 | [FUN007](requirements/FUN007.md) | implemented | Windows PowerShell Shared Function Library |
 | [FWK002](requirements/FWK002.md) | implemented | Cross-Language Naming Conventions |
-| [FWK028](requirements/FWK028.md) | implemented | Machine-Readable Canonical Form First |
 | [FWK029](requirements/FWK029.md) | implemented | Emergency Stop Safety Mechanism |
 | [FWK030](requirements/FWK030.md) | implemented | Two-Phase Consecutive-Failure Stop Policy |
 | [FWK031](requirements/FWK031.md) | implemented | DUT Self-Initialisation Before Test Execution |

@@ -142,6 +142,7 @@ class ShutdownCoordinator:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                errors="replace",   # non-UTF-8 OEM-codepage error text (zh-TW Windows)
             )
         except subprocess.TimeoutExpired:
             log.warning("SSH shutdown command timed out after %ds (%s@%s)",

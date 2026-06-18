@@ -40,8 +40,14 @@ def detect_dut_os(host: str, port: int, ssh_user: str, timeout: int = 10) -> str
         "uname -s",
     ]
     try:
+        # errors="replace": a non-English Windows DUT (e.g. zh-TW) emits its
+        # 'uname not recognized' error in the OEM code page (CP950/Big5), which
+        # is not valid UTF-8.  Without this, the default strict decode raises
+        # UnicodeDecodeError, the probe returns "unknown", and the OS falls back
+        # to the linux default — sending 'sudo shutdown' to a Windows box (BUG0030).
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout + 5
+            cmd, capture_output=True, text=True, errors="replace",
+            timeout=timeout + 5
         )
         if result.returncode == 0 and "Linux" in result.stdout:
             log.info("DUT OS detected: linux (uname -s → %s)", result.stdout.strip())
@@ -79,7 +85,8 @@ def restore_dut_env(host: str, port: int, ssh_user: str, timeout: int = 30) -> b
     ]
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout + 10
+            cmd, capture_output=True, text=True, errors="replace",
+            timeout=timeout + 10
         )
         if result.returncode == 0:
             log.info("DUT test-environment restored (%s@%s).", ssh_user, host)
@@ -252,6 +259,7 @@ def notify_dut(
                     timeout=ssh_timeout + 2,
                     capture_output=True,
                     text=True,
+                    errors="replace",
                 )
                 return r.returncode, r.stdout
             except Exception as exc:
