@@ -50,6 +50,7 @@ class ShutdownCoordinator:
         dead_timeout_sec: int = config.DEAD_TIMEOUT_SEC,
         time_based_delay_sec: int = config.OFF_TIME_SEC,
         ssh_cmd: str = "",                             # empty = derive from config.DUT_OS
+        debug: bool = False,                           # skip force-off; preserve hung state
     ):
         self.relay                = relay
         self.checker              = checker
@@ -62,6 +63,7 @@ class ShutdownCoordinator:
         self.time_based_delay_sec = time_based_delay_sec
         self.ssh_cmd              = ssh_cmd or config._OS_SHUTDOWN_CMD.get(
                                         config.DUT_OS, "shutdown /s /t 5")
+        self.debug                = debug
 
     # ------------------------------------------------------------------
     # Public API
@@ -180,6 +182,10 @@ class ShutdownCoordinator:
             return True, shut_t, False
 
         # Soft press timed out → force-off
+        if self.debug:
+            log.error("Soft shutdown timed out (%ds) — --debug active, leaving DUT "
+                       "powered on (NOT forcing off) for inspection", self.dead_timeout_sec)
+            return False, time.monotonic() - t0, False
         log.warning("Soft shutdown timed out (%ds) — applying force-off", self.dead_timeout_sec)
         try:
             if self.psu_type == "ATX":

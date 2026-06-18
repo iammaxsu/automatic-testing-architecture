@@ -149,6 +149,11 @@ def parse_args() -> argparse.Namespace:
                         "Use before running reboot.py so it finds the DUT already online.")
     p.add_argument("--new-session", action="store_true", dest="new_session",
                    help="Force a new session even if an incomplete one exists (LOG023)")
+    p.add_argument("--debug", action="store_true", dest="debug",
+                   help="Stop immediately on the FIRST non-PASS cycle in any phase "
+                        "(warmup/calibrate/main), without forcing the relay off — "
+                        "preserves the DUT/relay state as-is for inspection. "
+                        "Overrides --early-fail-threshold / --max-consecutive-fails.")
     return p.parse_args()
 
 
@@ -207,8 +212,12 @@ def run_one_cycle(
             rec["verdict"] = NO_BOOT
             rec["notes"]   = f"DUT did not come online within {args.boot_timeout}s"
             log.warning("Cycle %d: NO_BOOT", n)
-            # Ensure DUT is actually off before next cycle
-            _force_off(args, relay)
+            if args.debug:
+                log.error("Cycle %d: --debug active — leaving relay/DUT state as-is "
+                           "for inspection (NOT forcing off)", n)
+            else:
+                # Ensure DUT is actually off before next cycle
+                _force_off(args, relay)
             return rec
 
         log.info("Cycle %d: DUT alive in %.1f s", n, boot_t)
@@ -242,7 +251,11 @@ def run_one_cycle(
         time.sleep(1)
 
     if crash_detected:
-        _force_off(args, relay)
+        if args.debug:
+            log.error("Cycle %d: --debug active — leaving relay/DUT state as-is "
+                       "for inspection (NOT forcing off)", n)
+        else:
+            _force_off(args, relay)
         return rec
 
     # ── 4. Shutdown (SSH -> ATX soft -> force-off -> time-based) ─────────
@@ -264,6 +277,10 @@ def run_one_cycle(
             f"(force_used={sd['force_used']})"
         )
         log.warning("Cycle %d: HANG_SHUTDOWN (method=%s)", n, sd["method"])
+        if args.debug:
+            log.error("Cycle %d: --debug active — stopping without further relay "
+                       "action for inspection", n)
+            return rec
         # force-off was already applied inside shutdown_coord; wait off_time so
         # the next cycle's power-on has adequate settling time after force-off.
         if args.off_time > 0 and not _stop_requested:
@@ -290,13 +307,16 @@ def _run_calibrate_phase(
     checker,
     shutdown_coord: ShutdownCoordinator,
     result: dict,
-) -> None:
+) -> bool:
     """Run calibrate cycles to measure actual boot time, then update args.boot_timeout.
 
     Each calibrate cycle: power on → wait alive (ceiling) → shutdown immediately.
     After all cycles, boot_timeout = max(observed) × CALIBRATE_SAFETY_FACTOR,
     capped at boot_ceiling.  Result is stored in result["calibrate"] for the report.
     Calibrate cycles are NOT counted in the main summary.
+
+    Returns True if --debug stopped the phase early on a non-PASS cycle (the
+    caller must then skip the main loop, leaving DUT/relay state untouched).
     """
     import copy
     n_cal = args.calibrate_cycles
@@ -326,6 +346,10 @@ def _run_calibrate_phase(
         })
         if rec["verdict"] == PASS and boot_t and boot_t < args.boot_ceiling:
             boot_times.append(boot_t)
+        if args.debug and rec["verdict"] != PASS:
+            log.error("--debug: calibrate cycle %d failed (%s) — stopping immediately, "
+                       "state left as-is for inspection.", c, rec["verdict"])
+            return True
 
     if boot_times:
         computed = round(max(boot_times) * config.CALIBRATE_SAFETY_FACTOR)
@@ -345,6 +369,8 @@ def _run_calibrate_phase(
             args.boot_timeout,
         )
         result["calibrate"]["boot_timeout_sec"] = None
+
+    return False
 
 
 def _force_off(args: argparse.Namespace, relay: RelayController) -> None:
@@ -382,7 +408,8 @@ def _build_summary(cycles: list, target: int) -> dict:
 
 # ── result structure ──────────────────────────────────────────────────────────
 
-def _new_result(args: argparse.Namespace, session_id: str, m: int) -> dict:
+def _new_result(args: argparse.Namespace, session_id: str, m: int,
+                 dut_os_source: str = "explicit") -> dict:
     """Build a fresh result.json structure for a new session."""
     return {
         "schema_version": "1.2",
@@ -403,6 +430,9 @@ def _new_result(args: argparse.Namespace, session_id: str, m: int) -> dict:
             "warmup_cycles":         args.warmup,
             "calibrate_cycles":      args.calibrate_cycles,
             "ssh_user":              args.ssh_user or None,
+            "dut_os":                args.dut_os,
+            "dut_os_source":         dut_os_source,
+            "debug_mode":            bool(args.debug),
         },
         "calibrate": {
             "cycles":            [],       # each calibrate cycle's boot_time_sec
@@ -541,20 +571,47 @@ def main() -> int:
     # (exit 255, connection refused), detect_dut_os() returns "unknown" and we fall
     # back to config.DUT_OS.  Set DUT_OS = "linux" in config.py so the fallback is
     # correct when the DUT is offline at startup.
+    # dut_os_source records HOW args.dut_os was decided, so we never present a
+    # blind guess (config.DUT_OS's default) with the same confidence as an
+    # explicit --dut-os or a successful SSH probe. This matters because a
+    # missing/incorrect --ssh-user makes the probe fail "unknown" -> falls
+    # back to the config default, which used to be silently treated as fact
+    # and triggered a misleading Linux-specific warning even on a Windows DUT.
     if args.dut_os == "auto":
         if args.dry_run or args.no_check or not args.ssh_user or not args.host:
-            args.dut_os = config.DUT_OS
+            args.dut_os    = config.DUT_OS
+            dut_os_source  = "assumed"
         else:
             detected = function.detect_dut_os(args.host, args.port, args.ssh_user)
-            args.dut_os = detected if detected != "unknown" else config.DUT_OS
+            if detected != "unknown":
+                args.dut_os   = detected
+                dut_os_source = "detected"
+            else:
+                args.dut_os   = config.DUT_OS
+                dut_os_source = "assumed"
+    else:
+        dut_os_source = "explicit"
 
     shutdown_cmd = args.ssh_cmd or config._OS_SHUTDOWN_CMD.get(args.dut_os,
                                                                 "shutdown /s /t 5")
 
-    # Guardrail: Linux DUT without SSH user → ATX short-press is intercepted by
-    # GNOME's endSessionDialog; DUT never shuts down within dead_timeout_sec →
-    # every cycle ends HANG_SHUTDOWN.  Warn loudly so the user knows what to fix.
-    if args.dut_os == "linux" and not args.ssh_user and not args.dry_run:
+    if dut_os_source == "assumed":
+        # OS is unconfirmed (no --ssh-user, --dut-os, or the SSH probe failed,
+        # e.g. a wrong --ssh-user). Shutdown still works via the ATX button
+        # regardless of OS, so this is informational, not the scary
+        # Linux-specific guardrail below — that one requires confirmed OS.
+        log.warning(
+            "DUT OS not confirmed (no --ssh-user/--dut-os, or SSH probe failed) — "
+            "assuming '%s' from config.DUT_OS for command selection only. "
+            "Shutdown will use the ATX power button regardless. "
+            "Pass --dut-os explicitly if this assumption is wrong.",
+            args.dut_os,
+        )
+    elif args.dut_os == "linux" and not args.ssh_user and not args.dry_run:
+        # Guardrail: Linux DUT without SSH user → ATX short-press is intercepted
+        # by GNOME's endSessionDialog; DUT never shuts down within
+        # dead_timeout_sec → every cycle ends HANG_SHUTDOWN. Only fires when the
+        # OS is actually confirmed (detected or explicit --dut-os linux).
         log.error(
             "Linux DUT but --ssh-user is not set — ATX power-button press will be\n"
             "  intercepted by GNOME and cause HANG_SHUTDOWN every cycle.\n"
@@ -574,18 +631,19 @@ def main() -> int:
         dead_timeout_sec=config.DEAD_TIMEOUT_SEC,
         time_based_delay_sec=args.off_time,
         ssh_cmd=shutdown_cmd,
+        debug=args.debug,
     )
 
     # Build or load result structure (resume reuses the existing file)
     if resuming:
-        result = function.read_json(str(json_path)) or _new_result(args, session_id, m)
+        result = function.read_json(str(json_path)) or _new_result(args, session_id, m, dut_os_source)
         # Crash safety: drop any cycle records past the last committed session n
         # (result.json is written before session.json, so an orphan can exist).
         result["cycles"] = result.get("cycles", [])[: session["n"]]
         log.info("Resuming session %s: %d of %d cycles already recorded",
                  session_id, len(result["cycles"]), m)
     else:
-        result = _new_result(args, session_id, m)
+        result = _new_result(args, session_id, m, dut_os_source)
 
     # ── Initial state normalization ───────────────────────────────────────────
     # If DUT is already alive when the test starts (e.g. left on after setup_dut),
@@ -594,6 +652,11 @@ def main() -> int:
         log.info("DUT is alive at test start — forcing off to establish known state ...")
         _force_off(args, relay)
 
+    # debug_abort: set when --debug stops the run early in warmup/calibrate, so the
+    # main loop (and anything after it) is skipped while finalization still runs —
+    # the partial result.json/report and the untouched DUT/relay state are the point.
+    debug_abort = False
+
     # ── Warmup cycles (new session only) ──────────────────────────────────────
     if args.warmup > 0 and not resuming:
         log.info("=== Warmup: %d cycle(s) before counted test ===", args.warmup)
@@ -601,12 +664,17 @@ def main() -> int:
             rec = run_one_cycle(w, args, relay, checker, shutdown_coord,
                                 total=args.warmup, is_warmup=True)
             log.info("[WARMUP %d/%d] verdict: %s (not counted)", w, args.warmup, rec["verdict"])
+            if args.debug and rec["verdict"] != PASS:
+                log.error("--debug: warmup cycle %d failed (%s) — stopping immediately, "
+                           "state left as-is for inspection.", w, rec["verdict"])
+                debug_abort = True
+                break
         log.info("=== Warmup complete ===")
 
     # ── Calibrate phase (new session only) ────────────────────────────────────
     # Measures DUT boot time and sets boot_timeout for the main test automatically.
-    if args.calibrate_cycles > 0 and not resuming and checker and not args.no_check:
-        _run_calibrate_phase(args, relay, checker, shutdown_coord, result)
+    if not debug_abort and args.calibrate_cycles > 0 and not resuming and checker and not args.no_check:
+        debug_abort = _run_calibrate_phase(args, relay, checker, shutdown_coord, result)
         function.write_result_json(str(json_path), result)  # persist calibrate data
 
     consecutive_fails = 0
@@ -616,6 +684,10 @@ def main() -> int:
 
     try:
         for n in range(start_n, m + 1):
+            if debug_abort:
+                log.info("--debug stop already triggered in an earlier phase — "
+                          "skipping the main loop entirely.")
+                break
             if _stop_requested:
                 log.info("Stop requested — exiting loop after cycle %d", n - 1)
                 break
@@ -631,6 +703,12 @@ def main() -> int:
                 consecutive_fails = 0
             else:
                 consecutive_fails += 1
+                if args.debug:
+                    log.error(
+                        "--debug: cycle %d failed (%s) — stopping immediately, "
+                        "state left as-is for inspection.", n, rec["verdict"])
+                    debug_abort = True
+                    break
                 if not has_had_success:
                     # Early phase: no PASS yet — likely a config/setup problem.
                     if (args.early_fail_threshold > 0
@@ -681,6 +759,11 @@ def main() -> int:
     result["ended_at"] = function.now_iso()
     summary = _build_summary(result["cycles"], m)
     result["summary"] = summary
+    if debug_abort:
+        result["debug_stop"] = {
+            "n":       last_n,
+            "verdict": result["cycles"][-1]["verdict"] if result["cycles"] else None,
+        }
 
     if summary["fail"] == 0 and summary["total_ran"] > 0:
         result["overall_verdict"] = PASS

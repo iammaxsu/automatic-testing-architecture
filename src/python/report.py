@@ -357,6 +357,33 @@ def _render(result: dict) -> str:
     has_shutdown  = bool(sd_series)
     has_methods   = bool(method_counts)
 
+    # Warning banners — surfaced ABOVE the summary cards so they can't be missed.
+    warnings = []
+    ssh_user = cfg.get("ssh_user")
+    if ssh_user and has_methods and method_counts.get("ssh", 0) == 0:
+        warnings.append(
+            f'--ssh-user "{ssh_user}" was configured, but the SSH shutdown command '
+            f'never succeeded in {sum(method_counts.values())} cycle(s) with a recorded '
+            f'shutdown — every cycle fell back to the ATX power button instead. '
+            f'Check the SSH username/credentials and that SSH is reachable on the DUT.'
+        )
+    if cfg.get("dut_os_source") == "assumed":
+        warnings.append(
+            f'DUT OS was not confirmed (no working --ssh-user/--dut-os probe) — '
+            f'"{cfg.get("dut_os", "-")}" is an unverified assumption from config.DUT_OS, '
+            f'used only for selecting the SSH shutdown command.'
+        )
+    debug_stop = result.get("debug_stop")
+    if debug_stop:
+        warnings.append(
+            f'--debug stopped this run immediately at cycle {debug_stop.get("n")} '
+            f'(verdict: {debug_stop.get("verdict") or "n/a"}) — the run is incomplete '
+            f'by design; relay/DUT state was left untouched for inspection.'
+        )
+    warning_banners = "".join(
+        f'<div class="warning-banner">{w}</div>' for w in warnings
+    )
+
     # Donut (pass + each failure type actually present)
     donut_labels  = ["PASS"] + [k for k in _FAIL_ORDER if fb.get(k, 0) > 0]
     donut_values  = [n_pass] + [fb.get(k, 0) for k in _FAIL_ORDER if fb.get(k, 0) > 0]
@@ -504,6 +531,8 @@ def _render(result: dict) -> str:
   tr:last-child td{{border-bottom:none}}
   tr:hover td{{background:#fafafa}}
   .meta{{color:#888;font-size:.8rem;margin-top:20px}}
+  .warning-banner{{background:#fff3e0;border:1px solid #ff9800;border-radius:6px;
+                   padding:10px 14px;margin-bottom:10px;font-size:.85rem;color:#7a4a00}}
 </style>
 </head>
 <body>
@@ -512,8 +541,12 @@ def _render(result: dict) -> str:
 <p class="subtitle">
   {cfg.get("power_type", test_name)} &nbsp;|&nbsp;
   DUT: {cfg.get("dut_host") or "(liveness disabled)"} &nbsp;|&nbsp;
+  OS: {cfg.get("dut_os", "-")} ({cfg.get("dut_os_source", "-")}) &nbsp;|&nbsp;
+  SSH user: {cfg.get("ssh_user") or "(none)"} &nbsp;|&nbsp;
   Started: {started} &nbsp;|&nbsp; Ended: {ended} &nbsp;|&nbsp; Duration: {duration}
 </p>
+
+{warning_banners}
 
 <!-- Summary + verdict cards -->
 <div class="cards">
