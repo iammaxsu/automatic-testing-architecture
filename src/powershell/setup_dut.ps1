@@ -151,7 +151,7 @@ if (-not $_isAdmin) {
 
 # -- Version & shared library --------------------------------------------------
 
-$_script_ver                = '00.00.16'
+$_script_ver                = '00.00.17'
 $_requires_function_ps1_api = '00.00.01'
 
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -563,10 +563,23 @@ function Install-PythonViaDownload {
     }
 }
 
+# On a clean Windows install with no Python, "python" still resolves on PATH
+# to %LOCALAPPDATA%\Microsoft\WindowsApps\python.exe - a Microsoft "App
+# Execution Alias" stub, not a real interpreter. Get-Command alone cannot
+# tell the difference, and running the stub prints a Microsoft Store prompt
+# to stderr, which aborts the whole script under $ErrorActionPreference =
+# "Stop". Filter the stub out explicitly so "already installed" only fires
+# for a genuine interpreter.
+function Get-RealPythonCommand {
+    $cmd = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $cmd -or $cmd.Source -like "*\WindowsApps\python.exe") { return $null }
+    return $cmd
+}
+
 Write-Step "11 / 11  Python 3 runtime + report.py renderer"
 
 $pythonReady = $false
-$pyCmd = Get-Command python -ErrorAction SilentlyContinue
+$pyCmd = Get-RealPythonCommand
 if ($pyCmd) {
     $pythonReady = $true
     Write-Skip "Python already installed: $((& python --version 2>&1))"
@@ -577,7 +590,7 @@ if ($pyCmd) {
     # Refresh PATH for this session (installers write to the machine PATH).
     $machinePath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
     if ($machinePath) { $env:Path = "$machinePath;$env:Path" }
-    $pyCmd = Get-Command python -ErrorAction SilentlyContinue
+    $pyCmd = Get-RealPythonCommand
 
     if ($pyCmd) {
         $pythonReady = $true
