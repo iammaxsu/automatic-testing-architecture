@@ -136,15 +136,26 @@ class ShutdownCoordinator:
         ]
         log.info("SSH shutdown: %s@%s", self.ssh_user, self.ssh_host)
         try:
-            subprocess.run(
+            proc = subprocess.run(
                 cmd,
                 timeout=self.ssh_timeout_sec + 5,
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
             )
+        except subprocess.TimeoutExpired:
+            log.warning("SSH shutdown command timed out after %ds (%s@%s)",
+                        self.ssh_timeout_sec + 5, self.ssh_user, self.ssh_host)
+            return False, 0.0
         except Exception as exc:
-            log.debug("SSH shutdown command error: %s", exc)
+            log.warning("SSH shutdown command error: %s", exc)
+            return False, 0.0
+
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+            detail = detail[-1] if detail else "(no output)"
+            log.warning("SSH shutdown command failed (exit %d): %s",
+                        proc.returncode, detail)
             return False, 0.0
 
         # SSH command accepted — wait for DUT to go offline
