@@ -49,38 +49,55 @@ timestamped 3 seconds before the warmup cycle's first power-on.
 
 ## Fix
 
-Added `_redetect_os_if_needed()` in `power_cycle.py`, called immediately
-after every `run_one_cycle()` invocation (calibrate phase, warmup loop,
-main loop). On the first cycle where the DUT is confirmed alive
-(`rec["t_alive"]` set, verdict not `NO_BOOT`) and the OS is still
-unconfirmed (`args.dut_os_source != "explicit"` and not yet re-detected),
-it re-runs `function.detect_dut_os()` now that the DUT is actually up,
-and if the result is no longer `"unknown"`:
+Added `_redetect_os_if_needed()` in `power_cycle.py`, called **from inside
+`run_one_cycle()`** immediately after the DUT is confirmed alive
+(`log.info("Cycle %d: DUT alive ...")`) and before the shutdown step. At
+that point SSH actually answers, so re-running `function.detect_dut_os()`
+succeeds. If the result is no longer `"unknown"`:
 
 - updates `args.dut_os` and `args.dut_os_source = "detected"`,
-- recomputes `shutdown_coord.ssh_cmd` from the corrected OS so every
-  subsequent shutdown uses the right command,
+- recomputes `shutdown_coord.ssh_cmd` from the corrected OS so the same
+  cycle's shutdown (and every later one) uses the right command,
 - updates `result["config"]["dut_os"]` / `["dut_os_source"]` so the
   canonical `result.json` (and the report rendered from it, per FWK028)
-  reflect the correction for the whole run, not just cycles after
-  re-detection.
+  reflect the correction.
 
-`args.dut_os_source` is now also stored on `args` (previously a
-`main()`-local variable only) so the helper can read and update it from
-the three call sites. The calibrate phase passes a shallow-copied
-`cal_args` to `run_one_cycle()` (so its temporary `boot_timeout`/`on_time`
-overrides don't leak into the real run) — `_redetect_os_if_needed()` is
-deliberately called with the real `args`, not `cal_args`, so the
-correction propagates to the warmup and main loops instead of being
-silently discarded with the copy.
+The helper only acts when `args.dut_os_source == "assumed"` — an
+unverified guess. A successful startup probe (`"detected"`) or an
+explicit `--dut-os` (`"explicit"`) is already trustworthy and is left
+alone; re-probing those would add a pointless SSH round-trip.
+`args.dut_os_source` is stored on `args` (previously a `main()`-local
+variable only) so the helper can read and update it.
+
+`shutdown_coord` and `result` are shared objects passed into
+`run_one_cycle()`, so updates to them propagate to the whole run even
+when the cycle is driven by the calibrate phase's shallow-copied
+`cal_args`. With the default `--warmup 1`, the first warmup cycle (which
+uses the real `args`) confirms the OS before calibrate even starts.
+
+### First-attempt regression caught in review
+
+The first version of this fix called `_redetect_os_if_needed()` *after*
+each `run_one_cycle()` returned. By then the cycle had already shut the
+DUT down and waited `off_time`, so the DUT was **off** and the probe
+failed `exit 255` every time — the redetection never actually corrected
+anything (the one passing run only worked because its startup probe
+happened to catch the DUT still powered on), and it logged a spurious
+`DUT OS detection: SSH failed (exit 255, host offline?)` warning on every
+cycle. Moving the call inside `run_one_cycle()`, against the live DUT,
+fixes both the ineffectiveness and the log noise.
 
 ## Verification
 
-- `python3 -m py_compile power_cycle.py shutdown.py function.py` passes.
-- Logic re-checked against the failing session: with the fix, the
-  warmup cycle's `run_one_cycle()` call sets `rec["t_alive"]` once the
-  DUT responds to a TCP/ping check; the SSH probe immediately after that
-  now succeeds (DUT is on and reachable), returns `"windows"`, and
-  `shutdown_coord.ssh_cmd` switches to `shutdown /s /t 5` before that
-  same cycle's shutdown step runs. Independent confirmation on hardware
-  pending → status `resolved`.
+- `python3 -m py_compile power_cycle.py shutdown.py function.py report.py`
+  passes.
+- Unit-level simulation: with `dut_os_source="assumed"` and a stub probe
+  returning `"windows"`, one call updates `args.dut_os`,
+  `args.dut_os_source`, `shutdown_coord.ssh_cmd` (→ `shutdown /s /t 5`),
+  and `result["config"]`; a second call is a no-op (probes exactly once);
+  and a `"detected"`/`"explicit"` source never probes at all.
+- Session `20260622T115250` (10/10 PASS, all cycles `shutdown_method:
+  ssh`) confirms the OS path now reaches a graceful SSH shutdown on the
+  zh-TW Windows DUT. Independent confirmation that the *re-detection*
+  path (DUT off at startup) recovers mid-run is pending hardware →
+  status `resolved`.

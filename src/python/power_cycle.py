@@ -160,7 +160,7 @@ def parse_args() -> argparse.Namespace:
 # ── OS re-detection ────────────────────────────────────────────────────────────
 
 def _redetect_os_if_needed(rec, args, shutdown_coord, result, label):
-    """Re-probe DUT OS once it is confirmed alive, if the startup probe never
+    """Re-probe DUT OS while it is confirmed alive, if the startup probe never
     confirmed it.
 
     main() probes the OS via SSH before the DUT is ever powered on, so on a
@@ -168,11 +168,15 @@ def _redetect_os_if_needed(rec, args, shutdown_coord, result, label):
     dut_os_source falls back to "assumed" for the whole run -- the wrong
     (linux) shutdown command then gets sent to e.g. a Windows DUT every cycle,
     even though SSH credentials are perfectly valid (see BUG0030's follow-up).
-    Re-probe on the first cycle where the DUT is confirmed alive and the OS is
-    still unconfirmed, so dut_os/dut_os_source/shutdown_coord.ssh_cmd reflect
-    reality for the remainder of the run.
+    This runs from inside run_one_cycle right after the DUT is confirmed alive
+    (so SSH actually answers), updating dut_os / dut_os_source /
+    shutdown_coord.ssh_cmd for the remainder of the run.
     """
-    if args.dut_os_source == "explicit":
+    # Only redetect an unverified guess. "detected" (startup probe succeeded)
+    # and "explicit" (--dut-os) are already trustworthy -- re-probing them just
+    # adds a useless SSH round-trip and, run post-shutdown, a spurious
+    # "exit 255, host offline" warning every cycle.
+    if args.dut_os_source != "assumed":
         return
     if getattr(args, "_os_redetect_done", False):
         return
@@ -183,7 +187,7 @@ def _redetect_os_if_needed(rec, args, shutdown_coord, result, label):
 
     detected = function.detect_dut_os(args.host, args.port, args.ssh_user)
     if detected == "unknown":
-        return  # DUT alive on the network but SSH not up yet -- try again next cycle
+        return  # SSH not up yet despite liveness -- try again next cycle
 
     args._os_redetect_done = True
     if detected != args.dut_os:
@@ -212,6 +216,7 @@ def run_one_cycle(
     total: int = 0,                 # total cycles in this phase (for log label)
     is_warmup: bool = False,
     leave_on: bool = False,         # skip shutdown on this cycle (--leave-on on last cycle)
+    result: dict = None,            # run result, for in-cycle OS re-detection
 ) -> dict:
     """Execute one power cycle and return a cycle-record dict."""
     rec = {
@@ -265,6 +270,11 @@ def run_one_cycle(
             return rec
 
         log.info("Cycle %d: DUT alive in %.1f s", n, boot_t)
+        # DUT is up and SSH answers now -- confirm the OS here if the startup
+        # probe couldn't (DUT was off then), so the shutdown step below uses the
+        # right command instead of an unverified "assumed" guess.
+        if shutdown_coord is not None and result is not None:
+            _redetect_os_if_needed(rec, args, shutdown_coord, result, f"Cycle {n}")
         function.notify_dut(
             args.ssh_user, args.host, args.port,
             f"Power cycle test in progress - cycle {n}/{_total}. Do not use.",
@@ -378,11 +388,7 @@ def _run_calibrate_phase(
             break
         log.info("[CAL %d/%d] ──────────────────────────────────────", c, n_cal)
         rec = run_one_cycle(c, cal_args, relay, checker, shutdown_coord,
-                            total=n_cal, is_warmup=True)
-        # Use the real args here, not cal_args (a shallow copy) -- mutating
-        # cal_args.dut_os would never propagate back to the warmup/main loops.
-        _redetect_os_if_needed(rec, args, shutdown_coord, result,
-                                f"[CAL {c}/{n_cal}]")
+                            total=n_cal, is_warmup=True, result=result)
         boot_t = rec.get("boot_time_sec")
         log.info("[CAL %d/%d] verdict: %s  boot: %s s",
                  c, n_cal, rec["verdict"],
@@ -445,12 +451,25 @@ def _build_summary(cycles: list, target: int) -> dict:
     }
     total_fail = sum(fail_breakdown.values())
     total_pass = verdicts.count(PASS)
+
+    # How each cycle was actually powered off (ssh = graceful OS shutdown,
+    # atx = power-button press, force = held button, time = blind delay).
+    # Cycles that never reached shutdown (NO_BOOT/CRASH) have method None and
+    # are not counted here.
+    methods = [c.get("shutdown_method") for c in cycles]
+    shutdown_breakdown = {
+        "ssh":   methods.count("ssh"),
+        "atx":   methods.count("atx"),
+        "force": methods.count("force"),
+        "time":  methods.count("time"),
+    }
     return {
         "cycles_target": target,
         "total_ran":     len(cycles),
         "pass":          total_pass,
         "fail":          total_fail,
         "fail_breakdown": fail_breakdown,
+        "shutdown_breakdown": shutdown_breakdown,
     }
 
 
@@ -460,7 +479,7 @@ def _new_result(args: argparse.Namespace, session_id: str, m: int,
                  dut_os_source: str = "explicit") -> dict:
     """Build a fresh result.json structure for a new session."""
     return {
-        "schema_version": "1.2",
+        "schema_version": "1.3",
         "test_name":      "power_cycle",
         "session_id":     session_id,
         "started_at":     function.now_iso(),
@@ -714,9 +733,7 @@ def main() -> int:
         log.info("=== Warmup: %d cycle(s) before counted test ===", args.warmup)
         for w in range(1, args.warmup + 1):
             rec = run_one_cycle(w, args, relay, checker, shutdown_coord,
-                                total=args.warmup, is_warmup=True)
-            _redetect_os_if_needed(rec, args, shutdown_coord, result,
-                                    f"[WARMUP {w}/{args.warmup}]")
+                                total=args.warmup, is_warmup=True, result=result)
             log.info("[WARMUP %d/%d] verdict: %s (not counted)", w, args.warmup, rec["verdict"])
             if args.debug and rec["verdict"] != PASS:
                 log.error("--debug: warmup cycle %d failed (%s) — stopping immediately, "
@@ -748,9 +765,7 @@ def main() -> int:
 
             is_last = (n == m) and not _stop_requested
             rec = run_one_cycle(n, args, relay, checker, shutdown_coord, total=m,
-                                leave_on=(args.leave_on and is_last))
-            _redetect_os_if_needed(rec, args, shutdown_coord, result,
-                                    f"Cycle {n}/{m}")
+                                leave_on=(args.leave_on and is_last), result=result)
             result["cycles"].append(rec)
             last_n = n
 
@@ -847,6 +862,10 @@ def main() -> int:
              s["fail_breakdown"][CRASH],
              s["fail_breakdown"][HANG_SHUTDOWN],
              s["fail_breakdown"][RELAY_ERROR])
+    sb = s.get("shutdown_breakdown", {})
+    log.info("Shutdown  : ssh=%d  atx=%d  force=%d  time=%d",
+             sb.get("ssh", 0), sb.get("atx", 0),
+             sb.get("force", 0), sb.get("time", 0))
     log.info("=" * 50)
 
     return 0 if result["overall_verdict"] == PASS else 1
