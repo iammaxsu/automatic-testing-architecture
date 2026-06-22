@@ -435,6 +435,22 @@ def _render(result: dict) -> str:
   <div class="card"><div class="label">Std-dev</div><div class="value">{sdstat("stddev")}</div></div>
 </div>"""
 
+    # Shutdown-method count cards (power_cycle only) -- explicit counts to
+    # complement the donut chart below, which shows proportion but not n.
+    method_order = ["ssh", "atx", "force", "time"]
+    method_breakdown_section = ""
+    if has_methods:
+        method_cards = "".join(
+            f'<div class="card"><div class="label">{m}</div>'
+            f'<div class="value">{method_counts.get(m, 0)}</div></div>'
+            for m in method_order if method_counts.get(m, 0) > 0
+        )
+        method_breakdown_section = f"""
+<div class="section-title">Shutdown method (force = DUT failed to shut down gracefully)</div>
+<div class="cards">
+  {method_cards}
+</div>"""
+
     # Shutdown time chart + method distribution chart HTML (power_cycle only)
     shutdown_chart_html = ""
     if has_shutdown:
@@ -602,6 +618,7 @@ def _render(result: dict) -> str:
 </div>
 
 {shutdown_stats_section}
+{method_breakdown_section}
 
 <!-- Failure table -->
 <div class="section-title">Failed cycles detail</div>
