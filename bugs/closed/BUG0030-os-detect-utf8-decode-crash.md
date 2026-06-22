@@ -5,7 +5,7 @@ created: 2026-06-18
 closed: 2026-06-18
 os: [Windows 11 (zh-TW)]
 related_requirements: [FWK028]
-related_bugs: []
+related_bugs: [BUG0031]
 ---
 
 ## Symptom
