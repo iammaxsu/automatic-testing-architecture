@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-06-23 09:04 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-06-23 09:20 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -18,14 +18,14 @@ _Generated 2026-06-23 09:04 · regenerate with `python scripts/stats.py > STATUS
 
 | Status | Count |
 | --- | --- |
-| proposed | 108 |
-| implementing | 7 |
+| proposed | 107 |
+| implementing | 8 |
 | implemented | 26 |
 
 ```mermaid
 pie showData title Requirements by status
-    "proposed" : 108
-    "implementing" : 7
+    "proposed" : 107
+    "implementing" : 8
     "implemented" : 26
 ```
 
@@ -65,7 +65,7 @@ pie showData title Requirements by status
 | [DET009](requirements/DET009.md) | proposed | Golden Reference Comparison |
 | [DET010](requirements/DET010.md) | proposed | Configurable Golden Reference Path |
 | [DET011](requirements/DET011.md) | proposed | Diff Output in Test Log |
-| [DET013](requirements/DET013.md) | proposed | Snapshot Mode and Machine-Readable Per-Run Result |
+| [DET013](requirements/DET013.md) | implementing | Snapshot Mode and Machine-Readable Per-Run Result |
 | [DOC003](requirements/DOC003.md) | proposed | Bug Status Vocabulary |
 | [DOC004](requirements/DOC004.md) | proposed | Test Verdict Vocabulary |
 | [DSK001](requirements/DSK001.md) | proposed | Storage Device Enumeration |

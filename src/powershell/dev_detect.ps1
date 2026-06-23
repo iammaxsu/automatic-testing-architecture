@@ -15,9 +15,61 @@
   Designed to run at startup via Task Scheduler (as SYSTEM, no user logon
   needed).  Register via: setup_dut.ps1 -DevDetectScript PATH_TO_SCRIPT
 
+  DET013 run modes:
+    (default)        Standalone. Unchanged: re-invoked at every boot by the
+                      Task Scheduler entry registered via setup_dut.ps1; this
+                      script itself never reboots/powers off (it never has).
+    -SnapshotOnly     Same single pass; documents that an external
+                      orchestrator (e.g. power_cycle.py) owns the loop and
+                      power-cycling for this run. dev_detect.ps1 does not
+                      install or modify the Task Scheduler entry either way
+                      -- that remains setup_dut.ps1's job.
+
+  Every pass exits with a DET013-standard code and writes a JSON sidecar
+  next to its per-run .log file; see docs/dev_detect.md.
+
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File .\dev_detect.ps1
+
+.EXAMPLE
+  powershell -ExecutionPolicy Bypass -File .\dev_detect.ps1 -SnapshotOnly
 #>
+
+param(
+    [switch]$SnapshotOnly,
+    [Alias('h')][switch]$Help
+)
+
+if ($Help) {
+    @'
+Usage: dev_detect.ps1 [-SnapshotOnly] [-Help]
+
+Run modes:
+  (no flag)       Standalone mode (default). Re-invoked at every boot by the
+                  Task Scheduler entry (registered via setup_dut.ps1). This
+                  script performs one pass and exits either way; it has no
+                  self-triggered reboot/poweroff to suppress.
+  -SnapshotOnly   Documents that an external orchestrator (e.g.
+                  power_cycle.py) owns the loop/power-cycling for this run.
+                  Behaves the same as default mode (see above) -- the flag
+                  exists for parity with dev_detect.sh and so the JSON
+                  sidecar can record which mode produced a given pass.
+
+Other options:
+  -Help, -h       Show this help and exit.
+
+Exit codes (every pass, both modes):
+  0  Pass   - every check matches its existing golden reference
+  1  Fail   - at least one check deviates from its golden reference
+  2  Error  - a check could not run
+  3  INIT   - at least one golden did not exist yet and was just created
+             (not a verified pass), and no check failed
+
+Each pass also writes a JSON sidecar next to its per-run .log file; see
+docs/dev_detect.md for the schema.
+'@ | Write-Host
+    exit 0
+}
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -54,6 +106,15 @@ if (-not (Test-Path $_log_path)) {
 $_cfg = Resolve-FirstExisting -Paths @( (Join-Path $_script_root 'config.ps1') )
 if ($_cfg) { . $_cfg }
 
+# DET013: a freshly-created golden never verified anything -- report INIT,
+# not PASS, so the orchestrator can tell "just baselined" from "checked OK".
+function Get-DevDetectResultTag {
+    param([string]$CurrentScalar, [string]$GoldenScalar)
+    if ($script:_golden_was_init) { return 'INIT' }
+    if ($CurrentScalar -eq $GoldenScalar) { return 'PASS' }
+    return 'FAIL'
+}
+
 # -- CPU check -----------------------------------------------------------------
 
 function Get-CpuText {
@@ -72,7 +133,7 @@ function Invoke-CpuCheck {
     $goldenScalar  = Initialize-Golden -GoldenFileName 'golden_cpu.log' -CurrentScalar $currentScalar
     [pscustomobject]@{
         name           = 'cpu_model'
-        result_tag     = if ($currentScalar -eq $goldenScalar) { 'PASS' } else { 'FAIL' }
+        result_tag     = Get-DevDetectResultTag -CurrentScalar $currentScalar -GoldenScalar $goldenScalar
         content_text   = $currentText
         golden_scalar  = $goldenScalar
         current_scalar = $currentScalar
@@ -101,7 +162,7 @@ function Invoke-MemoryCheck {
     $goldenScalar  = Initialize-Golden -GoldenFileName 'golden_mem_total.log' -CurrentScalar $currentScalar
     [pscustomobject]@{
         name           = 'memory_total_gb'
-        result_tag     = if ($currentScalar -eq $goldenScalar) { 'PASS' } else { 'FAIL' }
+        result_tag     = Get-DevDetectResultTag -CurrentScalar $currentScalar -GoldenScalar $goldenScalar
         content_text   = $currentText
         golden_scalar  = $goldenScalar
         current_scalar = $currentScalar
@@ -137,7 +198,7 @@ function Invoke-UsbCheck {
     $goldenScalar  = Initialize-Golden -GoldenFileName 'golden_usb_passmark_count.log' -CurrentScalar $currentScalar
     [pscustomobject]@{
         name           = 'usb_passmark_count'
-        result_tag     = if ($currentScalar -eq $goldenScalar) { 'PASS' } else { 'FAIL' }
+        result_tag     = Get-DevDetectResultTag -CurrentScalar $currentScalar -GoldenScalar $goldenScalar
         content_text   = $currentText
         golden_scalar  = $goldenScalar
         current_scalar = $currentScalar
@@ -226,7 +287,7 @@ function Invoke-NicCheck {
     $goldenScalar  = Initialize-Golden -GoldenFileName 'golden_nic_model_count.log' -CurrentScalar $currentScalar
     [pscustomobject]@{
         name           = 'nic_model_counts'
-        result_tag     = if ($currentScalar -eq $goldenScalar) { 'PASS' } else { 'FAIL' }
+        result_tag     = Get-DevDetectResultTag -CurrentScalar $currentScalar -GoldenScalar $goldenScalar
         content_text   = $currentText
         golden_scalar  = $goldenScalar
         current_scalar = $currentScalar
@@ -299,7 +360,7 @@ function Invoke-StorageCheck {
     $goldenScalar  = Initialize-Golden -GoldenFileName 'golden_storage_model_bus_count.log' -CurrentScalar $currentScalar
     [pscustomobject]@{
         name           = 'storage_model_bus_counts'
-        result_tag     = if ($currentScalar -eq $goldenScalar) { 'PASS' } else { 'FAIL' }
+        result_tag     = Get-DevDetectResultTag -CurrentScalar $currentScalar -GoldenScalar $goldenScalar
         content_text   = $currentText
         golden_scalar  = $goldenScalar
         current_scalar = $currentScalar
@@ -318,11 +379,43 @@ $_results += Invoke-UsbCheck
 $_results += Invoke-NicCheck
 $_results += Invoke-StorageCheck
 
-$_overall_tag  = if (@($_results | Where-Object { $_.result_tag -ne 'PASS' }).Count -eq 0) { 'PASS' } else { 'FAIL' }
+# DET013: precedence mirrors dev_detect.sh -- Fail beats INIT beats Pass.
+# (Error is reserved for a check that threw; CIM/exception failures above
+# already propagate via $ErrorActionPreference = 'Stop' rather than landing
+# here as a result_tag, so it is not assigned below.)
+if     (@($_results | Where-Object { $_.result_tag -eq 'FAIL' }).Count -gt 0) { $_overall_tag = 'FAIL' }
+elseif (@($_results | Where-Object { $_.result_tag -eq 'INIT' }).Count -gt 0) { $_overall_tag = 'INIT' }
+else                                                                          { $_overall_tag = 'PASS' }
+
+$_exit_code = switch ($_overall_tag) {
+    'PASS' { 0 }
+    'FAIL' { 1 }
+    'INIT' { 3 }
+    default { 2 }
+}
 
 $_per_run_path = Write-CombinedPerRunLog -Count $_count -Date2 $_date2 -OverallTag $_overall_tag -Results $_results
 Add-CombinedSummary                  -Count $_count -Date2 $_date2 -OverallTag $_overall_tag -Results $_results
 
+# DET013: JSON sidecar, additive to the existing per-run .log file.
+$_components = @{}
+foreach ($r in $_results) { $_components[$r.name] = $r.result_tag }
+$_sidecar_path = Join-Path $_log_path ('{0}_{1}_{2}.json' -f $_count, $_date2, $_overall_tag)
+[ordered]@{
+    schema_version = '1.0'
+    session_id     = $_date2
+    k              = $_count
+    m              = $null
+    result         = $_overall_tag
+    timestamp      = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    log_path       = $_per_run_path
+    mode           = $(if ($SnapshotOnly) { 'snapshot' } else { 'standalone' })
+    components     = $_components
+} | ConvertTo-Json -Depth 4 | Set-Content -Path $_sidecar_path -Encoding UTF8
+
 Write-Host ("Overall    : {0}" -f $_overall_tag)
 Write-Host ("Per-run log: {0}" -f $_per_run_path)
+Write-Host ("Sidecar    : {0}" -f $_sidecar_path)
 Write-Host ("Summary log: {0}" -f $_summary_file)
+
+exit $_exit_code

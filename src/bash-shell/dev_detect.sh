@@ -1,4 +1,50 @@
 #!/usr/bin/env bash
+# ---------- --help / -h (DET013): answer before requiring root ----------
+# Checked first so a user can see usage without sudo/root.
+for _arg in "$@"; do
+  case "${_arg}" in
+    --help|-h)
+      cat <<'USAGE'
+Usage: dev_detect.sh [N] [options]
+
+  N                     Number of detection passes to run across reboots
+                        (standalone mode only; default 1).
+
+Run modes:
+  (no flag)             Standalone mode (default). The script owns its own
+                        persistent loop: installs a systemd autorun service
+                        and reboots/powers off itself between passes until
+                        N passes have run.
+  --snapshot-only       Run exactly ONE detection pass and exit. Does NOT
+                        install autorun and does NOT reboot/poweroff.
+                        Intended for use under an external orchestrator
+                        (e.g. power_cycle.py) that already owns the
+                        power-cycle loop.
+
+Other options:
+  --power-cycle         In standalone mode, use poweroff instead of reboot
+                        between passes (default: reboot).
+  --vpu-check           Enable the optional VPU (PCIe device 1ffc) check.
+  --vpu-vid VID         VPU vendor:device ID to match (default: 1ffc).
+  --vpu-count N         Expected VPU device count (default: 18).
+  --vpu-speed SPEED     Expected PCIe link speed, e.g. 8GT/s (default: 8GT/s).
+  --vpu-width WIDTH     Expected PCIe link width, e.g. x2 (default: x2).
+  --help, -h            Show this help and exit.
+
+Exit codes (every pass, both modes):
+  0  Pass   - output matches an existing golden reference
+  1  Fail   - output deviates from an existing golden reference
+  2  Error  - detection could not run
+  3  INIT   - no golden existed; one was just created (not a verified pass)
+
+Each pass also writes a JSON sidecar next to its .log file; see
+docs/dev_detect.md for the schema.
+USAGE
+      exit 0
+      ;;
+  esac
+done
+
 # ---------- Self-elevate to root (FWK025) ----------
 # This test reads SMBIOS/USB descriptors that require root.
 # If invoked as a non-root user, re-execute under sudo, preserving
@@ -72,18 +118,23 @@ _vpu_expect_width="x2"
 
 _reset_mode="reboot"   # reboot | power-cycle  (pass --power-cycle to switch)
 
+# DET013: snapshot mode hands the persistent loop over to an external
+# orchestrator (power_cycle.py). One pass, no autorun, no reboot/poweroff.
+_snapshot_only=0
+
 _parse_vpu_flags_from_rem_args() {
   # Parse from REM_ARGS (provided by parse_common_cli in function.sh).
   # We do NOT mutate REM_ARGS because autorun_install_self_if_needed reuses it.
   local i=0
   while [[ $i -lt ${#REM_ARGS[@]} ]]; do
     case "${REM_ARGS[$i]}" in
-      --vpu-check)    _vpu_enable=1 ;;
-      --vpu-vid)      ((i+=1)); _vpu_vid="${REM_ARGS[$i]:-$_vpu_vid}" ;;
-      --vpu-count)    ((i+=1)); _vpu_expect_count="${REM_ARGS[$i]:-$_vpu_expect_count}" ;;
-      --vpu-speed)    ((i+=1)); _vpu_expect_speed="${REM_ARGS[$i]:-$_vpu_expect_speed}" ;;
-      --vpu-width)    ((i+=1)); _vpu_expect_width="${REM_ARGS[$i]:-$_vpu_expect_width}" ;;
-      --power-cycle)  _reset_mode="power-cycle" ;;
+      --vpu-check)      _vpu_enable=1 ;;
+      --vpu-vid)        ((i+=1)); _vpu_vid="${REM_ARGS[$i]:-$_vpu_vid}" ;;
+      --vpu-count)      ((i+=1)); _vpu_expect_count="${REM_ARGS[$i]:-$_vpu_expect_count}" ;;
+      --vpu-speed)      ((i+=1)); _vpu_expect_speed="${REM_ARGS[$i]:-$_vpu_expect_speed}" ;;
+      --vpu-width)      ((i+=1)); _vpu_expect_width="${REM_ARGS[$i]:-$_vpu_expect_width}" ;;
+      --power-cycle)    _reset_mode="power-cycle" ;;
+      --snapshot-only)  _snapshot_only=1 ;;
     esac
     ((i+=1))
   done
@@ -679,6 +730,42 @@ compare_with_golden() {
     return 1
   fi
 }
+
+# DET013: JSON sidecar, canonical machine-readable record for one pass.
+# Written alongside (never replacing) the existing .log/.txt/.diff files.
+# "components" is left as an empty object until per-component comparison
+# (a later requirement) is implemented.
+emit_dev_detect_sidecar() {
+  local out_json="$1" k="$2" m="$3" result="$4" snapshot="$5" golden="$6" diffout="$7"
+  local ts diff_json="null"
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  [[ -n "${diffout}" && -f "${diffout}" ]] && diff_json="\"${diffout}\""
+  cat > "${out_json}" <<JSONEOF
+{
+  "schema_version": "1.0",
+  "session_id": "${_session_id}",
+  "k": ${k},
+  "m": ${m},
+  "result": "${result}",
+  "timestamp": "${ts}",
+  "snapshot_path": "${snapshot}",
+  "golden_path": "${golden}",
+  "diff_path": ${diff_json},
+  "components": {}
+}
+JSONEOF
+}
+
+# DET013: map a pass result string to the standardised exit code.
+dev_detect_exit_code_for() {
+  case "$1" in
+    Pass) echo 0 ;;
+    Fail) echo 1 ;;
+    Error) echo 2 ;;
+    INIT) echo 3 ;;
+    *) echo 2 ;;
+  esac
+}
 # =============================================================================
 # ---- Loops (持久化) ----
 parse_common_cli "$@"
@@ -703,17 +790,35 @@ if ! flock -n 9; then
   exit 0
 fi
 
-# 第一次手動執行時，若沒裝過 systemd autorun，幫自己裝起來
-# 讓它在每次開機自動再跑一次，直到達到 m 次為止。
 _entry_full="$(readlink -f "${BASH_SOURCE[0]:-$0}")"
-autorun_setup "dev" "${_m}" "${_entry_full}" "${REM_ARGS[@]:-}"
+
+# DET013: snapshot mode hands the persistent loop to an external
+# orchestrator -- do not install autorun (it would race with the
+# orchestrator's own reboot/power-cycle control).
+if [[ "${_snapshot_only}" -eq 0 ]]; then
+  # 第一次手動執行時，若沒裝過 systemd autorun，幫自己裝起來
+  # 讓它在每次開機自動再跑一次，直到達到 m 次為止。
+  autorun_setup "dev" "${_m}" "${_entry_full}" "${REM_ARGS[@]:-}"
+fi
 
 : "${_session_ts:=$(now_ts)}"
 _run_ts="${_session_ts}"
 
 # 測試名 & golden 路徑
+#
+# DET013: in --snapshot-only mode each invocation is a separate process with
+# its own fresh session (the orchestrator calls us once per power cycle), so
+# a session-scoped golden would never survive between calls -- every pass
+# would see no golden and report INIT forever, verifying nothing. Snapshot
+# mode therefore keeps the golden under the stable top-level log dir instead
+# of the per-session dir, so it persists across the whole orchestrated run.
+# Standalone mode is unchanged: golden stays session-scoped, as today.
 : "${_dev_detect_test_name:=dev_detect}"
-golden_dir="${log_root}/golden"
+if [[ "${_snapshot_only}" -eq 1 ]]; then
+  golden_dir="${_log_dir}/golden"
+else
+  golden_dir="${log_root}/golden"
+fi
 golden_tpl="${golden_dir}/${_dev_detect_test_name}.golden.txt"
 mkdir -p -- "${golden_dir}"
 
@@ -750,19 +855,27 @@ for (( dev_loop=1; dev_loop<=_loops_this_run; dev_loop++ )); do
   diffout="${log_root}/${_dev_detect_test_name}_diff_${k}_of_${m}_${_run_ts}.diff"
 
   if [[ ! -f "${golden_tpl}" ]]; then
-    collect_inventory_snapshot "${now_snapshot}"
-    cp -f -- "${now_snapshot}" "${golden_tpl}"
-    loop_result="INIT"
-	  { echo "--- Snapshot ${k}/${m} ---"; cat "${now_snapshot}"; } | tee -a "${_devlog}"
-  else
-    collect_inventory_snapshot "${now_snapshot}"
-    if compare_with_golden "${now_snapshot}" "${golden_tpl}" "${diffout}"; then
-      loop_result="Pass"
+    if collect_inventory_snapshot "${now_snapshot}"; then
+      cp -f -- "${now_snapshot}" "${golden_tpl}"
+      loop_result="INIT"
+      { echo "--- Snapshot ${k}/${m} ---"; cat "${now_snapshot}"; } | tee -a "${_devlog}"
     else
-      loop_result="Fail"
-      echo "[DIFF] -> ${diffout}" | tee -a "${_devlog}"
+      loop_result="Error"
+      echo "[ERROR] collect_inventory_snapshot failed" | tee -a "${_devlog}"
     fi
-		{ echo "--- Snapshot ${k}/${m} ---"; cat "${now_snapshot}"; } | tee -a "${_devlog}"
+  else
+    if collect_inventory_snapshot "${now_snapshot}"; then
+      if compare_with_golden "${now_snapshot}" "${golden_tpl}" "${diffout}"; then
+        loop_result="Pass"
+      else
+        loop_result="Fail"
+        echo "[DIFF] -> ${diffout}" | tee -a "${_devlog}"
+      fi
+      { echo "--- Snapshot ${k}/${m} ---"; cat "${now_snapshot}"; } | tee -a "${_devlog}"
+    else
+      loop_result="Error"
+      echo "[ERROR] collect_inventory_snapshot failed" | tee -a "${_devlog}"
+    fi
   fi
 
 
@@ -791,11 +904,28 @@ fi
     [[ -f "${diffout}" ]] && echo "Diff: ${diffout}"
   } > "${log_root}/${final_name}"
 
+  # DET013: machine-readable sidecar, additive to the text log above.
+  emit_dev_detect_sidecar \
+    "${log_root}/${_dev_detect_test_name}_${_session_id}_${k}_of_${m}_${loop_result}.json" \
+    "${k}" "${m}" "${loop_result}" "${now_snapshot}" "${golden_tpl}" \
+    "$( [[ -f "${diffout}" ]] && echo "${diffout}" )"
+  _last_loop_result="${loop_result}"
+
   counter_tick
 done
 
 echo "" | tee -a "${_devlog}"
 elp_time | tee -a "${_devlog}"
+
+_dev_detect_exit_code="$(dev_detect_exit_code_for "${_last_loop_result:-Error}")"
+
+# DET013: snapshot mode never installs autorun and never reboots/powers off --
+# loop count and power cycling belong to the external orchestrator.
+if [[ "${_snapshot_only}" -eq 1 ]]; then
+  echo "[INFO] --snapshot-only: pass complete (${_last_loop_result}). No autorun, no reboot."
+  test_progress_clear "dev_detect snapshot complete (${_last_loop_result})."
+  exit "${_dev_detect_exit_code}"
+fi
 
 # 是否已達成目標?
 if (( $(counter_is_done) == 1 )); then
@@ -804,7 +934,7 @@ if (( $(counter_is_done) == 1 )); then
   echo "[INFO] Completed ${_m}/${_m}. Service disabled. No reboot."
   test_progress_clear "dev_detect completed ${_m}/${_m}. Safe to power off."
   generate_dev_detect_report "${log_root}" | tee -a "${_devlog}"
-  exit 0
+  exit "${_dev_detect_exit_code}"
 else
   # 未完成：等一會兒再重開，讓下一回合接續
   if [[ "${_reset_mode}" == "power-cycle" ]]; then

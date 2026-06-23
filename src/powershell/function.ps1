@@ -210,6 +210,9 @@ function Initialize-Golden {
         $CurrentScalar | Set-Content -Path $goldenPath -Encoding UTF8
         Write-Host "  Initialized golden: $goldenPath"
     }
+    # DET013: callers need to know "just created" so they can report INIT
+    # rather than a Pass that never actually verified anything.
+    $script:_golden_was_init = $needInit
     return ((Get-Content $goldenPath -Raw) -replace "`r", "").Trim()
 }
 
