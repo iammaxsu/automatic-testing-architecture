@@ -151,13 +151,17 @@ function Get-PcieLinkInfo {
     $curGBs = Get-PcieLinkBandwidth -SpeedGTs $curSpeedGTs -Width $curWidth
     $maxGBs = Get-PcieLinkBandwidth -SpeedGTs $maxSpeedGTs -Width $maxWidth
 
-    # Compose "current (max ...)" display strings; collapse to a single value
-    # when current and max agree, and fall back to 'Unknown' when unreadable.
-    $genText = if ($curGen -ne 'Unknown' -and $maxGen -ne 'Unknown') {
-                   if ($curGen -eq $maxGen) { $curGen } else { '{0} (max {1})' -f $curGen, $maxGen } }
-               elseif ($curGen -ne 'Unknown') { $curGen }
-               elseif ($maxGen -ne 'Unknown') { 'Unknown (max {0})' -f $maxGen }
-               else { 'Unknown' }
+    # Gen and Speed are the same fact in two notations (Gen4 == 16.0 GT/s),
+    # so they are merged into one display string instead of two columns.
+    $curGenSpeed = if ($curGen -ne 'Unknown' -and $curSpeedGTs -gt 0) { '{0} ({1:0.0} GT/s)' -f $curGen, $curSpeedGTs }
+                   else { 'Unknown' }
+    $maxGenSpeed = if ($maxGen -ne 'Unknown' -and $maxSpeedGTs -gt 0) { '{0} ({1:0.0} GT/s)' -f $maxGen, $maxSpeedGTs }
+                   else { 'Unknown' }
+    $genSpeedText = if ($curGenSpeed -ne 'Unknown' -and $maxGenSpeed -ne 'Unknown') {
+                        if ($curGenSpeed -eq $maxGenSpeed) { $curGenSpeed } else { '{0} (max {1})' -f $curGenSpeed, $maxGenSpeed } }
+                    elseif ($curGenSpeed -ne 'Unknown') { $curGenSpeed }
+                    elseif ($maxGenSpeed -ne 'Unknown') { 'Unknown (max {0})' -f $maxGenSpeed }
+                    else { 'Unknown' }
 
     $widText = if ($curWidth -gt 0 -and $maxWidth -gt 0) {
                    if ($curWidth -eq $maxWidth) { "x$curWidth" } else { 'x{0} (max x{1})' -f $curWidth, $maxWidth } }
@@ -165,27 +169,23 @@ function Get-PcieLinkInfo {
                elseif ($maxWidth -gt 0) { 'Unknown (max x{0})' -f $maxWidth }
                else { 'Unknown' }
 
-    $spdText = if ($curSpeedGTs -gt 0 -and $maxSpeedGTs -gt 0) {
-                   if ($curSpeedGTs -eq $maxSpeedGTs) { '{0:0.0} GT/s' -f $curSpeedGTs }
-                   else { '{0:0.0} (max {1:0.0}) GT/s' -f $curSpeedGTs, $maxSpeedGTs } }
-               elseif ($curSpeedGTs -gt 0) { '{0:0.0} GT/s' -f $curSpeedGTs }
-               elseif ($maxSpeedGTs -gt 0) { 'Unknown (max {0:0.0} GT/s)' -f $maxSpeedGTs }
-               else { 'Unknown' }
-
     [pscustomobject]@{
-        InstanceId   = $pci
-        CurSpeedGTs  = $curSpeedGTs
-        MaxSpeedGTs  = $maxSpeedGTs
-        CurWidth     = $curWidth
-        MaxWidth     = $maxWidth
-        CurGen       = $curGen
-        MaxGen       = $maxGen
-        # Back-compatible display fields consumed by the NIC/storage tables:
-        Gen          = $genText
-        Width        = $widText
-        SpeedGTs     = $spdText
-        ApproxGBs    = if ($curGBs -gt 0) { '~{0} GB/s (per dir)' -f $curGBs } else { 'Unknown' }
-        MaxApproxGBs = if ($maxGBs -gt 0) { '~{0} GB/s (per dir)' -f $maxGBs } else { 'Unknown' }
+        InstanceId       = $pci
+        CurSpeedGTs      = $curSpeedGTs
+        MaxSpeedGTs      = $maxSpeedGTs
+        CurWidth         = $curWidth
+        MaxWidth         = $maxWidth
+        CurGen           = $curGen
+        MaxGen           = $maxGen
+        # Display fields consumed by the NIC/storage tables. TheoreticalGBs is
+        # the PCIe link's raw byte-throughput ceiling derived from Gen x Width
+        # (encoding-efficiency adjusted) -- it is the slot/lane capacity, not a
+        # measured value and not comparable to a NIC's Ethernet line rate; a
+        # link is routinely provisioned well above what one port needs.
+        GenSpeed         = $genSpeedText
+        Width            = $widText
+        TheoreticalGBs   = if ($curGBs -gt 0) { '~{0} GB/s (per dir)' -f $curGBs } else { 'Unknown' }
+        MaxTheoreticalGBs = if ($maxGBs -gt 0) { '~{0} GB/s (per dir)' -f $maxGBs } else { 'Unknown' }
     }
 }
 

@@ -260,10 +260,9 @@ function Get-NicText {
             InterfaceDescription = $desc
             Status               = $statusVal
             SpeedGbps            = $speedGbps
-            PcieGen              = if ($link) { $link.Gen }      else { 'Unknown' }
-            PcieWidth            = if ($link) { $link.Width }    else { 'Unknown' }
-            PcieSpeed            = if ($link) { $link.SpeedGTs } else { 'Unknown' }
-            PcieApproxGBs        = if ($link) { $link.ApproxGBs } else { 'Unknown' }
+            PcieGenSpeed         = if ($link) { $link.GenSpeed }       else { 'Unknown' }
+            PcieWidth            = if ($link) { $link.Width }          else { 'Unknown' }
+            PcieTheoreticalGBs   = if ($link) { $link.TheoreticalGBs } else { 'Unknown' }
         }
     }
     $detail     = ($rows | Format-Table -AutoSize | Out-String).TrimEnd()
@@ -325,10 +324,9 @@ function Get-StorageText {
         }
         [pscustomobject]@{
             Model         = $model; Bus = $bus; SizeGB = $szGB
-            PCIeGen       = if ($pcieInfo) { $pcieInfo.Gen }      else { $null }
-            PCIeWidth     = if ($pcieInfo) { $pcieInfo.Width }    else { $null }
-            PCIeSpeed     = if ($pcieInfo) { $pcieInfo.SpeedGTs } else { $null }
-            PCIeApproxGBs = if ($pcieInfo) { $pcieInfo.ApproxGBs } else { $null }
+            PCIeGenSpeed       = if ($pcieInfo) { $pcieInfo.GenSpeed }       else { $null }
+            PCIeWidth          = if ($pcieInfo) { $pcieInfo.Width }          else { $null }
+            PCIeTheoreticalGBs = if ($pcieInfo) { $pcieInfo.TheoreticalGBs } else { $null }
             UsbVersion    = $usbHint
             SataLink      = $sataRate
         }
