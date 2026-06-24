@@ -110,12 +110,12 @@ Today the two `components` maps don't actually line up:
 
 | Key today | `dev_detect.sh` source | `dev_detect.ps1` source | DET id |
 |---|---|---|---|
-| `cpu_model` | `detect_cpu` (whole-file diff only — not a separate component yet) | `cpu_model` check | DET001 |
-| `memory_total_gb` | `detect_ram` (ditto) | `memory_total_gb` check | DET002 |
-| `nic_model_counts` | `detect_pcie_ethernet` (PCIe NICs only; ditto) | `nic_model_counts` check (all NICs, not just PCIe) | DET003 |
-| `usb_passmark_count` | `detect_usb` (2026-06-24: now also matches the PassMark loopback plug by name in `lsusb` output and reports a count, mirroring the PS check; still folded into the whole-file diff, not its own component yet) | `usb_passmark_count` check — narrower than DET004: counts PassMark loopback plugs specifically, not "USB device model/count/speed" in general | DET004 |
-| `storage_model_bus_counts` | `detect_storage` (ditto) | `storage_model_bus_counts` check | DET005 |
-| *(none)* | `detect_pcie_gpu` (bash-only, no DET id) | *(none)* | — (Layer 3 extra, not core) |
+| `cpu_model` | `cpu_model_scalar` (own golden, 2026-06-24) | `cpu_model` check | DET001 |
+| `memory_total_gb` | `memory_total_gb_scalar` (ditto) | `memory_total_gb` check | DET002 |
+| `nic_model_counts` | `nic_model_counts_scalar` (all PCIe Ethernet controllers; ditto) | `nic_model_counts` check (all NICs, not just PCIe) | DET003 |
+| `usb_passmark_count` | `usb_passmark_count_scalar` (2026-06-24: matches the PassMark loopback plug by name in `lsusb` output, own golden, mirroring the PS check) | `usb_passmark_count` check — narrower than DET004: counts PassMark loopback plugs specifically, not "USB device model/count/speed" in general | DET004 |
+| `storage_model_bus_counts` | `storage_model_bus_counts_scalar` (ditto) | `storage_model_bus_counts` check | DET005 |
+| `pcie_gpu` | `pcie_gpu_scalar` (bash-only component, 2026-06-24; no DET id) | *(none)* | — (Layer 3 extra, not core) |
 | *(none)* | PCIe link speed/width shown as free text inside `detect_pcie_ethernet`/`detect_storage`, never compared | PCIe link speed/width shown as free text inside the NIC/storage tables, never compared | DET006 |
 
 Decisions to close this gap, so the schema below has a stable key set:
@@ -230,12 +230,22 @@ Notes:
       `2.0`; `golden` is `null` on INIT. `test_dev_detect.ps1` asserts
       the new shape across the INIT→Pass→Fail sequence. (Not yet run on
       real Windows — queued with the rest of the PS harness.)
-- [ ] `dev_detect.sh`: replace the single whole-file `diff` with a
-      per-component scalar + golden file per `detect_*` function, and
-      populate `components` with the same triple. Add a bash-only
-      `pcie_gpu` component (allowed by the "sets may differ" rule).
-- [ ] `test_dev_detect.sh`: assert on `components.<name>.result` /
-      `.current` / `.golden` once bash emits them.
+- [x] `dev_detect.sh`: added `cpu_model_scalar` / `memory_total_gb_scalar` /
+      `nic_model_counts_scalar` / `usb_passmark_count_scalar` /
+      `storage_model_bus_counts_scalar` / `pcie_gpu_scalar`, each backed by
+      its own golden file under `logs/golden/<name>.golden.txt`
+      (`dev_detect_component_check`, mirroring `dev_detect.ps1`'s
+      `Initialize-Golden`). The top-level Pass/Fail/INIT verdict now rolls
+      up from these per-component results (`component_rollup_result`),
+      not from the whole-file `diff`; the whole-file snapshot/golden/diff
+      is kept only as a human-readable artefact referenced by
+      `snapshot_path`/`golden_path`/`diff_path`. `schema_version` bumped to
+      `2.0`. `pcie_gpu` ships as the bash-only extra component.
+- [x] `test_dev_detect.sh`: asserts on `components.<name>.result` /
+      `.current` / `.golden` across the INIT→Pass→Fail sequence
+      (`sidecar_field` extended to resolve dotted paths). The golden-
+      mismatch scenario now corrupts `cpu_model.golden.txt` specifically
+      instead of an ambiguous `*.golden.txt` glob match. 36/36 passing.
 
 ## Layer 3 — Detection-depth alignment (partial — do NOT do all)
 

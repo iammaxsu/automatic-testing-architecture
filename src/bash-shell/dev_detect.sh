@@ -747,6 +747,150 @@ detect_storage() {
 	done < <(lsblk -dn -o NAME,TRAN,MODEL | sed 's/ \+/ /g' | awk '$1!=""{print $1"|" $2 "|" substr($0,index($0,$3))}')
 }
 
+# ---------- Per-component scalars (contract-alignment-plan Layer 2) ----------
+# Each reduces a detect_* category to one normalized comparison string, the
+# same granularity dev_detect.ps1's Get-*Scalar functions already use. The
+# free-text detect_* output above stays in the human-readable snapshot/log;
+# only these scalars feed the per-component Pass/Fail verdict and the JSON
+# sidecar's "components" map.
+
+cpu_model_scalar() {
+  command -v lscpu >/dev/null 2>&1 || { echo "unknown"; return; }
+  local _model _cores _sockets
+  _model="$(lscpu | awk -F': +' '/Model name/{print $2; exit}')"
+  _cores="$(lscpu | awk -F': +' '/^CPU\(s\)/{print $2; exit}')"
+  _sockets="$(lscpu | awk -F': +' '/Socket\(s\)/{print $2; exit}')"
+  printf '%s | cores=%s | sockets=%s' "${_model:-unknown}" "${_cores:-unknown}" "${_sockets:-unknown}"
+}
+
+memory_total_gb_scalar() {
+  command -v free >/dev/null 2>&1 || { echo "unknown"; return; }
+  free -b | awk '/^Mem:/{printf "%d", $2/1024/1024/1024}'
+}
+
+nic_model_counts_scalar() {
+  command -v lspci >/dev/null 2>&1 || { echo "unknown"; return; }
+  LANG=C lspci -Dnn | grep -i 'Ethernet controller' \
+    | sed -n 's/^[^]]*]:[[:space:]]*\(.*\)$/\1/p' \
+    | sed -E 's/ \[[0-9a-fA-F]{4}:[0-9a-fA-F]{4}\]//; s/ \(rev [^)]*\)//' \
+    | sort | uniq -c \
+    | awk '{c=$1; $1=""; sub(/^ /,""); printf "%s x%s | ", $0, c}' \
+    | sed 's/ | $//'
+}
+
+usb_passmark_count_scalar() {
+  command -v lsusb >/dev/null 2>&1 || { echo "0"; return; }
+  LANG=C lsusb | grep -ci "passmark" || true
+}
+
+storage_model_bus_counts_scalar() {
+  command -v lsblk >/dev/null 2>&1 || { echo "unknown"; return; }
+  lsblk -dn -o TRAN,MODEL \
+    | awk '{tran=$1; $1=""; sub(/^ /,""); if ($0=="") $0="?"; printf "%s|%s\n", tran, $0}' \
+    | sort | uniq -c \
+    | awk '{c=$1; $1=""; sub(/^ /,""); printf "%s x%s | ", $0, c}' \
+    | sed 's/ | $//'
+}
+
+# bash-only extra component (no Windows counterpart) -- allowed under the
+# Layer 2 "component sets may differ" rule.
+pcie_gpu_scalar() {
+  command -v lspci >/dev/null 2>&1 || { echo "none"; return; }
+  LANG=C lspci -Dnn | grep -Ei 'VGA compatible controller|3D controller' \
+    | sed -n 's/^[^]]*]:[[:space:]]*\(.*\)$/\1/p' \
+    | sed -E 's/ \[[0-9a-fA-F]{4}:[0-9a-fA-F]{4}\]//; s/ \(rev [^)]*\)//' \
+    | sort | paste -sd '|' -
+}
+
+# Common-core component names, in the fixed order they appear in the JSON
+# sidecar -- bash-only extras (pcie_gpu) go last.
+_DEV_DETECT_COMPONENTS=(
+  cpu_model
+  memory_total_gb
+  nic_model_counts
+  usb_passmark_count
+  storage_model_bus_counts
+  pcie_gpu
+)
+
+declare -A _component_result=()
+declare -A _component_current=()
+declare -A _component_golden=()
+
+# Per-component golden init + compare, mirroring dev_detect.ps1's
+# Initialize-Golden / Get-DevDetectResultTag. $1=name $2=current_scalar.
+dev_detect_component_check() {
+  local name="$1" current="$2"
+  local golden_file="${golden_dir}/${name}.golden.txt"
+  local golden="" result
+  if [[ -s "${golden_file}" ]]; then
+    golden="$(cat "${golden_file}")"
+    if [[ "${current}" == "${golden}" ]]; then result="Pass"; else result="Fail"; fi
+  else
+    printf '%s' "${current}" > "${golden_file}"
+    golden=""
+    result="INIT"
+  fi
+  _component_result["${name}"]="${result}"
+  _component_current["${name}"]="${current}"
+  _component_golden["${name}"]="${golden}"
+}
+
+collect_component_scalars() {
+  _component_result=(); _component_current=(); _component_golden=()
+  dev_detect_component_check cpu_model               "$(cpu_model_scalar)"
+  dev_detect_component_check memory_total_gb          "$(memory_total_gb_scalar)"
+  dev_detect_component_check nic_model_counts         "$(nic_model_counts_scalar)"
+  dev_detect_component_check usb_passmark_count       "$(usb_passmark_count_scalar)"
+  dev_detect_component_check storage_model_bus_counts "$(storage_model_bus_counts_scalar)"
+  dev_detect_component_check pcie_gpu                 "$(pcie_gpu_scalar)"
+}
+
+# DET013: precedence is Fail > INIT > Pass, same rule as the overall verdict.
+component_rollup_result() {
+  local has_fail=0 has_init=0 name
+  for name in "${_DEV_DETECT_COMPONENTS[@]}"; do
+    case "${_component_result[${name}]:-}" in
+      Fail) has_fail=1 ;;
+      INIT) has_init=1 ;;
+    esac
+  done
+  if   [[ "${has_fail}" -eq 1 ]]; then echo "Fail"
+  elif [[ "${has_init}" -eq 1 ]]; then echo "INIT"
+  else echo "Pass"
+  fi
+}
+
+_json_escape() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/ }"
+  printf '%s' "${s}"
+}
+
+# Builds the JSON sidecar's "components" object from the maps
+# collect_component_scalars populated. Empty ("{}") if detection never ran
+# (the Error path).
+build_components_json() {
+  local out="{" first=1 name r cur gold gold_json
+  for name in "${_DEV_DETECT_COMPONENTS[@]}"; do
+    [[ -v _component_result[${name}] ]] || continue
+    r="${_component_result[${name}]}"
+    cur="$(_json_escape "${_component_current[${name}]}")"
+    gold="${_component_golden[${name}]}"
+    if [[ "${r}" == "INIT" || -z "${gold}" ]]; then
+      gold_json="null"
+    else
+      gold_json="\"$(_json_escape "${gold}")\""
+    fi
+    [[ "${first}" -eq 1 ]] && first=0 || out+=","
+    out+="\"${name}\":{\"result\":\"${r}\",\"current\":\"${cur}\",\"golden\":${gold_json}}"
+  done
+  out+="}"
+  printf '%s' "${out}"
+}
+
 # 收集「一次完整快照」
 collect_inventory_snapshot() {
   local out="$1"
@@ -777,18 +921,19 @@ compare_with_golden() {
   fi
 }
 
-# DET013: JSON sidecar, canonical machine-readable record for one pass.
-# Written alongside (never replacing) the existing .log/.txt/.diff files.
-# "components" is left as an empty object until per-component comparison
-# (a later requirement) is implemented.
+# DET013 / contract-alignment-plan Layer 2: JSON sidecar, canonical
+# machine-readable record for one pass. Written alongside (never replacing)
+# the existing .log/.txt/.diff files. "components" carries the
+# { result, current, golden } triple per common-core check (see
+# build_components_json), matching dev_detect.ps1's shape.
 emit_dev_detect_sidecar() {
-  local out_json="$1" k="$2" m="$3" result="$4" snapshot="$5" golden="$6" diffout="$7"
+  local out_json="$1" k="$2" m="$3" result="$4" snapshot="$5" golden="$6" diffout="$7" components_json="$8"
   local ts diff_json="null"
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   [[ -n "${diffout}" && -f "${diffout}" ]] && diff_json="\"${diffout}\""
   cat > "${out_json}" <<JSONEOF
 {
-  "schema_version": "1.0",
+  "schema_version": "2.0",
   "session_id": "${_session_id}",
   "k": ${k},
   "m": ${m},
@@ -797,7 +942,7 @@ emit_dev_detect_sidecar() {
   "snapshot_path": "${snapshot}",
   "golden_path": "${golden}",
   "diff_path": ${diff_json},
-  "components": {}
+  "components": ${components_json}
 }
 JSONEOF
 }
@@ -900,28 +1045,24 @@ for (( dev_loop=1; dev_loop<=_loops_this_run; dev_loop++ )); do
   now_snapshot="${log_root}/${_dev_detect_test_name}_snapshot_${k}_of_${m}_${_run_ts}.txt"
   diffout="${log_root}/${_dev_detect_test_name}_diff_${k}_of_${m}_${_run_ts}.diff"
 
-  if [[ ! -f "${golden_tpl}" ]]; then
-    if collect_inventory_snapshot "${now_snapshot}"; then
+  # DET013 / contract-alignment-plan Layer 2: the Pass/Fail/INIT verdict
+  # comes from the per-component scalar comparison (collect_component_scalars
+  # / component_rollup_result), the same granularity dev_detect.ps1 already
+  # uses -- not from the whole-file diff below, which is kept only as a
+  # human-readable artefact (snapshot_path/golden_path/diff_path stay in the
+  # sidecar, but no longer drive the verdict).
+  if collect_inventory_snapshot "${now_snapshot}"; then
+    collect_component_scalars
+    loop_result="$(component_rollup_result)"
+    if [[ ! -f "${golden_tpl}" ]]; then
       cp -f -- "${now_snapshot}" "${golden_tpl}"
-      loop_result="INIT"
-      { echo "--- Snapshot ${k}/${m} ---"; cat "${now_snapshot}"; } | tee -a "${_devlog}"
-    else
-      loop_result="Error"
-      echo "[ERROR] collect_inventory_snapshot failed" | tee -a "${_devlog}"
+    elif ! compare_with_golden "${now_snapshot}" "${golden_tpl}" "${diffout}"; then
+      echo "[DIFF] -> ${diffout}" | tee -a "${_devlog}"
     fi
+    { echo "--- Snapshot ${k}/${m} ---"; cat "${now_snapshot}"; } | tee -a "${_devlog}"
   else
-    if collect_inventory_snapshot "${now_snapshot}"; then
-      if compare_with_golden "${now_snapshot}" "${golden_tpl}" "${diffout}"; then
-        loop_result="Pass"
-      else
-        loop_result="Fail"
-        echo "[DIFF] -> ${diffout}" | tee -a "${_devlog}"
-      fi
-      { echo "--- Snapshot ${k}/${m} ---"; cat "${now_snapshot}"; } | tee -a "${_devlog}"
-    else
-      loop_result="Error"
-      echo "[ERROR] collect_inventory_snapshot failed" | tee -a "${_devlog}"
-    fi
+    loop_result="Error"
+    echo "[ERROR] collect_inventory_snapshot failed" | tee -a "${_devlog}"
   fi
 
 
@@ -954,7 +1095,8 @@ fi
   emit_dev_detect_sidecar \
     "${log_root}/${_dev_detect_test_name}_${_session_id}_${k}_of_${m}_${loop_result}.json" \
     "${k}" "${m}" "${loop_result}" "${now_snapshot}" "${golden_tpl}" \
-    "$( [[ -f "${diffout}" ]] && echo "${diffout}" )"
+    "$( [[ -f "${diffout}" ]] && echo "${diffout}" )" \
+    "$(build_components_json)"
   _last_loop_result="${loop_result}"
 
   counter_tick

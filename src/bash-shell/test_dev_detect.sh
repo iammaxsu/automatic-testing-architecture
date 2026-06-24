@@ -103,8 +103,14 @@ latest_sidecar() {
 mark_now() { touch -d '-1 second' "${WORK}/.marker" 2>/dev/null || touch "${WORK}/.marker"; }
 
 sidecar_field() {
-  # $1 = json path, $2 = field
-  python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2]))" "$1" "$2"
+  # $1 = json path, $2 = field (dotted path, e.g. components.cpu_model.result)
+  python3 -c "
+import json, sys
+d = json.load(open(sys.argv[1]))
+for part in sys.argv[2].split('.'):
+    d = d.get(part) if isinstance(d, dict) else None
+print(d)
+" "$1" "$2"
 }
 
 run_dev_detect() {
@@ -160,6 +166,14 @@ if [[ -n "${sidecar}" && -f "${sidecar}" ]]; then
   ok "JSON sidecar written (${sidecar##*/})"
   result="$(sidecar_field "${sidecar}" result)"
   assert_eq "sidecar result == INIT" "INIT" "${result}"
+  schema_ver="$(sidecar_field "${sidecar}" schema_version)"
+  assert_eq "sidecar schema_version == 2.0" "2.0" "${schema_ver}"
+  comp_result="$(sidecar_field "${sidecar}" components.cpu_model.result)"
+  assert_eq "components.cpu_model.result == INIT" "INIT" "${comp_result}"
+  comp_golden="$(sidecar_field "${sidecar}" components.cpu_model.golden)"
+  assert_eq "components.cpu_model.golden is null on INIT" "None" "${comp_golden}"
+  comp_pcie="$(sidecar_field "${sidecar}" components.pcie_gpu.result)"
+  assert_eq "components.pcie_gpu (bash-only component) present" "INIT" "${comp_pcie}"
 else
   bad "JSON sidecar written"
 fi
@@ -185,6 +199,11 @@ sidecar="$(latest_sidecar "${TOOL_PATH}/logs")"
 if [[ -n "${sidecar}" && -f "${sidecar}" ]]; then
   result="$(sidecar_field "${sidecar}" result)"
   assert_eq "sidecar result == Pass" "Pass" "${result}"
+  comp_result="$(sidecar_field "${sidecar}" components.cpu_model.result)"
+  assert_eq "components.cpu_model.result == Pass" "Pass" "${comp_result}"
+  comp_current="$(sidecar_field "${sidecar}" components.cpu_model.current)"
+  comp_golden="$(sidecar_field "${sidecar}" components.cpu_model.golden)"
+  assert_eq "components.cpu_model.golden == current on Pass" "${comp_current}" "${comp_golden}"
 else
   bad "JSON sidecar written for second pass"
 fi
@@ -196,9 +215,12 @@ fi
 
 # ---------------------------------------------------------------------------
 section "snapshot mode: golden mismatch -> Fail, exit 1"
-golden_file="$(find "${TOOL_PATH}/logs/golden" -maxdepth 1 -name '*.golden.txt' | head -n1)"
-if [[ -z "${golden_file}" ]]; then
-  bad "locate persisted golden file to corrupt"
+# Layer 2: the Pass/Fail verdict now comes from the per-component goldens
+# (cpu_model.golden.txt etc.), not the whole-file dev_detect.golden.txt --
+# corrupt a specific component golden so this exercises the real path.
+golden_file="${TOOL_PATH}/logs/golden/cpu_model.golden.txt"
+if [[ ! -f "${golden_file}" ]]; then
+  bad "locate persisted cpu_model golden file to corrupt"
 else
   echo "INJECTED_MISMATCH_LINE" >> "${golden_file}"
   mark_now
@@ -210,6 +232,8 @@ else
     assert_eq "sidecar result == Fail" "Fail" "${result}"
     diff_path="$(sidecar_field "${sidecar}" diff_path)"
     assert_eq "sidecar diff_path is set on Fail" "True" "$([[ "${diff_path}" != "None" ]] && echo True || echo False)"
+    comp_result="$(sidecar_field "${sidecar}" components.cpu_model.result)"
+    assert_eq "components.cpu_model.result == Fail" "Fail" "${comp_result}"
   else
     bad "JSON sidecar written for Fail pass"
   fi

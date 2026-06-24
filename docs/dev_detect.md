@@ -81,9 +81,11 @@ Minimum fields (both scripts):
   (DET005). Each OS may add **extra** components it alone can probe
   (e.g. `dev_detect.sh`'s `pcie_gpu`); an orchestrator should rely only
   on the common five and treat any other key as opaque OS-specific
-  detail. The per-component shape on `dev_detect.ps1` ships today;
-  `dev_detect.sh` still emits a single whole-file diff and populates
-  `components` per-component as that side is migrated
+  detail. The per-component shape ships on both scripts (2026-06-24);
+  `dev_detect.sh` still keeps a whole-file snapshot/golden/diff as a
+  human-readable artefact (`snapshot_path`/`golden_path`/`diff_path`
+  below), but the top-level `result` is driven by the per-component
+  rollup, not that whole-file diff
   (see [`contract-alignment-plan.md`](contract-alignment-plan.md)
   Layer 2).
 - `schema_version` is `"2.0"`: the `components` value shape changed from
