@@ -85,7 +85,7 @@ disagree:
 - Linux: full-text `diff` of a normalized snapshot.
 - Windows: scalar (single derived string) comparison.
 
-Target: both move to **structured output (JSON) + per-field
+Target: both move to **structured output (JSON) + per-component
 comparison**. This solves three things at once:
 
 1. Both OSes share one comparison semantic.
@@ -93,6 +93,16 @@ comparison**. This solves three things at once:
    text/HTML reports are *rendered* from it.
 3. Python pulls the JSON back over SSH and writes it straight into
    `result.json` — no parsing of `PASS`/`FAIL` strings.
+
+**Granularity decision (2026-06-24): per *component*, not per *field*.**
+Each component carries a flat `{ result, current, golden }` triple — the
+exact shape `dev_detect.ps1` already computes internally
+(`result_tag` / `current_scalar` / `golden_scalar`) and then throws away
+down to a single tag. We surface those three instead of one. This is
+strictly more granular than Linux's whole-file diff (each component
+becomes its own comparison unit) without going all the way to a nested
+per-sub-field tree, which was judged more structure than the
+comparison actually needs.
 
 ### Component-key mapping (DET001–DET006)
 
@@ -108,13 +118,20 @@ Today the two `components` maps don't actually line up:
 | *(none)* | `detect_pcie_gpu` (bash-only, no DET id) | *(none)* | — (Layer 3 extra, not core) |
 | *(none)* | PCIe link speed/width shown as free text inside `detect_pcie_ethernet`/`detect_storage`, never compared | PCIe link speed/width shown as free text inside the NIC/storage tables, never compared | DET006 |
 
-Decisions to close this gap, so the schema below has a fixed key set:
+Decisions to close this gap, so the schema below has a stable key set:
 
-- Keep the five existing key names (`cpu_model`, `memory_total_gb`,
-  `nic_model_counts`, `usb_passmark_count`, `storage_model_bus_counts`)
-  rather than renaming — they're already shipped and tested on the
-  PowerShell side. DET001–DET005's eventual frontmatter audit should
-  cite these names, not the other way around.
+- **Component sets are allowed to differ (2026-06-24).** Only the five
+  *common-core* keys must be present and identically named on both
+  sides: `cpu_model`, `memory_total_gb`, `nic_model_counts`,
+  `usb_passmark_count`, `storage_model_bus_counts`. Each OS may *add*
+  keys for things only it can probe (e.g. bash's `pcie_gpu`); the
+  Python orchestrator only relies on the common five and treats any
+  extra key as opaque OS-specific detail. This is the Layer 3 rule
+  applied at the component level — do not force parity by stuffing fake
+  data into the side that can't measure it.
+- Keep the five existing names rather than renaming — they're already
+  shipped and tested on the PowerShell side. DET001–DET005's eventual
+  frontmatter audit should cite these names, not the other way around.
 - `usb_passmark_count` stays scoped to the PassMark-loopback-plug count
   (a `dev_detect.ps1`-specific capability per Layer 3 — there is no
   Linux equivalent fixture today). If general USB device model/speed
@@ -122,83 +139,88 @@ Decisions to close this gap, so the schema below has a fixed key set:
   later, that is a new key (e.g. `usb_device_list`), not a rename of
   this one.
 - DET006 (PCIe link speed/width) does **not** get its own top-level
-  component. PCIe link state is a property *of* a NIC or storage
-  device, not an independent inventory item, so it becomes per-device
-  sub-fields inside `nic_model_counts` and `storage_model_bus_counts`
-  (see `pcie_link` field below) instead of a sixth top-level key.
-- `detect_pcie_gpu` has no DET id and no Windows counterpart. It stays
-  bash-only free text for now (Layer 3 territory: OS-specific extra
-  detail), not part of the common-core schema.
+  component. With the flat per-component schema there are no sub-fields,
+  so PCIe link state — a property *of* a NIC or storage device, not an
+  independent inventory item — is either folded into that component's
+  comparison scalar (if we want it to affect Pass/Fail) or left in the
+  human-readable `content_text` only (if not). Which of the two is an
+  implementation choice per check; either way it is not a sixth
+  common-core key.
+- `detect_pcie_gpu` has no DET id and no Windows counterpart. It becomes
+  a bash-only extra component (`pcie_gpu`) under the "sets may differ"
+  rule above, not part of the common five.
 
 ### Proposed `components` schema (draft — not yet implemented)
 
 Replaces today's flat `{ "<name>": "<result_tag>" }` map with one
-object per component carrying a per-field breakdown plus a rolled-up
-result (precedence Fail > INIT > Pass, per the rule already in the
-exit-codes section of `dev_detect.md`):
+object per component carrying the `{ result, current, golden }` triple
+`dev_detect.ps1` already computes internally. `result` uses the
+existing tags (`Pass` / `Fail` / `Error` / `INIT`); `current` and
+`golden` are the derived comparison scalars (`golden` is `null` on an
+INIT pass, when no golden existed yet):
 
 ```json
 "components": {
   "cpu_model": {
-    "result": "Pass",
-    "fields": {
-      "model":           { "current": "Intel(R) Core(TM) Ultra 7", "golden": "Intel(R) Core(TM) Ultra 7", "result": "Pass" },
-      "physical_cores":  { "current": 8,  "golden": 8,  "result": "Pass" },
-      "threads":         { "current": 16, "golden": 16, "result": "Pass" }
-    }
+    "result":  "Pass",
+    "current": "Intel(R) Core(TM) Ultra 7 | cores=8 | threads=16",
+    "golden":  "Intel(R) Core(TM) Ultra 7 | cores=8 | threads=16"
   },
   "memory_total_gb": {
-    "result": "Pass",
-    "fields": {
-      "total_gb":       { "current": 32, "golden": 32, "result": "Pass" },
-      "dimm_populated": { "current": 2,  "golden": 2,  "result": "Pass" }
-    }
+    "result":  "Pass",
+    "current": "32",
+    "golden":  "32"
   },
   "nic_model_counts": {
-    "result": "Pass",
-    "fields": {
-      "model_counts": { "current": {"I225-V": 1, "E610-XT4": 4}, "golden": {"I225-V": 1, "E610-XT4": 4}, "result": "Pass" },
-      "pcie_link":    { "current": {"E610-XT4": "Gen4 x4"}, "golden": {"E610-XT4": "Gen4 x4"}, "result": "Pass" }
-    }
+    "result":  "Pass",
+    "current": "E610-XT4 x4 | I225-V x1",
+    "golden":  "E610-XT4 x4 | I225-V x1"
   },
   "usb_passmark_count": {
-    "result": "Pass",
-    "fields": {
-      "loopback_count": { "current": 4, "golden": 4, "result": "Pass" }
-    }
+    "result":  "INIT",
+    "current": "4",
+    "golden":  null
   },
   "storage_model_bus_counts": {
-    "result": "Pass",
-    "fields": {
-      "model_bus_counts": { "current": {"...": "..."}, "golden": {"...": "..."}, "result": "Pass" },
-      "pcie_link":         { "current": {"...": "Gen4 x4"}, "golden": {"...": "Gen4 x4"}, "result": "Pass" }
-    }
+    "result":  "Pass",
+    "current": "Samsung 990 PRO (nvme) x1 | ... ",
+    "golden":  "Samsung 990 PRO (nvme) x1 | ... "
+  },
+  "pcie_gpu": {
+    "result":  "Pass",
+    "current": "...",
+    "golden":  "..."
   }
 }
 ```
 
 Notes:
 
-- `pcie_link` is only present for devices that are actually PCIe-attached
-  (a USB NIC or SATA disk simply omits the key for that entry) — no
-  fabricated data for OSes/devices that can't report it (Layer 3 rule).
-- The top-level `result` for a component is the same Fail > INIT > Pass
-  precedence rollup as the overall pass result, applied across that
-  component's own fields.
+- `pcie_gpu` is shown here as a bash-only extra to illustrate the
+  "sets may differ" rule — `dev_detect.ps1` simply omits it.
+- The `current`/`golden` scalar for each component is whatever that
+  check derives — the exact normalization is per-check, but it must be
+  a single stable string (or `null`) so per-component comparison is a
+  plain string equality, the same mechanism `dev_detect.ps1` uses
+  today, just exposed instead of collapsed.
+- The overall top-level `result` / exit code is still the Fail > INIT >
+  Pass precedence rollup over all components, unchanged from
+  `dev_detect.md`.
 - This is additive to the sidecar shape in `dev_detect.md`, not a
   breaking change to the four top-level required fields
   (`schema_version`, `session_id`, `k`/`m`, top-level `result`,
-  `timestamp`) — only `components`' internal shape changes, and
-  `schema_version` should bump (e.g. `"1.0"` → `"2.0"`) once
-  implemented, since old consumers reading `components.<name>` as a
-  bare string would break.
+  `timestamp`) — only `components`' internal shape changes from
+  `"<name>": "<tag>"` to `"<name>": { result, current, golden }`, so
+  `schema_version` should bump (`"1.0"` → `"2.0"`) on implementation,
+  since old consumers reading `components.<name>` as a bare string would
+  break.
 - Implementation order once this schema is confirmed: `dev_detect.ps1`
-  first (it already computes per-field data internally for each check,
-  it just discards it down to one scalar before golden comparison), then
-  port the same per-field shape to `dev_detect.sh`'s six `detect_*`
-  functions, then update both `test_dev_detect.*` harnesses to assert on
-  `components.<name>.fields.<field>.result` instead of the top-level tag
-  alone.
+  first (it already computes `current_scalar` / `golden_scalar` /
+  `result_tag` per check and only needs to emit all three instead of
+  one), then give `dev_detect.sh`'s `detect_*` functions a per-component
+  scalar + golden file each (replacing the single whole-file diff), then
+  update both `test_dev_detect.*` harnesses to assert on
+  `components.<name>.result` / `.current` / `.golden`.
 
 ## Layer 3 — Detection-depth alignment (partial — do NOT do all)
 
