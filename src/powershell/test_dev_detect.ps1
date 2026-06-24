@@ -93,6 +93,30 @@ try {
     }
 
     # -----------------------------------------------------------------------
+    Write-Section '--help (Unix alias) behaves like -Help'
+    $wh = New-WorkDir
+    $r = Invoke-DevDetect -WorkDir $wh -ScriptArgs @('--help')
+    Assert-Eq       '--help exits 0' 0 $r.Code
+    Assert-Contains '--help lists exit codes' $r.Out 'INIT'
+    if (Test-Path (Join-Path $wh 'logs')) {
+        Fail-Assert '--help did not run a pass (no logs dir)'
+    } else {
+        Pass-Assert '--help did not run a pass (no logs dir)'
+    }
+
+    # -----------------------------------------------------------------------
+    Write-Section 'unrecognized argument -> usage error, exit 64, no pass'
+    $wu = New-WorkDir
+    $r = Invoke-DevDetect -WorkDir $wu -ScriptArgs @('10')
+    Assert-Eq       'bad arg exits 64' 64 $r.Code
+    Assert-Contains 'bad arg names the offending token' $r.Out '10'
+    if (Test-Path (Join-Path $wu 'logs')) {
+        Fail-Assert 'bad arg did not run a pass (no logs dir)'
+    } else {
+        Pass-Assert 'bad arg did not run a pass (no logs dir)'
+    }
+
+    # -----------------------------------------------------------------------
     Write-Section 'first run (clean DUT) -> INIT, exit 3'
     $seq = New-WorkDir
     $r = Invoke-DevDetect -WorkDir $seq

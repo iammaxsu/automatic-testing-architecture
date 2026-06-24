@@ -40,9 +40,29 @@ param(
     [Alias('h')][switch]$Help
 )
 
-if ($Help) {
+# Accept Unix-style double-dash aliases and HARD-ERROR on anything else.
+# PowerShell binds -Help / -SnapshotOnly natively; any argument it could not
+# bind (e.g. --help, --snapshot-only, a positional count like "10", a typo)
+# lands in $args. The original script left $args unread, so unknown arguments
+# were silently swallowed and a normal detection pass ran anyway -- bumping the
+# counter and writing a misleading log. We now translate the known aliases and
+# reject everything else before any side effect occurs.
+$_show_help = [bool]$Help
+foreach ($_a in $args) {
+    switch -Regex ("$_a") {
+        '^(--help|-\?|/\?|/h|/help)$' { $_show_help = $true }
+        '^--snapshot-only$'           { $SnapshotOnly = $true }
+        default {
+            Write-Host "dev_detect.ps1: unrecognized argument '$_a'" -ForegroundColor Red
+            Write-Host "Run 'dev_detect.ps1 -Help' (or --help) for usage." -ForegroundColor Red
+            exit 64   # EX_USAGE; deliberately NOT a DET013 verdict (0/1/2/3)
+        }
+    }
+}
+
+if ($_show_help) {
     @'
-Usage: dev_detect.ps1 [-SnapshotOnly] [-Help]
+Usage: dev_detect.ps1 [-SnapshotOnly|--snapshot-only] [-Help|-h|--help]
 
 Run modes:
   (no flag)       Standalone mode (default). Re-invoked at every boot by the
@@ -50,20 +70,26 @@ Run modes:
                   script performs one pass and exits either way; it has no
                   self-triggered reboot/poweroff to suppress.
   -SnapshotOnly   Documents that an external orchestrator (e.g.
-                  power_cycle.py) owns the loop/power-cycling for this run.
+  --snapshot-only power_cycle.py) owns the loop/power-cycling for this run.
                   Behaves the same as default mode (see above) -- the flag
                   exists for parity with dev_detect.sh and so the JSON
                   sidecar can record which mode produced a given pass.
 
 Other options:
-  -Help, -h       Show this help and exit.
+  -Help, -h       Show this help and exit. --help is also accepted.
 
-Exit codes (every pass, both modes):
+Note: this PowerShell port performs exactly ONE pass per invocation; the
+repeat/reboot loop is owned by Task Scheduler (standalone) or an external
+orchestrator (snapshot). It does NOT accept a pass-count argument the way
+dev_detect.sh does -- see docs/dev_detect.md.
+
+Exit codes:
   0  Pass   - every check matches its existing golden reference
   1  Fail   - at least one check deviates from its golden reference
   2  Error  - a check could not run
   3  INIT   - at least one golden did not exist yet and was just created
              (not a verified pass), and no check failed
+  64 Usage  - unrecognized command-line argument (no pass run)
 
 Each pass also writes a JSON sidecar next to its per-run .log file; see
 docs/dev_detect.md for the schema.
@@ -76,7 +102,7 @@ $ErrorActionPreference = 'Stop'
 
 # -- Version & shared library --------------------------------------------------
 
-$_script_ver                = '00.00.03'
+$_script_ver                = '00.00.04'
 $_requires_function_ps1_api = '00.00.01'
 
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
