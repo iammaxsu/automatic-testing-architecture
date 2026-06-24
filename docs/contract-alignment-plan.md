@@ -113,7 +113,7 @@ Today the two `components` maps don't actually line up:
 | `cpu_model` | `detect_cpu` (whole-file diff only — not a separate component yet) | `cpu_model` check | DET001 |
 | `memory_total_gb` | `detect_ram` (ditto) | `memory_total_gb` check | DET002 |
 | `nic_model_counts` | `detect_pcie_ethernet` (PCIe NICs only; ditto) | `nic_model_counts` check (all NICs, not just PCIe) | DET003 |
-| `usb_passmark_count` | `detect_usb` (ditto) | `usb_passmark_count` check — narrower than DET004: counts PassMark loopback plugs specifically, not "USB device model/count/speed" in general | DET004 |
+| `usb_passmark_count` | `detect_usb` (2026-06-24: now also matches the PassMark loopback plug by name in `lsusb` output and reports a count, mirroring the PS check; still folded into the whole-file diff, not its own component yet) | `usb_passmark_count` check — narrower than DET004: counts PassMark loopback plugs specifically, not "USB device model/count/speed" in general | DET004 |
 | `storage_model_bus_counts` | `detect_storage` (ditto) | `storage_model_bus_counts` check | DET005 |
 | *(none)* | `detect_pcie_gpu` (bash-only, no DET id) | *(none)* | — (Layer 3 extra, not core) |
 | *(none)* | PCIe link speed/width shown as free text inside `detect_pcie_ethernet`/`detect_storage`, never compared | PCIe link speed/width shown as free text inside the NIC/storage tables, never compared | DET006 |
@@ -133,8 +133,10 @@ Decisions to close this gap, so the schema below has a stable key set:
   shipped and tested on the PowerShell side. DET001–DET005's eventual
   frontmatter audit should cite these names, not the other way around.
 - `usb_passmark_count` stays scoped to the PassMark-loopback-plug count
-  (a `dev_detect.ps1`-specific capability per Layer 3 — there is no
-  Linux equivalent fixture today). If general USB device model/speed
+  on both sides now (2026-06-24: `detect_usb` in `dev_detect.sh` gained
+  the same name-matching detection bash was missing — the fixture is
+  USB hardware, not a Windows-only capability, so there was no reason
+  for Linux to lack it). If general USB device model/speed
   reporting (the literal DET004 wording) needs its own golden check
   later, that is a new key (e.g. `usb_device_list`), not a rename of
   this one.

@@ -58,7 +58,7 @@ fi
 set -Eeuo pipefail
 
 export _dev_detect_version
-: "${_dev_detect_version:="00.00.05"}"
+: "${_dev_detect_version:="00.00.06"}"
 #: "${_dev_detect_requires_config_api_version:=00.00.01}"
 #: "${_dev_detect_requires_function_api_version:=00.00.01}"
 
@@ -569,6 +569,28 @@ detect_usb() {
       echo "Current=?  bcdUSB=?"
     fi
   done < <(LANG=C lsusb)
+
+  echo
+  echo "## PassMark USB Loopback Plug"
+  # DET004/DET012 parity: dev_detect.ps1 counts PassMark USB3.0 Loopback
+  # plugs by matching the device's FriendlyName. lsusb prints the same
+  # iProduct string descriptor (when the kernel can read it, i.e. running
+  # as root) as part of its one-line description, so match on that.
+  local _passmark_target="PassMark USB3.0 Loopback plug"
+  printf "Target: %s\n" "$_passmark_target"
+  local -a _passmark_lines=()
+  mapfile -t _passmark_lines < <(LANG=C lsusb | grep -i "passmark" || true)
+  printf "Count: %s\n" "${#_passmark_lines[@]}"
+  if [[ "${#_passmark_lines[@]}" -gt 0 ]]; then
+    printf "%-6s %-6s %-9s %s\n" "Bus" "Dev" "ID" "Description"
+    for line in "${_passmark_lines[@]}"; do
+      bus="$(echo "$line" | awk '{print $2}')"
+      dev="$(echo "$line" | awk '{print $4}' | sed 's/://')"
+      vidpid="$(echo "$line" | awk '{print $6}')"
+      desc="$(echo "$line" | cut -d" " -f7-)"
+      printf "%-6s %-6s %-9s %s\n" "$bus" "$dev" "$vidpid" "$desc"
+    done
+  fi
 }
 
 #detect_pcie_eth() {

@@ -216,6 +216,31 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+section "USB detect: PassMark loopback plug is counted (DET004/DET012 parity)"
+TOOL_PATH="${WORK}/passmark_tool"
+mkdir -p "${TOOL_PATH}"
+FAKEBIN_PM="${WORK}/fakebin_passmark"
+mkdir -p "${FAKEBIN_PM}"
+cat > "${FAKEBIN_PM}/lsusb" <<'EOF'
+#!/usr/bin/env bash
+# Minimal stand-in: a real PassMark USB3.0 Loopback Plug reports this exact
+# string as its iProduct descriptor, which lsusb surfaces verbatim.
+case "$*" in
+  *-v*) exit 1 ;;
+  *) echo "Bus 001 Device 005: ID 0403:6015 PassMark USB3.0 Loopback plug" ;;
+esac
+EOF
+chmod +x "${FAKEBIN_PM}/lsusb"
+mark_now
+code=0
+( cd "${SCRIPT_DIR}" && _tool_path="${TOOL_PATH}" PATH="${FAKEBIN_PM}:${PATH}" bash "${DEV_DETECT}" --snapshot-only ) \
+  >"${WORK}/last_stdout.log" 2>"${WORK}/last_stderr.log" || code=$?
+out="$(cat "${WORK}/last_stdout.log")"
+assert_eq "PassMark scenario exit code (INIT on clean DUT)" "3" "${code}"
+assert_contains "USB section names the PassMark target" "${out}" "Target: PassMark USB3.0 Loopback plug"
+assert_contains "USB section counts exactly one PassMark plug" "${out}" "Count: 1"
+
+# ---------------------------------------------------------------------------
 section "standalone mode: autorun is attempted (mocked), no real systemd change"
 TOOL_PATH="${WORK}/standalone_tool"
 mkdir -p "${TOOL_PATH}"
