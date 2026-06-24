@@ -102,7 +102,7 @@ $ErrorActionPreference = 'Stop'
 
 # -- Version & shared library --------------------------------------------------
 
-$_script_ver                = '00.00.04'
+$_script_ver                = '00.00.05'
 $_requires_function_ps1_api = '00.00.01'
 
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -422,12 +422,23 @@ $_exit_code = switch ($_overall_tag) {
 $_per_run_path = Write-CombinedPerRunLog -Count $_count -Date2 $_date2 -OverallTag $_overall_tag -Results $_results
 Add-CombinedSummary                  -Count $_count -Date2 $_date2 -OverallTag $_overall_tag -Results $_results
 
-# DET013: JSON sidecar, additive to the existing per-run .log file.
-$_components = @{}
-foreach ($r in $_results) { $_components[$r.name] = $r.result_tag }
+# DET013 / contract-alignment-plan Layer 2: JSON sidecar, additive to the
+# existing per-run .log file. Each component now carries the full
+# { result, current, golden } triple instead of a bare result tag, so the
+# orchestrator gets per-component comparison without parsing any text. On an
+# INIT pass no golden existed yet, so golden is emitted as null (the scalar
+# we hold is the just-baselined value, not something we compared against).
+$_components = [ordered]@{}
+foreach ($r in $_results) {
+    $_components[$r.name] = [ordered]@{
+        result  = $r.result_tag
+        current = $r.current_scalar
+        golden  = $(if ($r.result_tag -eq 'INIT') { $null } else { $r.golden_scalar })
+    }
+}
 $_sidecar_path = Join-Path $_log_path ('{0}_{1}_{2}.json' -f $_count, $_date2, $_overall_tag)
 [ordered]@{
-    schema_version = '1.0'
+    schema_version = '2.0'
     session_id     = $_date2
     k              = $_count
     m              = $null
@@ -436,7 +447,7 @@ $_sidecar_path = Join-Path $_log_path ('{0}_{1}_{2}.json' -f $_count, $_date2, $
     log_path       = $_per_run_path
     mode           = $(if ($SnapshotOnly) { 'snapshot' } else { 'standalone' })
     components     = $_components
-} | ConvertTo-Json -Depth 4 | Set-Content -Path $_sidecar_path -Encoding UTF8
+} | ConvertTo-Json -Depth 5 | Set-Content -Path $_sidecar_path -Encoding UTF8
 
 Write-Host ("Overall    : {0}" -f $_overall_tag)
 Write-Host ("Per-run log: {0}" -f $_per_run_path)

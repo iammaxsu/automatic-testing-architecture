@@ -49,25 +49,47 @@ Minimum fields (both scripts):
 
 ```json
 {
-  "schema_version": "1.0",
+  "schema_version": "2.0",
   "session_id": "...",
   "k": 1,
   "m": 1,
   "result": "Pass | Fail | Error | INIT",
   "timestamp": "2026-06-23T09:15:23Z",
-  "components": {}
+  "components": {
+    "cpu_model": {
+      "result": "Pass | Fail | Error | INIT",
+      "current": "<derived comparison scalar>",
+      "golden":  "<golden scalar, or null on INIT>"
+    }
+  }
 }
 ```
 
 - `k` / `m` — pass index / target pass count. `dev_detect.ps1` has no
   fixed target count of its own, so `m` is `null` there.
-- `components` — per-component result breakdown. `dev_detect.ps1`
-  already tests each component independently (`cpu_model`,
-  `memory_total_gb`, `usb_passmark_count`, `nic_model_counts`,
-  `storage_model_bus_counts`) so this is populated today. On
-  `dev_detect.sh` the overall comparison is still a single whole-file
-  diff, so `components` is an empty placeholder until per-component
-  comparison is implemented as a follow-up requirement.
+- `components` — per-component comparison breakdown. Each entry is a
+  `{ result, current, golden }` triple: `result` is the same four-state
+  tag as the top-level (`Pass`/`Fail`/`Error`/`INIT`); `current` is the
+  scalar this pass derived for that component; `golden` is the baseline
+  it was compared against, and is `null` on an INIT pass (nothing was
+  compared — the golden was just created). The overall top-level
+  `result` is the Fail > INIT > Pass rollup over all components.
+- **Common-core components** present and identically named on both
+  scripts: `cpu_model` (DET001), `memory_total_gb` (DET002),
+  `nic_model_counts` (DET003), `usb_passmark_count` (DET004, scoped to
+  the PassMark loopback-plug count), `storage_model_bus_counts`
+  (DET005). Each OS may add **extra** components it alone can probe
+  (e.g. `dev_detect.sh`'s `pcie_gpu`); an orchestrator should rely only
+  on the common five and treat any other key as opaque OS-specific
+  detail. The per-component shape on `dev_detect.ps1` ships today;
+  `dev_detect.sh` still emits a single whole-file diff and populates
+  `components` per-component as that side is migrated
+  (see [`contract-alignment-plan.md`](contract-alignment-plan.md)
+  Layer 2).
+- `schema_version` is `"2.0"`: the `components` value shape changed from
+  the `1.0` `"<name>": "<tag>"` string map to the `"<name>":
+  { result, current, golden }` object map. A `1.0` consumer reading a
+  component as a bare string would break, hence the major bump.
 - `dev_detect.sh` additionally includes `snapshot_path`, `golden_path`,
   and `diff_path` (`null` when there is no diff, e.g. on INIT).
 - `dev_detect.ps1` additionally includes `log_path` (the per-run `.log`

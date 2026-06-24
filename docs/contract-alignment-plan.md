@@ -222,6 +222,19 @@ Notes:
   update both `test_dev_detect.*` harnesses to assert on
   `components.<name>.result` / `.current` / `.golden`.
 
+**Progress (2026-06-24):**
+- [x] `dev_detect.ps1` emits the new per-component
+      `{ result, current, golden }` shape; `schema_version` bumped to
+      `2.0`; `golden` is `null` on INIT. `test_dev_detect.ps1` asserts
+      the new shape across the INIT→Pass→Fail sequence. (Not yet run on
+      real Windows — queued with the rest of the PS harness.)
+- [ ] `dev_detect.sh`: replace the single whole-file `diff` with a
+      per-component scalar + golden file per `detect_*` function, and
+      populate `components` with the same triple. Add a bash-only
+      `pcie_gpu` component (allowed by the "sets may differ" rule).
+- [ ] `test_dev_detect.sh`: assert on `components.<name>.result` /
+      `.current` / `.golden` once bash emits them.
+
 ## Layer 3 — Detection-depth alignment (partial — do NOT do all)
 
 Agree on a small set of **common core fields** — CPU model, RAM total,

@@ -128,8 +128,23 @@ try {
         Assert-Eq 'sidecar result == INIT' 'INIT' $sc.result
         Assert-Eq 'sidecar mode == standalone' 'standalone' $sc.mode
         Assert-Eq 'sidecar m is null' '' ([string]$sc.m)
+        Assert-Eq 'sidecar schema_version == 2.0' '2.0' ([string]$sc.schema_version)
         $compCount = @($sc.components.PSObject.Properties).Count
         Assert-Eq 'sidecar reports 5 components' 5 $compCount
+        # Layer 2: each component is now a { result, current, golden } object.
+        $cpu = $sc.components.cpu_model
+        if ($null -eq $cpu) {
+            Fail-Assert 'cpu_model component present'
+        } else {
+            Assert-Eq 'cpu_model.result == INIT' 'INIT' $cpu.result
+            if ($cpu.PSObject.Properties.Name -contains 'current') {
+                Pass-Assert 'cpu_model carries a current scalar'
+            } else {
+                Fail-Assert 'cpu_model carries a current scalar'
+            }
+            # On INIT nothing was compared, so golden is null.
+            Assert-Eq 'cpu_model.golden is null on INIT' '' ([string]$cpu.golden)
+        }
     }
 
     # -----------------------------------------------------------------------
@@ -138,7 +153,17 @@ try {
     Assert-Eq 'second standalone run exit code' 0 $r.Code
     $sc = Get-LatestSidecar -WorkDir $seq
     if ($null -eq $sc) { Fail-Assert 'JSON sidecar written on second run' }
-    else { Assert-Eq 'sidecar result == Pass' 'Pass' $sc.result }
+    else {
+        Assert-Eq 'sidecar result == Pass' 'Pass' $sc.result
+        # On a Pass, the per-component golden is populated and equals current.
+        $cpu = $sc.components.cpu_model
+        if ($null -eq $cpu) {
+            Fail-Assert 'cpu_model component present on Pass'
+        } else {
+            Assert-Eq 'cpu_model.result == Pass' 'Pass' $cpu.result
+            Assert-Eq 'cpu_model.golden equals current on Pass' ([string]$cpu.current) ([string]$cpu.golden)
+        }
+    }
 
     # -----------------------------------------------------------------------
     Write-Section 'golden mismatch -> Fail, exit 1'
@@ -151,7 +176,14 @@ try {
         Assert-Eq 'post-corruption run exit code' 1 $r.Code
         $sc = Get-LatestSidecar -WorkDir $seq
         if ($null -eq $sc) { Fail-Assert 'JSON sidecar written on Fail run' }
-        else { Assert-Eq 'sidecar result == Fail' 'Fail' $sc.result }
+        else {
+            Assert-Eq 'sidecar result == Fail' 'Fail' $sc.result
+            # The corruption was injected into the CPU golden, so that
+            # component specifically must report Fail.
+            $cpu = $sc.components.cpu_model
+            if ($null -eq $cpu) { Fail-Assert 'cpu_model component present on Fail' }
+            else { Assert-Eq 'cpu_model.result == Fail' 'Fail' $cpu.result }
+        }
     }
 
     # -----------------------------------------------------------------------
