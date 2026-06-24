@@ -36,6 +36,7 @@ Exit codes (every pass, both modes):
   1  Fail   - output deviates from an existing golden reference
   2  Error  - detection could not run
   3  INIT   - no golden existed; one was just created (not a verified pass)
+  64 Usage  - unrecognized command-line argument (no pass run)
 
 Each pass also writes a JSON sidecar next to its .log file; see
 docs/dev_detect.md for the schema.
@@ -57,7 +58,7 @@ fi
 set -Eeuo pipefail
 
 export _dev_detect_version
-: "${_dev_detect_version:="00.00.04"}"
+: "${_dev_detect_version:="00.00.05"}"
 #: "${_dev_detect_requires_config_api_version:=00.00.01}"
 #: "${_dev_detect_requires_function_api_version:=00.00.01}"
 
@@ -91,6 +92,15 @@ find_and_source "function.sh"
 # dev_detect reboots the machine multiple times. Each run's EXIT trap fires
 # before the reboot, so logs get readable by the login user even between
 # reboots or if the final run (generate_dev_detect_report) never completes.
+#
+# _log_dir is not assigned until log_dir() runs further below, so any exit
+# before that point (e.g. check_api_versions's exit 63, or a CLI usage
+# error) used to hit fix_log_permissions with $1 expanding to "" and its
+# own "${1:-${_log_dir}}" fallback then reading a still-unbound _log_dir
+# under `set -u`, which replaced the real exit code with 1. Bind it to ""
+# up front so every exit path -- not just the ones that happened to be
+# exercised before -- reports its real exit code.
+: "${_log_dir:=}"
 trap 'fix_log_permissions "${_log_dir:-}" deep' EXIT
 
 # ---- API version check ----
@@ -125,7 +135,14 @@ _snapshot_only=0
 _parse_vpu_flags_from_rem_args() {
   # Parse from REM_ARGS (provided by parse_common_cli in function.sh).
   # We do NOT mutate REM_ARGS because autorun_install_self_if_needed reuses it.
+  #
+  # DET013 / contract-alignment-plan Layer 1: any token here that is not one
+  # of the flags below (a typo, a stray positional, an unsupported option)
+  # used to be silently dropped and the script ran a normal pass anyway --
+  # the same class of bug fixed on the PowerShell side. Now it is a hard
+  # usage error, matching dev_detect.ps1's exit 64 (EX_USAGE).
   local i=0
+  local -a _unrecognized=()
   while [[ $i -lt ${#REM_ARGS[@]} ]]; do
     case "${REM_ARGS[$i]}" in
       --vpu-check)      _vpu_enable=1 ;;
@@ -135,9 +152,16 @@ _parse_vpu_flags_from_rem_args() {
       --vpu-width)      ((i+=1)); _vpu_expect_width="${REM_ARGS[$i]:-$_vpu_expect_width}" ;;
       --power-cycle)    _reset_mode="power-cycle" ;;
       --snapshot-only)  _snapshot_only=1 ;;
+      *)                _unrecognized+=("${REM_ARGS[$i]}") ;;
     esac
     ((i+=1))
   done
+
+  if [[ ${#_unrecognized[@]} -gt 0 ]]; then
+    echo "dev_detect.sh: unrecognized argument(s): ${_unrecognized[*]}" >&2
+    echo "Run 'dev_detect.sh --help' for usage." >&2
+    exit 64   # EX_USAGE; deliberately NOT a DET013 verdict (0/1/2/3)
+  fi
 }
 
 _vpu_need_cmd() { command -v "$1" >/dev/null 2>&1 || return 1; }

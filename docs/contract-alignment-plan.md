@@ -33,13 +33,36 @@ before the spec grows around a moving target.
 **Progress so far:**
 - [x] `dev_detect.ps1` accepts `--snapshot-only` (alias of
       `-SnapshotOnly`) and `--help` (alias of `-Help`/`-h`).
-- [x] Unrecognized arguments now error with exit `64` (`EX_USAGE`)
-      instead of silently running a pass — keeps the `0/1/2/3` verdict
-      range clean.
+- [x] Unrecognized arguments now error with exit `64` (`EX_USAGE`) on
+      **both** scripts instead of silently running a pass — keeps the
+      `0/1/2/3` verdict range clean. (`dev_detect.sh`'s `--vpu-*`
+      parser had the same silent-swallow defect as the PowerShell
+      `param()` binding; fixing it surfaced a second, unrelated latent
+      bug — see below.)
 - [x] Both scripts emit a JSON sidecar + per-run log + summary with a
       `mode` field (`standalone` / `snapshot`).
+- [x] Audited (2026-06-24): `dev_detect.sh`'s JSON sidecar `components`
+      field is **always `{}`** — it never populates per-check results,
+      unlike `dev_detect.ps1` which already fills `cpu_model` /
+      `memory_total_gb` / `usb_passmark_count` / `nic_model_counts` /
+      `storage_model_bus_counts`. Tracked as a Layer-2 deliverable below
+      (the comment in `dev_detect.sh` already says it's a placeholder
+      pending structured per-component comparison), not a Layer-1 gap
+      to close separately.
 - [ ] Audit DET001–DET011 frontmatter/wording so both implementations
       cite one shared statement per check.
+
+**Side-finding while closing the unknown-argument gap:** fixing
+`dev_detect.sh` exposed a pre-existing, unrelated bug — its EXIT trap
+(`fix_log_permissions "${_log_dir:-}" deep`) referenced `_log_dir`
+before it is ever assigned (`log_dir` runs later in the script). Any
+exit occurring before that point — the new usage-error exit, but also
+the pre-existing `check_api_versions` `exit 63` path — hit
+`fix_log_permissions`'s own `"${1:-${_log_dir}}"` fallback, which read
+the still-unbound `_log_dir` under `set -u` and silently replaced the
+script's real exit code with `1`. Fixed by binding `_log_dir` to `""`
+immediately after the trap is installed, so every early-exit path now
+reports its actual code.
 
 ## Layer 2 — Test-semantics alignment (should do)
 

@@ -27,10 +27,16 @@ modes:
 | `1` | Fail | Output deviates from an existing golden reference. |
 | `2` | Error | Detection could not run (e.g. a required tool is missing, or a check threw). |
 | `3` | INIT | No golden existed yet; one was just created from the current machine. **Not** a verified pass — exclude from pass/fail statistics, since nothing was actually compared. |
+| `64` | Usage | An unrecognized command-line argument was given. No pass was run, no golden/log/sidecar written. Deliberately outside the `0`–`3` verdict range so an orchestrator never mistakes a typo for a verdict. |
 
 When a run does multiple checks/components and they disagree (e.g. one
 component Fails while another is still INIT), precedence is
 **Fail > INIT > Pass** for the overall result and exit code.
+
+Both scripts also reject any flag/argument they do not recognize
+instead of silently ignoring it (`dev_detect.sh`'s `--vpu-*` parser and
+`dev_detect.ps1`'s `param()` binding both used to swallow unknown
+tokens and run a normal pass anyway — fixed on both sides).
 
 ## JSON sidecar
 

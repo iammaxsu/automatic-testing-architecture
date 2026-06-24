@@ -136,6 +136,17 @@ assert_contains "--help lists exit codes" "${out}" "INIT"
 assert_not_exists "--help did not create a logs dir" "${TOOL_PATH}/logs"
 
 # ---------------------------------------------------------------------------
+section "unrecognized argument -> usage error, exit 64, no pass"
+TOOL_PATH="${WORK}/badarg_tool"
+mkdir -p "${TOOL_PATH}"
+mark_now
+code="$(run_dev_detect --not-a-real-flag)"
+err="$(cat "${WORK}/last_stderr.log")"
+assert_eq "bad flag exits 64" "64" "${code}"
+assert_contains "bad flag names the offending token" "${err}" "--not-a-real-flag"
+assert_not_exists "bad flag did not run a pass (no logs dir)" "${TOOL_PATH}/logs"
+
+# ---------------------------------------------------------------------------
 section "snapshot mode: first pass (clean DUT) -> INIT, exit 3"
 TOOL_PATH="${WORK}/snapshot_tool"
 mkdir -p "${TOOL_PATH}"
