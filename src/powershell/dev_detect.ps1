@@ -147,6 +147,7 @@ function Get-MemoryText {
     $totalGB    = [math]::Round($totalBytes / 1GB)
     $perDimms   = Get-CimInstance Win32_PhysicalMemory |
                     Select-Object Manufacturer,
+                        @{Name='PartNumber'; Expression={ if ($_.PartNumber) { $_.PartNumber.ToString().Trim() } else { 'Unknown' } }},
                         @{Name='CapacityGB'; Expression={[math]::Round($_.Capacity/1GB)}},
                         Speed
     return ("TotalPhysicalMemoryGB: {0}`r`n{1}" -f $totalGB, ($perDimms | Format-Table -AutoSize | Out-String).TrimEnd())
