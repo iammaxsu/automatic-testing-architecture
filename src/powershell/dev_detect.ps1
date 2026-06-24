@@ -102,7 +102,7 @@ $ErrorActionPreference = 'Stop'
 
 # -- Version & shared library --------------------------------------------------
 
-$_script_ver                = '00.00.05'
+$_script_ver                = '00.00.06'
 $_requires_function_ps1_api = '00.00.01'
 
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -342,11 +342,11 @@ function Get-StorageText {
                  Select-Object -First 1
         if ($wdd) { $iid = $wdd.PNPDeviceID }
 
-        $pcieInfo = $null; $usbHint = $null; $sataRate = $null
+        $pcieInfo = $null; $usbHint = $null; $sataInfo = $null
         if ($iid) {
             if    ($bus -match 'NVMe|RAID|PCI') { $pcieInfo = Get-PcieLinkInfo -InstanceIdOrChild $iid }
             elseif ($bus -match 'USB')           { $usbHint  = Get-UsbVersionHint -InstanceId $iid }
-            elseif ($bus -match 'SATA|ATA')      { $sataRate = Get-SataLinkRate -InstanceId $iid }
+            elseif ($bus -match 'SATA|ATA' -and $wdd) { $sataInfo = Get-SataLinkInfo -PhysicalDriveIndex $wdd.Index }
         }
         [pscustomobject]@{
             Model         = $model; Bus = $bus; SizeGB = $szGB
@@ -354,7 +354,8 @@ function Get-StorageText {
             PCIeWidth          = if ($pcieInfo) { $pcieInfo.Width }          else { $null }
             PCIeTheoreticalGBs = if ($pcieInfo) { $pcieInfo.TheoreticalGBs } else { $null }
             UsbVersion    = $usbHint
-            SataLink      = $sataRate
+            SataProto     = if ($sataInfo) { $sataInfo.Proto }    else { $null }
+            SataLink      = if ($sataInfo) { $sataInfo.CurLabel } else { $null }
         }
     }
     $detail = ($rows | Format-Table -AutoSize | Out-String).TrimEnd()

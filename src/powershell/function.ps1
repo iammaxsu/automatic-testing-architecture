@@ -17,7 +17,7 @@ Set-StrictMode -Version Latest
 
 # -- Version -------------------------------------------------------------------
 
-$_function_ps1_api = '00.00.03'
+$_function_ps1_api = '00.00.04'
 
 # -- 1. Console output helpers -------------------------------------------------
 
@@ -204,19 +204,50 @@ function Get-UsbVersionHint {
     return 'Unknown'
 }
 
-function Get-SataLinkRate {
-    param([Parameter(Mandatory)][string]$InstanceId)
-    foreach ($k in @('DEVPKEY_Storage_Port_AchievedLinkRate','DEVPKEY_Storage_Port_MaxLinkRate','DEVPKEY_Storage_AchievedLinkRate')) {
-        $v = Get-PnpProp -InstanceId $InstanceId -KeyName $k
-        if ($v) {
-            if ($v -is [string]) {
-                if ($v -match '([\d\.]+\s*Gb/s)') { return $matches[1] }
-                if ($v -match '(\d+)') { $val = [int]$matches[1]; if ($val -in 1,3,6,12) { return "$val Gb/s" } }
-            } elseif ($v -is [int] -and $v -in 1,3,6,12) { return "$v Gb/s" }
-            return "$v"
-        }
+# Best-effort negotiated SATA link speed (e.g. "6.0 Gb/s" for SATA Gen3) for
+# one physical disk.
+#
+# There is no documented Windows DEVPKEY or WMI class exposing the AHCI
+# host port's raw negotiated-speed register (PxSSTS) independent of the
+# device -- tools that show that "raw" value (e.g. CrystalDiskInfo's
+# advanced mode) do so via a third-party kernel driver doing direct PCI BAR
+# MMIO reads, which is out of scope here. The practical, documented source
+# is the disk's own ATA IDENTIFY data, surfaced by smartctl's
+# "SATA Version is: <proto>, <max> Gb/s (current: <cur> Gb/s)" line -- the
+# same source dev_detect.sh already falls back to (see sata_summarize_dev)
+# when its preferred /sys/class/ata_link/*/sata_spd reading is unavailable.
+#
+# This is not a meaningful loss of precision for SATA specifically: unlike
+# PCIe (multiple lanes/devices can sit behind one upstream link) or USB
+# (devices share a hub's upstream link), SATA is point-to-point -- exactly
+# one device per port/channel -- so the device's self-reported negotiated
+# speed and the channel's negotiated speed are definitionally the same
+# value, not just a proxy for it.
+function Get-SataLinkInfo {
+    param([Parameter(Mandatory)][int]$PhysicalDriveIndex)
+    $result = [pscustomobject]@{
+        Proto     = $null
+        MaxSpeed  = $null   # Gb/s, [double]
+        CurSpeed  = $null   # Gb/s, [double]
+        CurLabel  = 'Unknown'
+        Source    = 'none'
     }
-    return $null
+    $smartctl = Get-Command smartctl -ErrorAction SilentlyContinue
+    if (-not $smartctl) { return $result }
+    $dev = "\\.\PhysicalDrive$PhysicalDriveIndex"
+    $out = & $smartctl.Source -i $dev 2>$null
+    if (-not $out) { return $result }
+    $line = $out | Where-Object { $_ -match 'SATA Version is:' } | Select-Object -First 1
+    if (-not $line) { return $result }
+    # "SATA Version is:  SATA 3.2, 6.0 Gb/s (current: 6.0 Gb/s)"
+    if ($line -match 'SATA Version is:\s*([^,]+),\s*([\d.]+)\s*Gb/s\s*\(current:\s*([\d.]+)\s*Gb/s\)') {
+        $result.Proto    = $matches[1].Trim()
+        $result.MaxSpeed = [double]$matches[2]
+        $result.CurSpeed = [double]$matches[3]
+        $result.CurLabel = '{0:0.0} Gb/s' -f $result.CurSpeed
+        $result.Source   = 'smartctl'
+    }
+    return $result
 }
 
 function Convert-LinkSpeedToGb {

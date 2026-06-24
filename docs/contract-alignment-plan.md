@@ -116,7 +116,7 @@ Today the two `components` maps don't actually line up:
 | `usb_passmark_count` | `usb_passmark_count_scalar` (2026-06-24: matches the PassMark loopback plug by name in `lsusb` output, own golden, mirroring the PS check) | `usb_passmark_count` check — narrower than DET004: counts PassMark loopback plugs specifically, not "USB device model/count/speed" in general | DET004 |
 | `storage_model_bus_counts` | `storage_model_bus_counts_scalar` (ditto) | `storage_model_bus_counts` check | DET005 |
 | `pcie_gpu` | `pcie_gpu_scalar` (bash-only component, 2026-06-24; no DET id) | *(none)* | — (Layer 3 extra, not core) |
-| *(none)* | PCIe link speed/width shown as free text inside `detect_pcie_ethernet`/`detect_storage`, never compared | PCIe link speed/width shown as free text inside the NIC/storage tables, never compared | DET006 |
+| *(none)* | PCIe and SATA link speed/width shown as free text inside `detect_pcie_ethernet`/`detect_storage` (SATA via `sata_summarize_dev`'s sysfs/smartctl/hdparm/udev fallback chain), never compared | PCIe and SATA link speed/width shown as free text inside the NIC/storage tables (SATA via `Get-SataLinkInfo`, smartctl-backed, added 2026-06-24 — the prior `Get-SataLinkRate` queried DEVPKEYs that do not appear to exist in any documented Windows SDK header and was effectively dead code), never compared | DET006 |
 
 Decisions to close this gap, so the schema below has a stable key set:
 
@@ -151,6 +151,29 @@ Decisions to close this gap, so the schema below has a stable key set:
 - `detect_pcie_gpu` has no DET id and no Windows counterpart. It becomes
   a bash-only extra component (`pcie_gpu`) under the "sets may differ"
   rule above, not part of the common five.
+- **SATA Gen3/6.0 Gb/s check, and the "are we testing the channel or the
+  disk?" question (2026-06-24).** Both scripts test the SATA channel by
+  reading the negotiated link speed of the disk attached to it
+  (`dev_detect.sh`'s `sata_summarize_dev`; `dev_detect.ps1`'s new
+  `Get-SataLinkInfo`, replacing a `Get-SataLinkRate` that queried DEVPKEYs
+  not found in any documented Windows SDK header and was effectively
+  dead code). This is not actually a proxy/workaround: SATA is
+  point-to-point — exactly one device per port — so the device's
+  self-reported negotiated speed *is* the channel's negotiated speed by
+  construction, unlike PCIe (a switch can sit behind one upstream link)
+  or USB (devices share a hub's upstream link). Linux additionally has a
+  genuinely host-controller-side reading
+  (`/sys/class/ata_link/linkN/sata_spd`, libata's own record of what it
+  negotiated) as its first-choice source, ahead of the disk-self-report
+  fallbacks (`smartctl`/`hdparm`/`udevadm`); Windows has no documented,
+  driver-independent equivalent of that host-side register read — tools
+  that show it (e.g. CrystalDiskInfo's advanced mode) do so via a
+  third-party kernel driver doing raw PCI BAR MMIO, out of scope here —
+  so `dev_detect.ps1` uses `smartctl`'s ATA IDENTIFY-derived "current:"
+  field directly, the same source bash falls back to. In practice the two
+  sources should never disagree for a healthy link, so this is not a
+  loss of verification fidelity, just one fewer redundant cross-check on
+  Windows.
 
 ### Proposed `components` schema (draft — not yet implemented)
 
