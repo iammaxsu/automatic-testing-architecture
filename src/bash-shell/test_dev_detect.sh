@@ -21,8 +21,7 @@
 
 set -Eeuo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SCRIPT_DIR="${REPO_ROOT}/src/bash-shell"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEV_DETECT="${SCRIPT_DIR}/dev_detect.sh"
 
 WORK="$(mktemp -d /tmp/dev_detect_test.XXXXXX)"
