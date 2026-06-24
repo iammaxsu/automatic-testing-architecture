@@ -111,8 +111,8 @@ if ($_cfg) { . $_cfg }
 function Get-DevDetectResultTag {
     param([string]$CurrentScalar, [string]$GoldenScalar)
     if ($script:_golden_was_init) { return 'INIT' }
-    if ($CurrentScalar -eq $GoldenScalar) { return 'PASS' }
-    return 'FAIL'
+    if ($CurrentScalar -eq $GoldenScalar) { return 'Pass' }
+    return 'Fail'
 }
 
 # -- CPU check -----------------------------------------------------------------
@@ -383,13 +383,13 @@ $_results += Invoke-StorageCheck
 # (Error is reserved for a check that threw; CIM/exception failures above
 # already propagate via $ErrorActionPreference = 'Stop' rather than landing
 # here as a result_tag, so it is not assigned below.)
-if     (@($_results | Where-Object { $_.result_tag -eq 'FAIL' }).Count -gt 0) { $_overall_tag = 'FAIL' }
+if     (@($_results | Where-Object { $_.result_tag -eq 'Fail' }).Count -gt 0) { $_overall_tag = 'Fail' }
 elseif (@($_results | Where-Object { $_.result_tag -eq 'INIT' }).Count -gt 0) { $_overall_tag = 'INIT' }
-else                                                                          { $_overall_tag = 'PASS' }
+else                                                                          { $_overall_tag = 'Pass' }
 
 $_exit_code = switch ($_overall_tag) {
-    'PASS' { 0 }
-    'FAIL' { 1 }
+    'Pass' { 0 }
+    'Fail' { 1 }
     'INIT' { 3 }
     default { 2 }
 }
