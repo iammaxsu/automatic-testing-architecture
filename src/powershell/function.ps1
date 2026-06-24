@@ -17,7 +17,7 @@ Set-StrictMode -Version Latest
 
 # -- Version -------------------------------------------------------------------
 
-$_function_ps1_api = '00.00.02'
+$_function_ps1_api = '00.00.03'
 
 # -- 1. Console output helpers -------------------------------------------------
 
@@ -69,13 +69,52 @@ function Resolve-PciAncestor {
     return $null
 }
 
+# Coerce any numeric-ish PnP property value to a plain [int].
+# Get-PnpDeviceProperty returns PCIe link properties as [uint32]; a bare
+# "$v -is [int]" test is FALSE for [uint32], which silently dropped real
+# values to 0 (the original Gen1/Unknown bug). Cast through [int] instead.
+function ConvertTo-IntOrZero {
+    param($Value)
+    if ($null -eq $Value) { return 0 }
+    try {
+        if ($Value -is [string]) {
+            if ($Value -match '(\d+)') { return [int]$matches[1] }
+            return 0
+        }
+        return [int]$Value      # works for uint32/uint16/byte/int64/double
+    } catch { return 0 }
+}
+
+# DEVPKEY_PciDevice_*LinkSpeed is an encoded enum, NOT a GT/s value:
+#   1 = 2.5  2 = 5.0  3 = 8.0  4 = 16.0  5 = 32.0  6 = 64.0  (GT/s)
+# (matches the PCIe Link Status "Current Link Speed" field; CheckPCIe.ps1
+# dumps the same raw codes.) Values >6 are treated as already-GT/s for
+# defensiveness against a stack that pre-decodes them.
+function ConvertFrom-PcieSpeedCode {
+    param([int]$Code)
+    switch ($Code) {
+        1 { return 2.5 }
+        2 { return 5.0 }
+        3 { return 8.0 }
+        4 { return 16.0 }
+        5 { return 32.0 }
+        6 { return 64.0 }
+        default {
+            if ($Code -gt 6) { return [double]$Code }
+            return 0.0
+        }
+    }
+}
+
 function ConvertTo-PcieGen {
     param([double]$SpeedGTs)
-    if    ($SpeedGTs -lt  3) { return 'Gen1' }
+    if    ($SpeedGTs -le  0) { return 'Unknown' }
+    elseif ($SpeedGTs -lt  3) { return 'Gen1' }
     elseif ($SpeedGTs -lt  6) { return 'Gen2' }
     elseif ($SpeedGTs -lt 12) { return 'Gen3' }
     elseif ($SpeedGTs -lt 24) { return 'Gen4' }
     elseif ($SpeedGTs -lt 40) { return 'Gen5' }
+    elseif ($SpeedGTs -lt 70) { return 'Gen6' }
     else                      { return 'Gen-Unknown' }
 }
 
@@ -93,28 +132,60 @@ function Get-PcieLinkInfo {
             else { Resolve-PciAncestor -InstanceId $InstanceIdOrChild }
     if (-not $pci) { return $null }
 
-    $spd = Get-PnpProp -InstanceId $pci -KeyName 'DEVPKEY_PciDevice_CurrentLinkSpeed'
-    $wid = Get-PnpProp -InstanceId $pci -KeyName 'DEVPKEY_PciDevice_CurrentLinkWidth'
-    if ($null -eq $spd -and $null -eq $wid) { return $null }
+    # Read BOTH the negotiated (Current*) and the device-capability (Max*)
+    # link properties so the report can show current AND maximum PCIe ability.
+    $curSpdRaw = Get-PnpProp -InstanceId $pci -KeyName 'DEVPKEY_PciDevice_CurrentLinkSpeed'
+    $curWidRaw = Get-PnpProp -InstanceId $pci -KeyName 'DEVPKEY_PciDevice_CurrentLinkWidth'
+    $maxSpdRaw = Get-PnpProp -InstanceId $pci -KeyName 'DEVPKEY_PciDevice_MaxLinkSpeed'
+    $maxWidRaw = Get-PnpProp -InstanceId $pci -KeyName 'DEVPKEY_PciDevice_MaxLinkWidth'
+    if ($null -eq $curSpdRaw -and $null -eq $curWidRaw -and
+        $null -eq $maxSpdRaw -and $null -eq $maxWidRaw) { return $null }
 
-    $speedGTs = 0.0
-    if ($spd -is [double] -or $spd -is [single] -or $spd -is [decimal]) { $speedGTs = [double]$spd }
-    elseif ($spd -is [int]) { $speedGTs = [double]$spd }
-    elseif ($spd -is [string] -and $spd -match '([\d\.]+)') { $speedGTs = [double]$matches[1] }
+    $curSpeedGTs = ConvertFrom-PcieSpeedCode -Code (ConvertTo-IntOrZero $curSpdRaw)
+    $maxSpeedGTs = ConvertFrom-PcieSpeedCode -Code (ConvertTo-IntOrZero $maxSpdRaw)
+    $curWidth    = ConvertTo-IntOrZero $curWidRaw
+    $maxWidth    = ConvertTo-IntOrZero $maxWidRaw
 
-    $width = 0
-    if    ($wid -is [int])                                { $width = $wid }
-    elseif ($wid -is [string] -and $wid -match '\d+') { $width = [int]$matches[0] }
+    $curGen = ConvertTo-PcieGen -SpeedGTs $curSpeedGTs
+    $maxGen = ConvertTo-PcieGen -SpeedGTs $maxSpeedGTs
+    $curGBs = Get-PcieLinkBandwidth -SpeedGTs $curSpeedGTs -Width $curWidth
+    $maxGBs = Get-PcieLinkBandwidth -SpeedGTs $maxSpeedGTs -Width $maxWidth
 
-    $gen = ConvertTo-PcieGen -SpeedGTs $speedGTs
-    $gbs = Get-PcieLinkBandwidth -SpeedGTs $speedGTs -Width $width
+    # Compose "current (max ...)" display strings; collapse to a single value
+    # when current and max agree, and fall back to 'Unknown' when unreadable.
+    $genText = if ($curGen -ne 'Unknown' -and $maxGen -ne 'Unknown') {
+                   if ($curGen -eq $maxGen) { $curGen } else { '{0} (max {1})' -f $curGen, $maxGen } }
+               elseif ($curGen -ne 'Unknown') { $curGen }
+               elseif ($maxGen -ne 'Unknown') { 'Unknown (max {0})' -f $maxGen }
+               else { 'Unknown' }
+
+    $widText = if ($curWidth -gt 0 -and $maxWidth -gt 0) {
+                   if ($curWidth -eq $maxWidth) { "x$curWidth" } else { 'x{0} (max x{1})' -f $curWidth, $maxWidth } }
+               elseif ($curWidth -gt 0) { "x$curWidth" }
+               elseif ($maxWidth -gt 0) { 'Unknown (max x{0})' -f $maxWidth }
+               else { 'Unknown' }
+
+    $spdText = if ($curSpeedGTs -gt 0 -and $maxSpeedGTs -gt 0) {
+                   if ($curSpeedGTs -eq $maxSpeedGTs) { '{0:0.0} GT/s' -f $curSpeedGTs }
+                   else { '{0:0.0} (max {1:0.0}) GT/s' -f $curSpeedGTs, $maxSpeedGTs } }
+               elseif ($curSpeedGTs -gt 0) { '{0:0.0} GT/s' -f $curSpeedGTs }
+               elseif ($maxSpeedGTs -gt 0) { 'Unknown (max {0:0.0} GT/s)' -f $maxSpeedGTs }
+               else { 'Unknown' }
 
     [pscustomobject]@{
-        InstanceId = $pci
-        SpeedGTs   = if ($speedGTs -gt 0) { '{0:0.0} GT/s' -f $speedGTs } else { 'Unknown' }
-        Width      = if ($width -gt 0)    { "x$width" }                   else { 'Unknown' }
-        Gen        = $gen
-        ApproxGBs  = if ($gbs -gt 0)     { '~{0} GB/s (per dir)' -f $gbs } else { 'Unknown' }
+        InstanceId   = $pci
+        CurSpeedGTs  = $curSpeedGTs
+        MaxSpeedGTs  = $maxSpeedGTs
+        CurWidth     = $curWidth
+        MaxWidth     = $maxWidth
+        CurGen       = $curGen
+        MaxGen       = $maxGen
+        # Back-compatible display fields consumed by the NIC/storage tables:
+        Gen          = $genText
+        Width        = $widText
+        SpeedGTs     = $spdText
+        ApproxGBs    = if ($curGBs -gt 0) { '~{0} GB/s (per dir)' -f $curGBs } else { 'Unknown' }
+        MaxApproxGBs = if ($maxGBs -gt 0) { '~{0} GB/s (per dir)' -f $maxGBs } else { 'Unknown' }
     }
 }
 
