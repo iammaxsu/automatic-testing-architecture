@@ -544,11 +544,22 @@ def main() -> int:
 
         result["summary"] = _build_summary(result["cycles"], m)
         result["overall_verdict"] = "RUNNING"
-        function.write_result_json(str(json_path), result)
+        try:
+            function.write_result_json(str(json_path), result)
+        except OSError as exc:
+            # All retries in write_json() exhausted — don't abort an endurance
+            # run over a persistence hiccup; `result` still holds every cycle
+            # recorded so far and gets re-written whole on the next iteration.
+            log.warning("Cycle %d: result.json write failed (%s) — will retry "
+                        "on next cycle", n, exc)
 
         session["n"] = n
         session["updated_at"] = function.now_iso()
-        function.write_json(str(session_path), session)
+        try:
+            function.write_json(str(session_path), session)
+        except OSError as exc:
+            log.warning("Cycle %d: session.json write failed (%s) — will retry "
+                        "on next cycle", n, exc)
 
     # Mark session complete if all cycles ran without interruption.
     if last_n >= m and not _stop_requested:

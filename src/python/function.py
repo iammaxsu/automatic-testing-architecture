@@ -411,13 +411,28 @@ def setup_logging(log_path: str, level: int = logging.INFO) -> None:
 
 # ---------- JSON helpers ----------
 
-def write_json(path: str, data: dict) -> None:
-    """Atomically write dict to path (write to .tmp then rename)."""
+def write_json(path: str, data: dict, retries: int = 3) -> None:
+    """Atomically write dict to path (write to .tmp then rename).
+
+    Retries on a transient OSError/FileNotFoundError during the tmp-write or
+    rename step (e.g. a cloud-sync client or antivirus briefly touching the
+    .tmp file). A long-running endurance test must not abort and lose hours
+    of recorded cycles to a momentary filesystem hiccup (BUG0036).
+    """
     tmp = path + ".tmp"
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-    os.replace(tmp, path)
+    last_exc = None
+    for attempt in range(1, retries + 1):
+        try:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            os.replace(tmp, path)
+            return
+        except OSError as exc:
+            last_exc = exc
+            if attempt < retries:
+                time.sleep(0.2 * attempt)
+    raise last_exc
 
 
 def read_json(path: str):
