@@ -132,9 +132,7 @@ def _ssh_run(args: argparse.Namespace, remote_cmd: str, timeout: int):
     """Run a command on the DUT over SSH. Returns subprocess.CompletedProcess or None."""
     cmd = [
         "ssh",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "BatchMode=yes",
-        "-o", f"ConnectTimeout=10",
+        *function.ssh_base_opts(10),
         "-p", str(args.port),
         f"{args.ssh_user}@{args.host}",
         remote_cmd,

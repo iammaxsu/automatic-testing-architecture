@@ -139,9 +139,7 @@ def _ssh_reboot(args: argparse.Namespace, ssh_timeout: int = 10) -> bool:
 
     cmd = [
         "ssh",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "BatchMode=yes",
-        "-o", f"ConnectTimeout={ssh_timeout}",
+        *function.ssh_base_opts(ssh_timeout),
         "-p", str(args.port),
         f"{args.ssh_user}@{args.host}",
         args.ssh_cmd,
@@ -315,6 +313,7 @@ def _new_result(args: argparse.Namespace, session_id: str, m: int) -> dict:
             "dead_timeout_sec": config.DEAD_TIMEOUT_SEC,
             "ssh_user":         args.ssh_user or None,
             "ssh_cmd":          args.ssh_cmd,
+            "dut_os":           args.dut_os,
         },
         "cycles":          [],
         "summary":         {},
@@ -327,15 +326,25 @@ def _new_result(args: argparse.Namespace, session_id: str, m: int) -> dict:
 def main() -> int:
     args = parse_args()
 
-    # Resolve DUT OS: probe via SSH when "auto", then pick the right reboot command.
+    # Resolve DUT OS and the reboot command.
+    #
+    # When --dut-os is "auto" and the DUT is reachable, DEFER the SSH probe until
+    # after init_dut() has brought the DUT online (BUG0034). A probe issued while
+    # the DUT is still powered off returns "unknown" and silently falls back to
+    # config.DUT_OS — which sent a Linux "sudo reboot" to a Windows DUT that
+    # init_dut() then powered on. Cases that cannot probe at all (dry-run,
+    # --no-check, no ssh-user/host) or that already have an explicit command are
+    # resolved here from config.DUT_OS.
+    probe_os_after_init = False
     if args.dut_os == "auto":
         if args.dry_run or args.no_check or not args.ssh_user or not args.host:
-            args.dut_os = config.DUT_OS  # can't probe — fall back to config default
+            args.dut_os = config.DUT_OS          # can't probe — config default
+        elif args.ssh_cmd is None:
+            probe_os_after_init = True           # resolve after init_dut() (BUG0034)
         else:
-            detected = function.detect_dut_os(args.host, args.port, args.ssh_user)
-            args.dut_os = detected if detected != "unknown" else config.DUT_OS
+            args.dut_os = config.DUT_OS          # explicit --ssh-cmd; OS label only
 
-    if args.ssh_cmd is None:
+    if args.ssh_cmd is None and not probe_os_after_init:
         args.ssh_cmd = config._OS_REBOOT_CMD.get(args.dut_os, config.REBOOT_SSH_CMD)
 
     if not args.ssh_user and not args.dry_run and not args.no_check:
@@ -389,7 +398,8 @@ def main() -> int:
     log.info("  Inter-cycle delay: %ds",  args.off_time)
     log.info("  Boot TO : %ds",  args.boot_timeout)
     log.info("  SSH user: %s",   args.ssh_user or "(none)")
-    log.info("  SSH cmd : %s",   args.ssh_cmd)
+    log.info("  SSH cmd : %s",   args.ssh_cmd if args.ssh_cmd
+                                  else "(auto — resolved after DUT is online)")
     log.info("  Init    : pin=%s  type=%s  init-wait=%ds (GPIO fallback)",
              args.pin if args.pin else "None", args.type, args.init_wait)
     log.info("  Log     : %s",   log_path)
@@ -441,6 +451,17 @@ def main() -> int:
         log.error("Init failed (method=%s) — cannot start reboot test.", method)
         return 1
     log.info("Init OK (method=%s) — starting test.", method)
+
+    # ── Resolve DUT OS now that the DUT is confirmed online (BUG0034) ────────────
+    # Probing here, after init_dut(), guarantees the SSH probe runs against a live
+    # DUT instead of an offline one, so a Windows DUT gets "shutdown /r /t 0" and a
+    # Linux DUT gets "sudo reboot" — not whatever config.DUT_OS happened to default
+    # to while the machine was still powered off.
+    if probe_os_after_init:
+        detected     = function.detect_dut_os(args.host, args.port, args.ssh_user)
+        args.dut_os  = detected if detected != "unknown" else config.DUT_OS
+        args.ssh_cmd = config._OS_REBOOT_CMD.get(args.dut_os, config.REBOOT_SSH_CMD)
+        log.info("  DUT OS  : %s — SSH cmd: %s", args.dut_os, args.ssh_cmd)
 
     if resuming:
         result = function.read_json(str(json_path)) or _new_result(args, session_id, m)

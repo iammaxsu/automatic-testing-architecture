@@ -102,8 +102,14 @@ echo ""
 if [[ -n "$OPT_HOST" && -n "$OPT_SSH_USER" && -n "$OPT_DUT_PS1" ]]; then
     echo "--- DUT-side (${OPT_SSH_USER}@${OPT_HOST}) ---"
 
+    # Host-key options mirror function.ssh_base_opts() (FWK035 / BUG0033):
+    # UserKnownHostsFile=/dev/null + LogLevel=ERROR so a reimaged DUT whose host
+    # key has changed is still accepted instead of being hard-refused with
+    # "REMOTE HOST IDENTIFICATION HAS CHANGED".
     SSH_ARGS=(
         -o StrictHostKeyChecking=no
+        -o UserKnownHostsFile=/dev/null
+        -o LogLevel=ERROR
         -o BatchMode=yes
         -o ConnectTimeout=10
         -p "$OPT_PORT"

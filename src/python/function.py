@@ -14,6 +14,45 @@ import config
 _COUNTER_FILE = "counter.log"
 
 
+# ---------- SSH connection options (FWK035) ----------
+
+def ssh_base_opts(connect_timeout: int = 10) -> list:
+    """Standard ssh(1) options for every framework connection to a DUT.
+
+    Returns the option list that sits between the `ssh` executable and the
+    `user@host` target, so call sites build their command as:
+
+        ["ssh", *ssh_base_opts(timeout), "-p", str(port), f"{user}@{host}", cmd]
+
+    Centralising this list is the single source of truth that stops the six
+    SSH call sites from drifting apart (the drift that caused BUG0033).
+
+    The two host-key options are the important part (BUG0033):
+
+      StrictHostKeyChecking=no      accepts an *unknown* host without prompting.
+      UserKnownHostsFile=/dev/null  never reads or writes a known_hosts entry,
+        so a DUT whose host key has *changed* (reimaged, OpenSSH reinstalled,
+        OS swapped between Windows and Linux on the same IP) is accepted too.
+        StrictHostKeyChecking=no ALONE does NOT override a changed-key
+        rejection — OpenSSH still hard-refuses with "REMOTE HOST IDENTIFICATION
+        HAS CHANGED" and a non-zero exit — which silently broke every SSH cycle
+        once a lab DUT's key drifted. Lab DUTs are physically controlled, so
+        skipping host-key trust carries no real man-in-the-middle risk here.
+
+      LogLevel=ERROR   suppresses the multi-line changed-key warning banner so
+        it never pollutes the test log (it does not hide the remote command's
+        own stdout, so `uname -s` / `query session` probes still work).
+      BatchMode=yes    never fall back to an interactive password prompt.
+    """
+    return [
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "LogLevel=ERROR",
+        "-o", "BatchMode=yes",
+        "-o", f"ConnectTimeout={connect_timeout}",
+    ]
+
+
 # ---------- DUT OS detection ----------
 
 def detect_dut_os(host: str, port: int, ssh_user: str, timeout: int = 10) -> str:
@@ -32,9 +71,7 @@ def detect_dut_os(host: str, port: int, ssh_user: str, timeout: int = 10) -> str
     log = logging.getLogger("function")
     cmd = [
         "ssh",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "BatchMode=yes",
-        "-o", f"ConnectTimeout={timeout}",
+        *ssh_base_opts(timeout),
         "-p", str(port),
         f"{ssh_user}@{host}",
         "uname -s",
@@ -76,9 +113,7 @@ def restore_dut_env(host: str, port: int, ssh_user: str, timeout: int = 30) -> b
     log = logging.getLogger("function")
     cmd = [
         "ssh",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "BatchMode=yes",
-        "-o", f"ConnectTimeout={timeout}",
+        *ssh_base_opts(timeout),
         "-p", str(port),
         f"{ssh_user}@{host}",
         f"sudo {config.DUT_RESTORE_HELPER}",
@@ -249,9 +284,7 @@ def notify_dut(
                 r = subprocess.run(
                     [
                         "ssh",
-                        "-o", "StrictHostKeyChecking=no",
-                        "-o", "BatchMode=yes",
-                        "-o", f"ConnectTimeout={ssh_timeout}",
+                        *ssh_base_opts(ssh_timeout),
                         "-p", str(port),
                         f"{ssh_user}@{host}",
                         cmd,

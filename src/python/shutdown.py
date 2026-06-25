@@ -21,6 +21,7 @@ import subprocess
 import time
 
 import config
+import function
 
 log = logging.getLogger(__name__)
 
@@ -127,9 +128,7 @@ class ShutdownCoordinator:
         """
         cmd = [
             "ssh",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "BatchMode=yes",            # never prompt for password
-            "-o", f"ConnectTimeout={self.ssh_timeout_sec}",
+            *function.ssh_base_opts(self.ssh_timeout_sec),
             "-p", str(self.ssh_port),
             f"{self.ssh_user}@{self.ssh_host}",
             self.ssh_cmd,

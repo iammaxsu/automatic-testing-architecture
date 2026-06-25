@@ -1,16 +1,16 @@
 # Project Status
 
-_Generated 2026-06-25 06:08 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-06-25 07:07 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
-**Total:** 141
+**Total:** 142
 
 ### By priority
 
 | Priority | Count |
 | --- | --- |
-| Must | 121 |
+| Must | 122 |
 | Should | 18 |
 | — | 2 |
 
@@ -20,13 +20,13 @@ _Generated 2026-06-25 06:08 · regenerate with `python scripts/stats.py > STATUS
 | --- | --- |
 | proposed | 107 |
 | implementing | 8 |
-| implemented | 26 |
+| implemented | 27 |
 
 ```mermaid
 pie showData title Requirements by status
     "proposed" : 107
     "implementing" : 8
-    "implemented" : 26
+    "implemented" : 27
 ```
 
 ### By section
@@ -38,7 +38,7 @@ pie showData title Requirements by status
 | DOC | 4 | 0 | 4 |
 | DSK | 10 | 0 | 8 |
 | FUN | 7 | 0 | 6 |
-| FWK | 34 | 0 | 28 |
+| FWK | 35 | 0 | 28 |
 | LOG | 24 | 0 | 24 |
 | NET | 17 | 0 | 17 |
 | PWR | 14 | 0 | 1 |
@@ -150,21 +150,21 @@ pie showData title Requirements by status
 
 ## Bugs
 
-**Total:** 32
+**Total:** 34
 
 ### By status
 
 | Status | Count |
 | --- | --- |
 | open | 14 |
-| resolved | 6 |
+| resolved | 8 |
 | closed | 10 |
 | invalid | 2 |
 
 ```mermaid
 pie showData title Bugs by status
     "open" : 14
-    "resolved" : 6
+    "resolved" : 8
     "closed" : 10
     "invalid" : 2
 ```
@@ -173,9 +173,9 @@ pie showData title Bugs by status
 
 | OS | Count |
 | --- | --- |
-| Ubuntu 26.04 LTS | 15 |
-| Ubuntu 24.04 LTS | 11 |
-| Windows 11 | 4 |
+| Ubuntu 26.04 LTS | 17 |
+| Ubuntu 24.04 LTS | 13 |
+| Windows 11 | 6 |
 | Windows 11 (zh-TW) | 2 |
 | Windows 11 (English / en-US) | 1 |
 | Windows 11 (Traditional Chinese / zh-TW) | 1 |
@@ -214,8 +214,11 @@ pie showData title Bugs by status
 | FWK027 | [BUG0019](bugs/closed/BUG0019-result-json-metadata-corruption-session-id-unknown.md) | closed |
 | FWK028 | [BUG0030](bugs/closed/BUG0030-os-detect-utf8-decode-crash.md) | resolved |
 | FWK028 | [BUG0031](bugs/closed/BUG0031-os-probe-runs-before-power-on.md) | resolved |
+| FWK031 | [BUG0034](bugs/closed/BUG0034-reboot-os-probe-before-init-dut.md) | resolved |
 | FWK032 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
 | FWK034 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
+| FWK035 | [BUG0033](bugs/closed/BUG0033-ssh-changed-host-key-blocks-all-cycles.md) | resolved |
+| FWK035 | [BUG0034](bugs/closed/BUG0034-reboot-os-probe-before-init-dut.md) | resolved |
 | LOG008 | [BUG0004](bugs/open/BUG0004-fio-log-filenames-missing-timestamp-and-result.md) | open |
 | LOG012 | [BUG0024](bugs/closed/BUG0024-extract-bw-fails-on-slow-disks-no-data-0-0-mib-s-f.md) | closed |
 | LOG012 | [BUG0004](bugs/open/BUG0004-fio-log-filenames-missing-timestamp-and-result.md) | open |
@@ -235,6 +238,7 @@ pie showData title Bugs by status
 | NET009 | [BUG0029](bugs/closed/BUG0029-net-test-iperf3-firewall-rule-needs-elevation.md) | resolved |
 | NET011 | [BUG0015](bugs/open/BUG0015-net-test-sh-consumes-the-ssh-lifeline-nic.md) | open |
 | NET012 | [BUG0015](bugs/open/BUG0015-net-test-sh-consumes-the-ssh-lifeline-nic.md) | open |
+| PWR009 | [BUG0033](bugs/closed/BUG0033-ssh-changed-host-key-blocks-all-cycles.md) | resolved |
 | PWR009 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
 | PWR011 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
 | PWR011 | [BUG0027](bugs/closed/BUG0027-reboot-py-boot-time-sec-measurement-defect.md) | resolved |
@@ -242,6 +246,8 @@ pie showData title Bugs by status
 | PWR012 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
 | PWR012 | [BUG0027](bugs/closed/BUG0027-reboot-py-boot-time-sec-measurement-defect.md) | resolved |
 | PWR012 | [BUG0032](bugs/closed/BUG0032-grub-menu-can-block-unattended-reboot-tests.md) | resolved |
+| PWR012 | [BUG0033](bugs/closed/BUG0033-ssh-changed-host-key-blocks-all-cycles.md) | resolved |
+| PWR012 | [BUG0034](bugs/closed/BUG0034-reboot-os-probe-before-init-dut.md) | resolved |
 | PWR012 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
 | SET007 | [BUG0032](bugs/closed/BUG0032-grub-menu-can-block-unattended-reboot-tests.md) | resolved |
 | SLP001 | [BUG0020](bugs/open/BUG0020-sleep-test-not-yet-integrated-or-verified.md) | open |
@@ -262,7 +268,6 @@ _(may indicate untested code paths — worth a review)_
 | [FWK002](requirements/FWK002.md) | implemented | Cross-Language Naming Conventions |
 | [FWK029](requirements/FWK029.md) | implemented | Emergency Stop Safety Mechanism |
 | [FWK030](requirements/FWK030.md) | implemented | Two-Phase Consecutive-Failure Stop Policy |
-| [FWK031](requirements/FWK031.md) | implemented | DUT Self-Initialisation Before Test Execution |
 | [PWR001](requirements/PWR001.md) | implemented | AT and ATX PSU Type Selection |
 | [PWR002](requirements/PWR002.md) | implemented | GPIO Relay Abstraction |
 | [PWR003](requirements/PWR003.md) | implemented | Network-Based DUT Liveness Detection |
