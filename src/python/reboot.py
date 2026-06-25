@@ -8,7 +8,8 @@
 #   --host    IP_OR_HOST      DUT IP/hostname for liveness checks
 #   --port    N               TCP port for liveness check (default 22)
 #   --cycles  N               number of reboot cycles
-#   --off     SECONDS         settle wait after DUT goes offline before polling for online
+#   --off     SECONDS         inter-cycle delay, after each cycle's verdict is recorded
+#                             (matches power_cycle.py; does not delay the boot-time poll)
 #   --out     DIR             output directory for logs & results
 #   --no-check                skip network liveness checks (useful for dry-run)
 #   --dry-run                 run logic without issuing SSH reboot
@@ -79,7 +80,8 @@ def parse_args() -> argparse.Namespace:
                    help="Number of reboot cycles (default: %(default)s)")
     p.add_argument("--off",           default=config.OFF_TIME_SEC, type=int,
                    dest="off_time",
-                   help="Settle wait in seconds after DUT goes offline (default: %(default)s)")
+                   help="Inter-cycle delay in seconds, after each cycle's verdict "
+                        "is recorded (default: %(default)s)")
     p.add_argument("--out",           default=config.LOG_DIR,
                    help="Output directory for logs (default: %(default)s)")
     p.add_argument("--no-check",      action="store_true",
@@ -212,6 +214,7 @@ def run_one_cycle(
         return rec
 
     rec["t_reboot_cmd"] = function.now_iso()
+    t_reboot_cmd_mono = time.monotonic()
     ok = _ssh_reboot(args)
     if not ok:
         rec["notes"] = "SSH reboot command failed (DUT unreachable or SSH error)"
@@ -232,15 +235,16 @@ def run_one_cycle(
     else:
         rec["t_offline"] = function.now_iso()
 
-    # Optional settle after offline before polling for online.
-    if args.off_time > 0 and not args.dry_run:
-        time.sleep(args.off_time)
-
     # ── 3. Wait for DUT to come back online ───────────────────────────────
+    # Poll for "alive" immediately — no fixed pre-poll sleep here (BUG0027).
+    # boot_time_sec is the full reboot round-trip per PWR011 §3 (reboot command
+    # issued -> DUT back online), measured from t_reboot_cmd_mono rather than
+    # trusting the poll's own elapsed time, so it stays correct regardless of
+    # internal sleep/poll structure.
     if checker and not args.dry_run:
-        alive, boot_t = checker.wait_until_alive(args.boot_timeout)
+        alive, _ = checker.wait_until_alive(args.boot_timeout)
         rec["t_online"]      = function.now_iso()
-        rec["boot_time_sec"] = round(boot_t, 2)
+        rec["boot_time_sec"] = round(time.monotonic() - t_reboot_cmd_mono, 2)
 
         if not alive:
             rec["verdict"] = NO_BOOT
@@ -248,7 +252,7 @@ def run_one_cycle(
             log.warning("Cycle %d: NO_BOOT (timeout %ds)", n, args.boot_timeout)
             return rec
 
-        log.info("Cycle %d: DUT back online in %.1f s", n, boot_t)
+        log.info("Cycle %d: DUT back online in %.1f s", n, rec["boot_time_sec"])
         _t = function.notify_dut(
             args.ssh_user, args.host, args.port,
             f"Reboot test in progress - cycle {n}/{total}. Do not use.",
@@ -265,6 +269,16 @@ def run_one_cycle(
         log.info("Cycle %d: liveness check disabled", n)
 
     rec["verdict"] = PASS
+
+    # ── 4. Inter-cycle delay (mirrors power_cycle.py: after the verdict is
+    # recorded, before the next cycle's reboot command — not a pre-measurement
+    # delay that would hide the boot-time measurement; see BUG0027) ─────────
+    if args.off_time > 0 and not args.dry_run:
+        log.info("Cycle %d: waiting %ds before next cycle …", n, args.off_time)
+        off_deadline = time.monotonic() + args.off_time
+        while time.monotonic() < off_deadline and not _stop_requested:
+            time.sleep(1)
+
     return rec
 
 
@@ -372,7 +386,7 @@ def main() -> int:
     log.info("  Session : %s%s", session_id, "  (RESUMING)" if resuming else "")
     log.info("  Host    : %s",   args.host or "(liveness disabled)")
     log.info("  Cycles  : m=%d, starting at n=%d", m, start_n)
-    log.info("  Off wait: %ds",  args.off_time)
+    log.info("  Inter-cycle delay: %ds",  args.off_time)
     log.info("  Boot TO : %ds",  args.boot_timeout)
     log.info("  SSH user: %s",   args.ssh_user or "(none)")
     log.info("  SSH cmd : %s",   args.ssh_cmd)

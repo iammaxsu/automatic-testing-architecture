@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-06-24 09:19 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-06-25 02:39 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -156,15 +156,15 @@ pie showData title Requirements by status
 
 | Status | Count |
 | --- | --- |
-| open | 15 |
-| resolved | 4 |
+| open | 14 |
+| resolved | 5 |
 | closed | 10 |
 | invalid | 2 |
 
 ```mermaid
 pie showData title Bugs by status
-    "open" : 15
-    "resolved" : 4
+    "open" : 14
+    "resolved" : 5
     "closed" : 10
     "invalid" : 2
 ```
@@ -198,7 +198,6 @@ pie showData title Bugs by status
 | [BUG0022](bugs/open/BUG0022-the-notification-is-misleading.md) | 2026-05-14 | open | The notification is misleading |
 | [BUG0023](bugs/open/BUG0023-two-log-dir-echo-statements-joined-on-one-line-in-.md) | 2026-05-14 | open | Two log_dir echo statements joined on one line in function.sh |
 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | 2026-06-05 | open | power_cycle.py msg.exe notification not shown on DUT during test |
-| [BUG0027](bugs/open/BUG0027-reboot-py-boot-time-sec-measurement-defect.md) | 2026-06-08 | open | `reboot.py` `boot_time_sec` does not measure the reboot round-trip |
 
 ## Traceability
 
@@ -238,11 +237,11 @@ pie showData title Bugs by status
 | NET012 | [BUG0015](bugs/open/BUG0015-net-test-sh-consumes-the-ssh-lifeline-nic.md) | open |
 | PWR009 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
 | PWR011 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
+| PWR011 | [BUG0027](bugs/closed/BUG0027-reboot-py-boot-time-sec-measurement-defect.md) | resolved |
 | PWR011 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
-| PWR011 | [BUG0027](bugs/open/BUG0027-reboot-py-boot-time-sec-measurement-defect.md) | open |
 | PWR012 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
+| PWR012 | [BUG0027](bugs/closed/BUG0027-reboot-py-boot-time-sec-measurement-defect.md) | resolved |
 | PWR012 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
-| PWR012 | [BUG0027](bugs/open/BUG0027-reboot-py-boot-time-sec-measurement-defect.md) | open |
 | SLP001 | [BUG0020](bugs/open/BUG0020-sleep-test-not-yet-integrated-or-verified.md) | open |
 | SLP002 | [BUG0028](bugs/closed/BUG0028-sleep-test-detect-crashes-on-localized-windows.md) | resolved |
 | SLP003 | [BUG0028](bugs/closed/BUG0028-sleep-test-detect-crashes-on-localized-windows.md) | resolved |
