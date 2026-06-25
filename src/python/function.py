@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -417,7 +418,7 @@ def write_json(path: str, data: dict, retries: int = 3) -> None:
     Retries on a transient OSError/FileNotFoundError during the tmp-write or
     rename step (e.g. a cloud-sync client or antivirus briefly touching the
     .tmp file). A long-running endurance test must not abort and lose hours
-    of recorded cycles to a momentary filesystem hiccup (BUG0036).
+    of recorded cycles to a momentary filesystem hiccup (BUG0035).
     """
     tmp = path + ".tmp"
     last_exc = None
@@ -441,6 +442,86 @@ def read_json(path: str):
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     return None
+
+
+# ---------- DUT-first session layout (LOG025) ----------
+
+def dut_slug(value: str) -> str:
+    """Sanitize a --dut-id/--host value into a filesystem-safe directory name."""
+    value = (value or "").strip()
+    if not value:
+        return "unknown-dut"
+    return re.sub(r"[^A-Za-z0-9._-]", "_", value)
+
+
+class SessionTargetMismatch(RuntimeError):
+    """Raised when a resumable session directory was created for a different
+    DUT identity (host/port/ssh_user/...) than the one requested now."""
+
+    def __init__(self, session_id: str, expected: dict, got: dict):
+        self.session_id = session_id
+        self.expected = expected
+        self.got = got
+        super().__init__(
+            f"session {session_id} target mismatch: recorded={expected}, current={got}"
+        )
+
+
+def resolve_session(base_dir: str, test: str, dut_id: str, target: dict,
+                     requested_m: int, new_session: bool):
+    """Resolve this run's session directory under <base_dir>/<dut_id>/ (LOG025).
+
+    Sessions live at <base_dir>/<dut_id>/<test>_<session_id>/, keyed by DUT
+    identity so concurrent runs against different DUTs sharing one --out base
+    never contend for the same session-state file or collide on filenames
+    (BUG0035 follow-up). Each session directory holds its own meta.json
+    (the LOG023 session-state record) plus that session's log/result/report.
+
+    Returns (session_dir: Path, session_id: str, m: int, start_n: int,
+             meta: dict, resuming: bool). Raises SessionTargetMismatch if a
+    resumable session directory exists but was recorded for a different
+    target identity.
+    """
+    dut_dir = Path(base_dir) / dut_id
+    dut_dir.mkdir(parents=True, exist_ok=True)
+
+    candidate = None
+    if not new_session:
+        for child in sorted(dut_dir.glob(f"{test}_*"), reverse=True):
+            meta = read_json(str(child / "meta.json"))
+            if meta and meta.get("status") == "running" and meta.get("n", 0) < meta.get("m", 0):
+                candidate = (child, meta)
+                break
+
+    if candidate is not None:
+        session_dir, meta = candidate
+        if meta.get("target") != target:
+            raise SessionTargetMismatch(meta.get("session_id"), meta.get("target"), target)
+        session_id = meta["session_id"]
+        m          = meta["m"]
+        start_n    = meta["n"] + 1
+        resuming   = True
+    else:
+        session_id = now_ts()
+        m          = requested_m
+        start_n    = 1
+        session_dir = dut_dir / f"{test}_{session_id}"
+        session_dir.mkdir(parents=True, exist_ok=True)
+        meta = {
+            "session_id": session_id,
+            "test":       test,
+            "dut_id":     dut_id,
+            "m":          m,
+            "n":          0,
+            "status":     "running",
+            "started_at": now_iso(),
+            "updated_at": now_iso(),
+            "target":     target,
+        }
+        write_json(str(session_dir / "meta.json"), meta)
+        resuming = False
+
+    return session_dir, session_id, m, start_n, meta, resuming
 
 
 # Backwards-compatible alias (result.json is written via the same atomic path)

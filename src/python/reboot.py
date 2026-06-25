@@ -15,7 +15,10 @@
 #                             sshd/sudo to stabilise, then reboots immediately. An
 #                             integer N overrides with a fixed N-second delay instead
 #                             (0 = no delay at all).
-#   --out     DIR             output directory for logs & results
+#   --out     DIR             base output directory; sessions live under
+#                             DIR/<dut-id>/reboot_<session_id>/ (LOG025)
+#   --dut-id  ID              stable DUT identity for the session directory;
+#                             default: derived from --host
 #   --no-check                skip network liveness checks (useful for dry-run)
 #   --dry-run                 run logic without issuing SSH reboot
 #   --boot-timeout SECONDS    max wait for DUT to come back online (default: 120)
@@ -95,6 +98,10 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Software reboot endurance test (SSH-controlled)")
     p.add_argument("--host",          default=config.DUT_HOST,
                    help="DUT IP or hostname (required for liveness checks)")
+    p.add_argument("--dut-id",        default=None, dest="dut_id",
+                   help="Stable DUT identity for the session directory (LOG025); "
+                        "default: derived from --host. Set this if the DUT's IP "
+                        "can change (DHCP) but you want one continuous history.")
     p.add_argument("--port",          default=config.DUT_PORT, type=int,
                    help="TCP port to probe (default: %(default)s)")
     p.add_argument("--cycles",        default=config.CYCLES, type=int,
@@ -389,41 +396,30 @@ def main() -> int:
         print("       Use --dry-run to test without a real DUT.")
         return 1
 
-    out_dir = Path(args.out)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    # ── Session resolution (LOG023) ───────────────────────────────────────────
-    session_path = out_dir / "reboot_session.json"
-    session = function.read_json(str(session_path))
-    resuming = bool(
-        session
-        and session.get("status") == "running"
-        and session.get("n", 0) < session.get("m", 0)
-        and not args.new_session
-    )
-
-    if resuming:
-        session_id = session["session_id"]
-        m          = session["m"]
-        start_n    = session["n"] + 1
-    else:
-        session_id = function.now_ts()
-        m          = args.cycles
-        start_n    = 1
-        session = {
-            "session_id": session_id,
-            "test":       "reboot",
-            "m":          m,
-            "n":          0,
-            "status":     "running",
-            "started_at": function.now_iso(),
-            "updated_at": function.now_iso(),
-        }
-        function.write_json(str(session_path), session)
+    # ── Session resolution (LOG023/LOG025: DUT-first session directory) ──────────
+    dut_id = function.dut_slug(args.dut_id or args.host)
+    target = {
+        "host":     args.host or None,
+        "port":     args.port,
+        "ssh_user": args.ssh_user or None,
+    }
+    try:
+        session_dir, session_id, m, start_n, session, resuming = function.resolve_session(
+            args.out, "reboot", dut_id, target, args.cycles, args.new_session)
+    except function.SessionTargetMismatch as exc:
+        log.error(
+            "Refusing to resume session %s: target mismatch "
+            "(session target=%s, current target=%s). "
+            "Re-run with --host/--port/--ssh-user matching the original session, "
+            "or pass --new-session to start a fresh one.",
+            exc.session_id, exc.expected, exc.got,
+        )
+        return 1
+    session_path = session_dir / "meta.json"
 
     stem      = f"reboot_{session_id}"
-    log_path  = out_dir / f"{stem}.log"
-    json_path = out_dir / f"{stem}.result.json"
+    log_path  = session_dir / f"{stem}.log"
+    json_path = session_dir / f"{stem}.result.json"
 
     function.setup_logging(str(log_path))
     signal.signal(signal.SIGINT, _sigint_handler)
@@ -607,7 +603,7 @@ def main() -> int:
     log.info("Result JSON: %s", json_path)
 
     # Render the HTML report from the canonical result.json (FWK028).
-    html_path = out_dir / f"{stem}.report.html"
+    html_path = session_dir / f"{stem}.report.html"
     generate_report(result, str(html_path))
     log.info("HTML report: %s", html_path)
 

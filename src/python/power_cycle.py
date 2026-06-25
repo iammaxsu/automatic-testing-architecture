@@ -83,6 +83,10 @@ def parse_args() -> argparse.Namespace:
                    choices=["ATX", "AT"], help="PSU type (default: %(default)s)")
     p.add_argument("--host",     default=config.DUT_HOST,
                    help="DUT IP or hostname for liveness checks")
+    p.add_argument("--dut-id",   default=None, dest="dut_id",
+                   help="Stable DUT identity for the session directory (LOG025); "
+                        "default: derived from --host. Set this if the DUT's IP "
+                        "can change (DHCP) but you want one continuous history.")
     p.add_argument("--port",     default=config.DUT_PORT, type=int,
                    help="TCP port to probe (default: %(default)s)")
     p.add_argument("--cycles",   default=config.CYCLES, type=int,
@@ -518,69 +522,42 @@ def main() -> int:
     if args.report is None:
         args.report = args.out
 
-    out_dir = Path(args.out)
-    rep_dir = Path(args.report)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    rep_dir.mkdir(parents=True, exist_ok=True)
+    rep_base = Path(args.report)
+    rep_base.mkdir(parents=True, exist_ok=True)
 
-    # ── Session resolution (LOG023) ────────────────────────────────────────────
+    # ── Session resolution (LOG023/LOG025: DUT-first session directory) ─────────
     # A resumed session must target the same DUT as the one that created it —
     # otherwise cycles from two different physical hosts get merged into one
     # result.json (e.g. a stale aborted session on host A silently "resuming"
     # hours later against host B). Identify the target by the same fields that
     # actually change DUT behaviour: host, port, ssh_user, type.
+    dut_id = function.dut_slug(args.dut_id or args.host)
     target = {
         "host":     args.host or None,
         "port":     args.port,
         "ssh_user": args.ssh_user or None,
         "type":     args.type,
     }
-
-    session_path = out_dir / "power_cycle_session.json"
-    session = function.read_json(str(session_path))
-    candidate_resume = bool(
-        session
-        and session.get("status") == "running"
-        and session.get("n", 0) < session.get("m", 0)
-        and not args.new_session
-    )
-
-    if candidate_resume and session.get("target") != target:
+    try:
+        session_dir, session_id, m, start_n, session, resuming = function.resolve_session(
+            args.out, "power_cycle", dut_id, target, args.cycles, args.new_session)
+    except function.SessionTargetMismatch as exc:
         log.error(
             "Refusing to resume session %s: target mismatch "
             "(session target=%s, current target=%s). "
             "Re-run with --host/--ssh-user/--type matching the original session, "
             "or pass --new-session to start a fresh one.",
-            session.get("session_id"), session.get("target"), target,
+            exc.session_id, exc.expected, exc.got,
         )
         return 1
-
-    resuming = candidate_resume
-
-    if resuming:
-        session_id = session["session_id"]
-        m          = session["m"]
-        start_n    = session["n"] + 1
-    else:
-        session_id = function.now_ts()
-        m          = args.cycles
-        start_n    = 1
-        session = {
-            "session_id": session_id,
-            "test":       "power_cycle",
-            "m":          m,
-            "n":          0,
-            "status":     "running",
-            "started_at": function.now_iso(),
-            "updated_at": function.now_iso(),
-            "target":     target,
-        }
-        function.write_json(str(session_path), session)
+    session_path = session_dir / "meta.json"
 
     # Paths derived from session_id; a resumed run reuses the same files.
     stem      = f"power_cycle_{session_id}"
-    log_path  = out_dir / f"{stem}.log"
-    json_path = out_dir / f"{stem}.result.json"
+    log_path  = session_dir / f"{stem}.log"
+    json_path = session_dir / f"{stem}.result.json"
+    rep_dir   = rep_base / dut_id / stem
+    rep_dir.mkdir(parents=True, exist_ok=True)
     html_path = rep_dir / f"power_cycle_report_{session_id}.html"
 
     function.setup_logging(str(log_path))   # FileHandler appends on resume
