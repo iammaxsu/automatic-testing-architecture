@@ -14,8 +14,10 @@
 #      (required by shutdown.py / reboot.py: "sudo shutdown -h now", "sudo reboot")
 #   5. Disables sleep/suspend/hibernate (systemd targets + logind idle action)
 #   6. Disables unattended-upgrades automatic reboot
-#   7. (Optional) Registers a systemd oneshot service to run dev_detect.sh at boot
-#   8. Ensures Python 3 is present and downloads report.py for HTML rendering
+#   7. Sets GRUB_TIMEOUT=0 and GRUB_RECORDFAIL_TIMEOUT=0 so every boot proceeds
+#      unattended, even after an unclean shutdown (no operator at the console)
+#   8. (Optional) Registers a systemd oneshot service to run dev_detect.sh at boot
+#   9. Ensures Python 3 is present and downloads report.py for HTML rendering
 #
 # This script is intentionally idempotent: running it multiple times is safe.
 #
@@ -61,7 +63,7 @@
 
 set -Eeuo pipefail
 
-_script_ver="00.00.01"
+_script_ver="00.00.02"
 
 # ---------- 0. Root privilege check (FWK033) ----------------------------------
 # MUST be the first executable action, before any other output, so an operator
@@ -403,7 +405,7 @@ echo "         Restore: sudo ./setup_dut.sh --restore"
 
 # ---------- 6. Disable unattended-upgrades automatic reboot -----------------------
 
-_step "6 / 8  Unattended-upgrades automatic reboot"
+_step "6 / 9  Unattended-upgrades automatic reboot"
 
 _uu_conf="/etc/apt/apt.conf.d/50unattended-upgrades"
 if [[ -f "${_uu_conf}" ]]; then
@@ -422,14 +424,68 @@ else
 fi
 
 
-# ---------- 7. dev_detect.sh at boot (optional) ------------------------------------
+# ---------- 7. GRUB: unattended boot (no operator at the console) ----------------
+#
+# reboot.py / power_cycle.py poll ping/SSH after issuing a reboot, bounded by
+# BOOT_TIMEOUT_SEC. While the DUT is parked at the GRUB menu the kernel has not
+# loaded yet — no network stack exists — so ping/SSH cannot succeed; this is
+# dead time the test simply burns through, and a menu that never auto-boots
+# (no one is present to press Enter) makes every such cycle time out as NO_BOOT.
+#
+# Two independent GRUB settings can each cause a menu to appear and wait
+# indefinitely:
+#   - GRUB_TIMEOUT: the normal "show menu for N seconds" countdown.
+#   - GRUB_RECORDFAIL_TIMEOUT (Ubuntu-specific): overrides GRUB_TIMEOUT and
+#     defaults to -1 (wait forever) whenever the previous boot did not reach
+#     the "boot ok" marker — e.g. a prior test cycle's reboot/power-cycle did
+#     not shut down cleanly. This is the most likely reason the menu appears
+#     only sometimes rather than every cycle.
+# Setting both to 0 makes every boot proceed unattended regardless of how the
+# previous boot ended.
+
+_step "7 / 9  GRUB: unattended boot (no console operator during automated tests)"
+
+_grub_conf="/etc/default/grub"
+if [[ -f "${_grub_conf}" ]]; then
+  _grub_changed=0
+  _grub_set() {
+    local key="$1" val="$2"
+    if grep -qE "^${key}=" "${_grub_conf}"; then
+      if grep -qE "^${key}=${val}\$" "${_grub_conf}"; then
+        return 0
+      fi
+      sed -i -E "s@^${key}=.*@${key}=${val}@" "${_grub_conf}"
+    else
+      echo "${key}=${val}" >> "${_grub_conf}"
+    fi
+    _grub_changed=1
+  }
+  _grub_set "GRUB_TIMEOUT" "0"
+  _grub_set "GRUB_RECORDFAIL_TIMEOUT" "0"
+
+  if (( _grub_changed )); then
+    if command -v update-grub >/dev/null 2>&1; then
+      update-grub >/dev/null
+    else
+      grub-mkconfig -o /boot/grub/grub.cfg >/dev/null
+    fi
+    _ok "GRUB_TIMEOUT=0, GRUB_RECORDFAIL_TIMEOUT=0 set in ${_grub_conf}; config regenerated"
+  else
+    _skip "GRUB_TIMEOUT=0 and GRUB_RECORDFAIL_TIMEOUT=0 already set in ${_grub_conf}"
+  fi
+else
+  _skip "${_grub_conf} not found — not a GRUB-based system, nothing to configure"
+fi
+
+
+# ---------- 8. dev_detect.sh at boot (optional) ------------------------------------
 #
 # The unit name MUST match what autorun_service_name_for("dev_detect.sh") derives:
 #   dev_detect.sh → strip extension → dev_detect → replace _ with - → dev-detect
 # This ensures dev_detect.sh's own autorun_setup() sees the service as already
 # installed and skips the redundant re-installation on its first manual run.
 
-_step "7 / 8  dev_detect.sh at boot"
+_step "8 / 9  dev_detect.sh at boot"
 
 # --- Migrate: remove old dut-dev-detect.{timer,service} from previous versions ---
 _unit_dir="/etc/systemd/system"
@@ -490,7 +546,7 @@ fi
 
 # ---------- 8. Python 3 runtime + report.py renderer --------------------------------
 
-_step "8 / 8  Python 3 runtime + report.py renderer"
+_step "9 / 9  Python 3 runtime + report.py renderer"
 
 if command -v python3 >/dev/null 2>&1; then
   _skip "Python already installed: $(python3 --version 2>&1)"
@@ -544,6 +600,7 @@ echo "  Restore helper    : ${_restore_helper}  (auto-called by Pi on test compl
 echo "  Power management  : no sleep/suspend/hibernate; HandlePowerKey=poweroff"
 echo "  logind drop-in    : ${TEST_ENV_LOGIND_DROPIN}"
 echo "  Unattended-upgrades auto-reboot : disabled (if installed)"
+echo "  GRUB unattended boot : timeout=0, recordfail-timeout=0 (if GRUB-based)"
 if [[ -n "${_dev_detect_script}" && -f "${_dev_detect_script}" ]]; then
   echo "  dev-detect service: dev-detect.service (boot + ${_dev_detect_delay}s sleep, as root)"
 else

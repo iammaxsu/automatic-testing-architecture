@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-06-25 02:39 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-06-25 06:08 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -150,21 +150,21 @@ pie showData title Requirements by status
 
 ## Bugs
 
-**Total:** 31
+**Total:** 32
 
 ### By status
 
 | Status | Count |
 | --- | --- |
 | open | 14 |
-| resolved | 5 |
+| resolved | 6 |
 | closed | 10 |
 | invalid | 2 |
 
 ```mermaid
 pie showData title Bugs by status
     "open" : 14
-    "resolved" : 5
+    "resolved" : 6
     "closed" : 10
     "invalid" : 2
 ```
@@ -173,8 +173,8 @@ pie showData title Bugs by status
 
 | OS | Count |
 | --- | --- |
-| Ubuntu 26.04 LTS | 14 |
-| Ubuntu 24.04 LTS | 10 |
+| Ubuntu 26.04 LTS | 15 |
+| Ubuntu 24.04 LTS | 11 |
 | Windows 11 | 4 |
 | Windows 11 (zh-TW) | 2 |
 | Windows 11 (English / en-US) | 1 |
@@ -241,7 +241,9 @@ pie showData title Bugs by status
 | PWR011 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
 | PWR012 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
 | PWR012 | [BUG0027](bugs/closed/BUG0027-reboot-py-boot-time-sec-measurement-defect.md) | resolved |
+| PWR012 | [BUG0032](bugs/closed/BUG0032-grub-menu-can-block-unattended-reboot-tests.md) | resolved |
 | PWR012 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
+| SET007 | [BUG0032](bugs/closed/BUG0032-grub-menu-can-block-unattended-reboot-tests.md) | resolved |
 | SLP001 | [BUG0020](bugs/open/BUG0020-sleep-test-not-yet-integrated-or-verified.md) | open |
 | SLP002 | [BUG0028](bugs/closed/BUG0028-sleep-test-detect-crashes-on-localized-windows.md) | resolved |
 | SLP003 | [BUG0028](bugs/closed/BUG0028-sleep-test-detect-crashes-on-localized-windows.md) | resolved |
@@ -272,5 +274,4 @@ _(may indicate untested code paths — worth a review)_
 | [PWR013](requirements/PWR013.md) | implemented | Reboot Test Initial State Normalisation |
 | [SET005](requirements/SET005.md) | implemented | Windows DUT Pre-test Bootstrap Script |
 | [SET006](requirements/SET006.md) | implemented | Dual-Layer Configuration: config.py as Default Reference |
-| [SET007](requirements/SET007.md) | implemented | Linux DUT Pre-test Bootstrap Script |
 
