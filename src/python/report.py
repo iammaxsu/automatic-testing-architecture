@@ -632,7 +632,8 @@ def _render(result: dict) -> str:
 <div class="meta">
   Generated from: {test_name} &nbsp;|&nbsp;
   Boot timeout: {cfg.get("boot_timeout_sec", "-")}s &nbsp;|&nbsp;
-  Off-time: {cfg.get("off_time_sec", "-")}s
+  Off-time: {cfg.get("off_time_sec", "-")}s{
+      ' (auto)' if cfg.get("off_time_mode") == "auto" else ''}
 </div>
 
 <script>

@@ -8,8 +8,13 @@
 #   --host    IP_OR_HOST      DUT IP/hostname for liveness checks
 #   --port    N               TCP port for liveness check (default 22)
 #   --cycles  N               number of reboot cycles
-#   --off     SECONDS         inter-cycle delay, after each cycle's verdict is recorded
-#                             (matches power_cycle.py; does not delay the boot-time poll)
+#   --off     auto|SECONDS    inter-cycle delay, after each cycle's verdict is recorded:
+#                             "auto" (default) — boot detection is already event-driven
+#                             (ends the moment the DUT responds), so this just adds a
+#                             short fixed settle (config.REBOOT_AUTO_SETTLE_SEC) for
+#                             sshd/sudo to stabilise, then reboots immediately. An
+#                             integer N overrides with a fixed N-second delay instead
+#                             (0 = no delay at all).
 #   --out     DIR             output directory for logs & results
 #   --no-check                skip network liveness checks (useful for dry-run)
 #   --dry-run                 run logic without issuing SSH reboot
@@ -70,6 +75,19 @@ def _sigint_handler(sig, frame):
 
 # ── argument parsing ───────────────────────────────────────────────────────────
 
+def _parse_off_time(value: str):
+    """--off accepts 'auto' or a non-negative integer second count."""
+    if value.lower() == "auto":
+        return "auto"
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"--off must be 'auto' or an integer, got: {value!r}")
+    if n < 0:
+        raise argparse.ArgumentTypeError("--off must be 'auto' or >= 0")
+    return n
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Software reboot endurance test (SSH-controlled)")
     p.add_argument("--host",          default=config.DUT_HOST,
@@ -78,10 +96,14 @@ def parse_args() -> argparse.Namespace:
                    help="TCP port to probe (default: %(default)s)")
     p.add_argument("--cycles",        default=config.CYCLES, type=int,
                    help="Number of reboot cycles (default: %(default)s)")
-    p.add_argument("--off",           default=config.OFF_TIME_SEC, type=int,
+    p.add_argument("--off",           default="auto", type=_parse_off_time,
                    dest="off_time",
-                   help="Inter-cycle delay in seconds, after each cycle's verdict "
-                        "is recorded (default: %(default)s)")
+                   help="Inter-cycle delay after each cycle's verdict is recorded. "
+                        "'auto' (default) waits a short fixed settle "
+                        "(config.REBOOT_AUTO_SETTLE_SEC=%ds) then reboots immediately — "
+                        "boot detection is already event-driven, so no longer fixed wait "
+                        "is needed to confirm the DUT is up. An integer N uses a fixed "
+                        "N-second delay instead (0 = no delay at all)." % config.REBOOT_AUTO_SETTLE_SEC)
     p.add_argument("--out",           default=config.LOG_DIR,
                    help="Output directory for logs (default: %(default)s)")
     p.add_argument("--no-check",      action="store_true",
@@ -268,12 +290,17 @@ def run_one_cycle(
 
     rec["verdict"] = PASS
 
-    # ── 4. Inter-cycle delay (mirrors power_cycle.py: after the verdict is
-    # recorded, before the next cycle's reboot command — not a pre-measurement
-    # delay that would hide the boot-time measurement; see BUG0027) ─────────
-    if args.off_time > 0 and not args.dry_run:
-        log.info("Cycle %d: waiting %ds before next cycle …", n, args.off_time)
-        off_deadline = time.monotonic() + args.off_time
+    # ── 4. Inter-cycle delay (after the verdict is recorded, before the next
+    # cycle's reboot command — not a pre-measurement delay that would hide the
+    # boot-time measurement; see BUG0027) ─────────────────────────────────────
+    # Boot detection (wait_until_alive above) is already event-driven — it ends
+    # the moment the DUT responds, not after a fixed wait. "auto" (default) adds
+    # only a short settle on top of that for sshd/sudo to stabilise; an explicit
+    # integer N (mirroring power_cycle.py's --off) overrides with a fixed delay.
+    delay = config.REBOOT_AUTO_SETTLE_SEC if args.off_time == "auto" else args.off_time
+    if delay > 0 and not args.dry_run:
+        log.info("Cycle %d: waiting %ds before next cycle …", n, delay)
+        off_deadline = time.monotonic() + delay
         while time.monotonic() < off_deadline and not _stop_requested:
             time.sleep(1)
 
@@ -308,7 +335,9 @@ def _new_result(args: argparse.Namespace, session_id: str, m: int) -> dict:
             "dut_host":         args.host,
             "dut_port":         args.port,
             "cycles_target":    m,
-            "off_time_sec":     args.off_time,
+            "off_time_mode":    "auto" if args.off_time == "auto" else "fixed",
+            "off_time_sec":     (config.REBOOT_AUTO_SETTLE_SEC if args.off_time == "auto"
+                                  else args.off_time),
             "boot_timeout_sec": args.boot_timeout,
             "dead_timeout_sec": config.DEAD_TIMEOUT_SEC,
             "ssh_user":         args.ssh_user or None,
@@ -395,7 +424,9 @@ def main() -> int:
     log.info("  Session : %s%s", session_id, "  (RESUMING)" if resuming else "")
     log.info("  Host    : %s",   args.host or "(liveness disabled)")
     log.info("  Cycles  : m=%d, starting at n=%d", m, start_n)
-    log.info("  Inter-cycle delay: %ds",  args.off_time)
+    log.info("  Inter-cycle delay: %s", (
+        f"auto (~{config.REBOOT_AUTO_SETTLE_SEC}s settle, reboot immediately after)"
+        if args.off_time == "auto" else f"{args.off_time}s fixed"))
     log.info("  Boot TO : %ds",  args.boot_timeout)
     log.info("  SSH user: %s",   args.ssh_user or "(none)")
     log.info("  SSH cmd : %s",   args.ssh_cmd if args.ssh_cmd
@@ -438,7 +469,9 @@ def main() -> int:
             relay,
             args.type,
             boot_timeout=args.boot_timeout,
-            off_time=args.off_time,
+            # Forced-recovery "stay off" duration (FWK031 Step 3) — a physical
+            # power-cycle concern, unrelated to --off's inter-cycle pacing.
+            off_time=config.OFF_TIME_SEC,
             short_press_sec=config.ATX_SHORT_PRESS_SEC,
             force_off_sec=config.ATX_LONG_PRESS_SEC,
             init_wait=args.init_wait,

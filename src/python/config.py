@@ -174,6 +174,16 @@ REBOOT_SSH_CMD    = _OS_REBOOT_CMD[DUT_OS]  # derived from DUT_OS; override with
 REBOOT_SETTLE_SEC = 5                        # Seconds to wait after SSH reboot command before
                                              #   starting to poll for the DUT going offline.
                                              #   Gives the OS time to begin its reboot sequence.
+REBOOT_AUTO_SETTLE_SEC = 5                   # CLI: --off auto (default, PWR012)
+                                             #   Boot detection (wait_until_alive) already ends
+                                             #   the moment ping+SSH succeed, so it does not need
+                                             #   a fixed wait of its own. This is a short extra
+                                             #   grace period AFTER that, before the next reboot
+                                             #   command is sent — sshd/sudo can still be settling
+                                             #   in the first instant SSH responds. Not a substitute
+                                             #   for OFF_TIME_SEC, which is the unrelated "how long
+                                             #   to stay powered off" duration used during a forced
+                                             #   power-cycle recovery in function.init_dut() (FWK031).
 
 # ---------- Sleep / suspend test (sleep_test.py) ----------
 # sleep_test.py is the Pi-controlled (control-node) sleep-wake endurance test.
