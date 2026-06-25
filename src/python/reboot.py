@@ -22,6 +22,9 @@
 #   --ssh-user USERNAME       SSH login for reboot command (required)
 #   --ssh-cmd COMMAND         reboot command to run over SSH (default: "sudo reboot")
 #   --new-session             force a new session instead of resuming an incomplete one (LOG023)
+#   --debug                   stop immediately on the first non-PASS cycle, leaving DUT
+#                             state as-is for inspection (overrides --early-fail-threshold /
+#                             --max-consecutive-fails)
 #
 # Init phase options (FWK031/PWR013) — normalise DUT state before the first cycle:
 #   --pin     N               GPIO BOARD pin for power recovery (default: config.GPIO_PIN)
@@ -147,6 +150,10 @@ def parse_args() -> argparse.Namespace:
                         "(default: %(default)s)")
     p.add_argument("--new-session",   action="store_true", dest="new_session",
                    help="Force a new session even if an incomplete one exists (LOG023)")
+    p.add_argument("--debug", action="store_true", dest="debug",
+                   help="Stop immediately on the FIRST non-PASS cycle, leaving the "
+                        "DUT state as-is for inspection. Overrides "
+                        "--early-fail-threshold / --max-consecutive-fails.")
     return p.parse_args()
 
 
@@ -343,6 +350,7 @@ def _new_result(args: argparse.Namespace, session_id: str, m: int) -> dict:
             "ssh_user":         args.ssh_user or None,
             "ssh_cmd":          args.ssh_cmd,
             "dut_os":           args.dut_os,
+            "debug_mode":       bool(args.debug),
         },
         "cycles":          [],
         "summary":         {},
@@ -507,7 +515,8 @@ def main() -> int:
     consecutive_fails = 0
     has_had_success   = any(c.get("verdict") == PASS
                             for c in result.get("cycles", []))
-    last_n = start_n - 1
+    last_n      = start_n - 1
+    debug_abort = False
 
     for n in range(start_n, m + 1):
         if _stop_requested:
@@ -523,6 +532,12 @@ def main() -> int:
             consecutive_fails = 0
         else:
             consecutive_fails += 1
+            if args.debug:
+                log.error(
+                    "--debug: cycle %d failed (%s) — stopping immediately, "
+                    "state left as-is for inspection.", n, rec["verdict"])
+                debug_abort = True
+                break
             if not has_had_success:
                 # Early phase: no PASS yet — likely a config/connectivity problem.
                 if (args.early_fail_threshold > 0
@@ -575,6 +590,11 @@ def main() -> int:
     result["ended_at"] = function.now_iso()
     summary = _build_summary(result["cycles"], m)
     result["summary"] = summary
+    if debug_abort:
+        result["debug_stop"] = {
+            "n":       last_n,
+            "verdict": result["cycles"][-1]["verdict"] if result["cycles"] else None,
+        }
 
     if summary["fail"] == 0 and summary["total_ran"] > 0:
         result["overall_verdict"] = PASS
