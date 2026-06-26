@@ -130,6 +130,24 @@ def _shutdown_method_counts(cycles: list) -> dict:
     return counts
 
 
+def _firmware_summary(cycles: list) -> dict:
+    """Latest BIOS/BMC version seen, plus whether either value changed mid-run
+    (PWR015) — a flip usually means a firmware update happened during the test,
+    not a detection glitch, and is worth flagging rather than just reporting
+    the last value silently.
+    """
+    bios_seen = [c["bios_version"] for c in cycles if c.get("bios_version")]
+    bmc_seen  = [c["bmc_version"]  for c in cycles if c.get("bmc_version")]
+    bmc_method = next((c["bmc_method"] for c in reversed(cycles) if c.get("bmc_method")), None)
+    return {
+        "bios_version":  bios_seen[-1] if bios_seen else "N/A",
+        "bmc_version":   bmc_seen[-1]  if bmc_seen  else "N/A",
+        "bmc_method":    bmc_method,
+        "bios_changed":  len(set(bios_seen)) > 1,
+        "bmc_changed":   len(set(bmc_seen)) > 1,
+    }
+
+
 def _boot_stats(values: list) -> dict:
     """Summary statistics for a list of boot-time floats. Empty-safe."""
     if not values:
@@ -336,6 +354,9 @@ def _render(result: dict) -> str:
     n_fail       = summary.get("fail", 0)
     fb           = summary.get("fail_breakdown", {})
 
+    # Firmware versions (PWR015)
+    fw = _firmware_summary(cycles)
+
     # Analysis — boot time
     series   = _pass_boot_series(cycles)
     values   = [y for _, y in series]
@@ -372,6 +393,17 @@ def _render(result: dict) -> str:
             f'DUT OS was not confirmed (no working --ssh-user/--dut-os probe) — '
             f'"{cfg.get("dut_os", "-")}" is an unverified assumption from config.DUT_OS, '
             f'used only for selecting the SSH shutdown command.'
+        )
+    if fw["bios_changed"]:
+        warnings.append(
+            'BIOS version changed during this run — if unexpected, check whether '
+            'a firmware update happened mid-test rather than treating boot-time '
+            'statistics as a single homogeneous population.'
+        )
+    if fw["bmc_changed"]:
+        warnings.append(
+            'BMC version changed during this run — if unexpected, check whether '
+            'a firmware update happened mid-test.'
         )
     debug_stop = result.get("debug_stop")
     if debug_stop:
@@ -559,6 +591,8 @@ def _render(result: dict) -> str:
   DUT: {cfg.get("dut_host") or "(liveness disabled)"} &nbsp;|&nbsp;
   OS: {cfg.get("dut_os", "-")} ({cfg.get("dut_os_source", "-")}) &nbsp;|&nbsp;
   SSH user: {cfg.get("ssh_user") or "(none)"} &nbsp;|&nbsp;
+  BIOS: {fw["bios_version"]} &nbsp;|&nbsp;
+  BMC: {fw["bmc_version"]}{f' ({fw["bmc_method"]})' if fw["bmc_method"] else ''} &nbsp;|&nbsp;
   Started: {started} &nbsp;|&nbsp; Ended: {ended} &nbsp;|&nbsp; Duration: {duration}
 </p>
 

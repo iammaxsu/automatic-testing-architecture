@@ -28,6 +28,7 @@
 #   --debug                   stop immediately on the first non-PASS cycle, leaving DUT
 #                             state as-is for inspection (overrides --early-fail-threshold /
 #                             --max-consecutive-fails)
+#   --bmc-host IP             BMC management IP, for Redfish firmware version fallback (PWR015)
 #
 # Init phase options (FWK031/PWR013) — normalise DUT state before the first cycle:
 #   --pin     N               GPIO BOARD pin for power recovery (default: config.GPIO_PIN)
@@ -161,6 +162,15 @@ def parse_args() -> argparse.Namespace:
                    help="Stop immediately on the FIRST non-PASS cycle, leaving the "
                         "DUT state as-is for inspection. Overrides "
                         "--early-fail-threshold / --max-consecutive-fails.")
+    p.add_argument("--bmc-host", default=config.BMC_HOST, dest="bmc_host",
+                   help="BMC's own management IP/hostname, for Redfish firmware-version "
+                        "lookup (PWR015) when in-band ipmitool is unavailable. "
+                        "Empty: BMC version is only attempted via ipmitool; a product "
+                        "with no BMC reports 'N/A' (default: %(default)r)")
+    p.add_argument("--bmc-user", default=config.BMC_USER, dest="bmc_user",
+                   help="Redfish basic-auth user for --bmc-host")
+    p.add_argument("--bmc-pass", default=config.BMC_PASS, dest="bmc_pass",
+                   help="Redfish basic-auth password for --bmc-host")
     return p.parse_args()
 
 
@@ -215,6 +225,22 @@ def _ssh_reboot(args: argparse.Namespace, ssh_timeout: int = 10) -> bool:
         return False
 
 
+def _collect_firmware(rec: dict, args: argparse.Namespace) -> None:
+    """Probe BIOS/BMC firmware version once the DUT is confirmed alive (PWR015).
+
+    Run every cycle so a firmware update applied mid-run shows up in
+    result.json instead of being silently missed.
+    """
+    fw = function.detect_firmware(
+        args.host, args.port, args.ssh_user, args.dut_os,
+        bmc_host=args.bmc_host, bmc_user=args.bmc_user, bmc_pass=args.bmc_pass,
+        dry_run=args.dry_run,
+    )
+    rec["bios_version"] = fw["bios_version"]
+    rec["bmc_version"]  = fw["bmc_version"]
+    rec["bmc_method"]   = fw["bmc_method"]
+
+
 # ── one cycle ──────────────────────────────────────────────────────────────────
 
 def run_one_cycle(
@@ -231,6 +257,9 @@ def run_one_cycle(
         "t_offline":       None,
         "t_online":        None,
         "boot_time_sec":   None,
+        "bios_version":    None,
+        "bmc_version":     None,
+        "bmc_method":      None,
         "verdict":         SSH_ERROR,
         "notes":           "",
     }
@@ -287,6 +316,8 @@ def run_one_cycle(
             return rec
 
         log.info("Cycle %d: DUT back online in %.1f s", n, rec["boot_time_sec"])
+        if args.ssh_user or args.bmc_host:
+            _collect_firmware(rec, args)
         _t = function.notify_dut(
             args.ssh_user, args.host, args.port,
             f"Reboot test in progress - cycle {n}/{total}. Do not use.",
@@ -301,6 +332,8 @@ def run_one_cycle(
     else:
         rec["t_online"] = function.now_iso()
         log.info("Cycle %d: liveness check disabled", n)
+        if args.ssh_user or args.bmc_host:
+            _collect_firmware(rec, args)
 
     rec["verdict"] = PASS
 
@@ -358,6 +391,7 @@ def _new_result(args: argparse.Namespace, session_id: str, m: int) -> dict:
             "ssh_cmd":          args.ssh_cmd,
             "dut_os":           args.dut_os,
             "debug_mode":       bool(args.debug),
+            "bmc_host":         args.bmc_host or None,
         },
         "cycles":          [],
         "summary":         {},

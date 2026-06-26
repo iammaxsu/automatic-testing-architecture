@@ -212,6 +212,15 @@ SLEEP_WAKE_TIMEOUT_SEC = 120    # CLI: --wake-timeout   UPPER LIMIT: max wait fo
 # Invoked over SSH as: powershell -ExecutionPolicy Bypass -File <this> -OneShot -State <S> -WakeAfter <n>
 SLEEP_REMOTE_HELPER    = r"C:\TestAutomation\sleep_test.ps1"  # CLI: --remote-helper
 
+# ---------- BMC / firmware version reporting (PWR015) ----------
+# BIOS version is always probed via SSH (OS-specific command); BMC version is
+# tried in-band first (ipmitool over the same SSH session), then falls back to
+# Redfish on the BMC's own management IP if BMC_HOST is set. A product with no
+# BMC simply reports "N/A" for both BMC fields -- this is expected, not an error.
+BMC_HOST = ""   # CLI: --bmc-host   BMC's own management IP/hostname; "" = ipmitool-only
+BMC_USER = ""   # CLI: --bmc-user   Redfish basic-auth user (ignored if BMC_HOST is "")
+BMC_PASS = ""   # CLI: --bmc-pass   Redfish basic-auth password
+
 # ---------- Output ----------
 LOG_DIR    = "./logs"       # CLI: --out      Where to write result.json and .log
 REPORT_DIR = "./logs"       # CLI: --report   Where to write _report.html (may differ from LOG_DIR)

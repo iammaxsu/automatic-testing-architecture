@@ -1,11 +1,14 @@
 # function.py — shared helpers (counter, timing, logging setup)
+import base64
 import json
 import logging
 import os
 import re
+import ssl
 import subprocess
 import threading
 import time
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -100,6 +103,124 @@ def detect_dut_os(host: str, port: int, ssh_user: str, timeout: int = 10) -> str
     except Exception as exc:
         log.warning("DUT OS detection failed: %s — using config default", exc)
         return "unknown"
+
+
+def _ssh_probe_output(host: str, port: int, ssh_user: str, cmd: str, timeout: int) -> Optional[str]:
+    """Run cmd on the DUT over SSH, return raw stdout on exit 0, else None.
+    Never raises (PWR015)."""
+    try:
+        result = subprocess.run(
+            ["ssh", *ssh_base_opts(timeout), "-p", str(port), f"{ssh_user}@{host}", cmd],
+            capture_output=True, text=True, errors="replace", timeout=timeout + 5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout
+        return None
+    except Exception:
+        return None
+
+
+def _redfish_firmware_version(bmc_host: str, bmc_user: str, bmc_pass: str, timeout: int) -> Optional[str]:
+    """Read FirmwareVersion from the BMC's own Redfish Manager resource.
+
+    Talks directly to the BMC's management IP (bmc_host) over HTTPS — independent
+    of the DUT's OS/SSH, since the BMC has its own network interface. Lab BMCs
+    almost never carry a trusted certificate, so the cert is not verified (this is
+    the management network, not a public one). Tries the common Manager resource
+    ids since vendors disagree on naming. Never raises; returns None on any
+    failure (PWR015)."""
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    headers = {"Accept": "application/json"}
+    if bmc_user:
+        token = base64.b64encode(f"{bmc_user}:{bmc_pass or ''}".encode()).decode()
+        headers["Authorization"] = f"Basic {token}"
+    for manager_id in ("Self", "1", "BMC"):
+        url = f"https://{bmc_host}/redfish/v1/Managers/{manager_id}"
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="replace"))
+                ver = data.get("FirmwareVersion")
+                if ver:
+                    return str(ver)
+        except Exception:
+            continue
+    return None
+
+
+def detect_firmware(
+    host: str, port: int, ssh_user: str, dut_os: str, *,
+    bmc_host: str = "", bmc_user: str = "", bmc_pass: str = "",
+    timeout: int = 15, dry_run: bool = False,
+) -> dict:
+    """Probe BIOS and BMC firmware versions for result.json / the rendered
+    report (PWR015).
+
+    BIOS version (requires SSH; OS-specific command):
+      linux:   sudo dmidecode -s bios-version
+      windows: PowerShell (Get-CimInstance Win32_BIOS).SMBIOSBIOSVersion
+
+    BMC version, tried in order, stopping at the first success:
+      1. ipmitool in-band over the same SSH session ('ipmitool mc info',
+         "Firmware Revision" line) — works on either OS as long as ipmitool
+         and the IPMI KCS driver are installed on the DUT.
+      2. Redfish against bmc_host's own management IP — independent of DUT
+         SSH/OS, so it also works when ipmitool is not installed. Skipped
+         entirely when bmc_host is not given.
+    A product with no BMC is expected to fail both, yielding "N/A" rather
+    than a false detection.
+
+    Never raises. dry_run=True returns fixed placeholder values without
+    touching the network, matching every other SSH/network helper here.
+    Returns {"bios_version": str, "bmc_version": str, "bmc_method": str|None}.
+    """
+    if dry_run:
+        return {
+            "bios_version": "DRY-RUN-BIOS-1.0",
+            "bmc_version":  "DRY-RUN-BMC-1.0",
+            "bmc_method":   "dry-run",
+        }
+
+    bios_version = None
+    bmc_version  = None
+    bmc_method   = None
+
+    if ssh_user and host:
+        bios_cmd = (
+            'powershell -NoProfile -Command '
+            '"(Get-CimInstance Win32_BIOS).SMBIOSBIOSVersion"'
+            if dut_os == "windows" else
+            "sudo dmidecode -s bios-version"
+        )
+        out = _ssh_probe_output(host, port, ssh_user, bios_cmd, timeout)
+        if out:
+            for line in out.splitlines():
+                line = line.strip()
+                if line:
+                    bios_version = line
+                    break
+
+        ipmi_cmd = "ipmitool mc info" if dut_os == "windows" else "sudo ipmitool mc info"
+        out = _ssh_probe_output(host, port, ssh_user, ipmi_cmd, timeout)
+        if out:
+            for line in out.splitlines():
+                if "firmware revision" in line.lower():
+                    bmc_version = line.split(":", 1)[-1].strip()
+                    bmc_method  = "ipmitool"
+                    break
+
+    if not bmc_version and bmc_host:
+        bmc_version = _redfish_firmware_version(bmc_host, bmc_user, bmc_pass, timeout)
+        if bmc_version:
+            bmc_method = "redfish"
+
+    return {
+        "bios_version": bios_version or "N/A",
+        "bmc_version":  bmc_version or "N/A",
+        "bmc_method":   bmc_method,
+    }
 
 
 def restore_dut_env(host: str, port: int, ssh_user: str, timeout: int = 30) -> bool:
