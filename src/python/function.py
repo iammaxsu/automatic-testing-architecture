@@ -163,11 +163,14 @@ def detect_firmware(
       windows: PowerShell (Get-CimInstance Win32_BIOS).SMBIOSBIOSVersion
 
     BMC version, tried in order, stopping at the first success:
-      1. ipmitool in-band over the same SSH session ('ipmitool mc info',
-         "Firmware Revision" line) — works on either OS as long as ipmitool
-         and the IPMI KCS driver are installed on the DUT.
+      1. In-band over the same SSH session, using the OS-native IPMI tool:
+           linux:   sudo ipmitool mc info   ("Firmware Revision" line)
+           windows: ipmiutil health         ("BMC version" token)
+         (ipmitool has no clean official Windows binary; ipmiutil does, so
+         setup_dut.ps1 installs ipmiutil on Windows.) Works as long as the
+         tool and the IPMI KCS driver are installed on the DUT.
       2. Redfish against bmc_host's own management IP — independent of DUT
-         SSH/OS, so it also works when ipmitool is not installed. Skipped
+         SSH/OS, so it also works when no in-band tool is installed. Skipped
          entirely when bmc_host is not given.
     A product with no BMC is expected to fail both, yielding "N/A" rather
     than a false detection.
@@ -202,14 +205,27 @@ def detect_firmware(
                     bios_version = line
                     break
 
-        ipmi_cmd = "ipmitool mc info" if dut_os == "windows" else "sudo ipmitool mc info"
-        out = _ssh_probe_output(host, port, ssh_user, ipmi_cmd, timeout)
-        if out:
-            for line in out.splitlines():
-                if "firmware revision" in line.lower():
-                    bmc_version = line.split(":", 1)[-1].strip()
-                    bmc_method  = "ipmitool"
-                    break
+        if dut_os == "windows":
+            # Windows in-band uses ipmiutil — ipmitool has no clean official
+            # Windows binary, whereas ipmiutil ships a proper installer (the one
+            # setup_dut.ps1 installs). `ipmiutil health` prints a line like:
+            #   -- BMC version 1.40, IPMI version 2.0
+            out = _ssh_probe_output(host, port, ssh_user, "ipmiutil health", timeout)
+            if out:
+                m = re.search(r"BMC version\s+([^\s,]+)", out, re.IGNORECASE)
+                if m:
+                    bmc_version = m.group(1).strip()
+                    bmc_method  = "ipmiutil"
+        else:
+            # Linux in-band uses ipmitool. `ipmitool mc info` prints:
+            #   Firmware Revision         : 1.40
+            out = _ssh_probe_output(host, port, ssh_user, "sudo ipmitool mc info", timeout)
+            if out:
+                for line in out.splitlines():
+                    if "firmware revision" in line.lower():
+                        bmc_version = line.split(":", 1)[-1].strip()
+                        bmc_method  = "ipmitool"
+                        break
 
     if not bmc_version and bmc_host:
         bmc_version = _redfish_firmware_version(bmc_host, bmc_user, bmc_pass, timeout)

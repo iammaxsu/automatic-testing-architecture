@@ -23,6 +23,7 @@
          -RebootScript / -DevDetectScript only to override the location.
      10. (Optional) Configures PowerShell as the default SSH shell for Ansible
      11. Installs Python 3 and downloads report.py so reboot.ps1 can auto-generate HTML reports
+     12. Installs ipmiutil for BMC firmware-version reporting (PWR015)
 
     SSH authentication summary:
       - Blank-password account  : steps 3 + 5 allow password-free SSH login out of the box.
@@ -151,7 +152,7 @@ if (-not $_isAdmin) {
 
 # -- Version & shared library --------------------------------------------------
 
-$_script_ver                = '00.00.17'
+$_script_ver                = '00.00.18'
 $_requires_function_ps1_api = '00.00.01'
 
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -196,7 +197,7 @@ if ($DevDetectScript -eq "") {
 
 # -- 1. PowerShell execution policy -------------------------------------------
 
-Write-Step "1 / 11 PowerShell execution policy"
+Write-Step "1 / 12 PowerShell execution policy"
 try {
     Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope LocalMachine -Force -ErrorAction Stop
     Write-OK "Execution policy = RemoteSigned (machine-wide)"
@@ -210,7 +211,7 @@ try {
 
 # -- 2. OpenSSH Server --------------------------------------------------------
 
-Write-Step "2 / 11 OpenSSH Server"
+Write-Step "2 / 12 OpenSSH Server"
 
 $sshCap = Get-WindowsCapability -Online -Name OpenSSH.Server*
 if ($sshCap.State -eq "NotPresent") {
@@ -229,7 +230,7 @@ Write-OK "sshd running, startup = Automatic"
 
 # -- 3. SSH configuration: allow empty passwords -------------------------------
 
-Write-Step "3 / 11 SSH configuration (PermitEmptyPasswords)"
+Write-Step "3 / 12 SSH configuration (PermitEmptyPasswords)"
 
 $sshConfigPath = "C:\ProgramData\ssh\sshd_config"
 
@@ -295,7 +296,7 @@ if ($PiSshPublicKey -ne "") {
 
 # -- 4. Firewall: SSH (TCP 22) and ICMPv4 ping ---------------------------------
 
-Write-Step "4 / 11 Firewall rules"
+Write-Step "4 / 12 Firewall rules"
 
 if (-not (Get-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -ErrorAction SilentlyContinue)) {
     New-NetFirewallRule -Name        "OpenSSH-Server-In-TCP" `
@@ -325,7 +326,7 @@ Write-OK "Windows Firewall disabled (Domain / Private / Public)"
 
 # -- 5. Security policy: allow blank-password accounts over network ------------
 
-Write-Step "5 / 11 Security policy (LimitBlankPasswordUse)"
+Write-Step "5 / 12 Security policy (LimitBlankPasswordUse)"
 
 $tmpSec = "$env:TEMP\secpol_dut.inf"
 secedit /export /cfg $tmpSec | Out-Null
@@ -341,7 +342,7 @@ Write-OK "LimitBlankPasswordUse set to 0 (blank-password SSH logins allowed)"
 
 # -- 6. Power scheme -----------------------------------------------------------
 
-Write-Step "6 / 11 Power scheme"
+Write-Step "6 / 12 Power scheme"
 
 foreach ($type in @("monitor", "disk", "standby", "hibernate")) {
     foreach ($mode in @("ac", "dc")) {
@@ -358,7 +359,7 @@ Write-OK "All power timeouts = 0; power button = Shut down; no screen lock on re
 
 # -- 7. Windows Update: disable automatic reboot -------------------------------
 
-Write-Step "7 / 11 Windows Update (disable automatic reboot)"
+Write-Step "7 / 12 Windows Update (disable automatic reboot)"
 
 $wuPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"
 if (-not (Test-Path $wuPath)) { New-Item -Path $wuPath -Force | Out-Null }
@@ -369,7 +370,7 @@ Write-OK "Windows Update will not auto-reboot during tests"
 
 # -- 8. Auto-logon (optional) --------------------------------------------------
 
-Write-Step "8 / 11 Auto-logon"
+Write-Step "8 / 12 Auto-logon"
 
 if ($TestUser -ne "") {
     $regPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
@@ -387,7 +388,7 @@ if ($TestUser -ne "") {
 
 # -- 9. Task Scheduler: startup tasks (dev_detect + reboot) -------------------
 
-Write-Step "9 / 11 Task Scheduler  -  startup tasks"
+Write-Step "9 / 12 Task Scheduler  -  startup tasks"
 
 # Helper: registers a single startup task as SYSTEM with a delay.
 # ScriptPath is resolved to an absolute path: Task Scheduler runs as SYSTEM with
@@ -480,7 +481,7 @@ if ($RebootScript -ne "") {
 
 # -- 10. Ansible SSH: PowerShell as default SSH shell -------------------------
 
-Write-Step "10 / 11  Ansible SSH  -  PowerShell default shell"
+Write-Step "10 / 12  Ansible SSH  -  PowerShell default shell"
 
 if ($AnsibleSSH) {
     $regPath = "HKLM:\SOFTWARE\OpenSSH"
@@ -576,7 +577,7 @@ function Get-RealPythonCommand {
     return $cmd
 }
 
-Write-Step "11 / 11  Python 3 runtime + report.py renderer"
+Write-Step "11 / 12  Python 3 runtime + report.py renderer"
 
 $pythonReady = $false
 $pyCmd = Get-RealPythonCommand
@@ -635,6 +636,98 @@ function Install-ReportPy {
 $reportPyReady = Install-ReportPy -DestDir $_script_root
 
 
+# -- 12. ipmiutil (BMC firmware version reporting, PWR015) ---------------------
+# power_cycle.py / reboot.py read the BMC firmware version each cycle (PWR015).
+# On Windows the in-band tool is ipmiutil (ipmitool has no clean official Windows
+# binary); detect_firmware() runs `ipmiutil health` over SSH and parses the
+# "BMC version" line. Install path mirrors the Python step: winget first, then a
+# direct download of the official ipmiutil installer.
+#
+# A DUT with no BMC still installs ipmiutil cleanly — `ipmiutil health` then
+# finds no controller and PWR015 records "N/A", which is the expected steady
+# state, not an error. The BIOS version (Win32_BIOS) needs no extra tool.
+
+function Get-IpmiutilCommand {
+    $cmd = Get-Command ipmiutil -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd }
+    # winget/MSI installs commonly land here but may not be on this session PATH yet.
+    foreach ($p in @(
+        "$env:ProgramFiles\ipmiutil\ipmiutil.exe",
+        "${env:ProgramFiles(x86)}\ipmiutil\ipmiutil.exe")) {
+        if ($p -and (Test-Path $p)) { return $p }
+    }
+    return $null
+}
+
+function Install-IpmiutilViaWinget {
+    $wingetCmd = Get-Command winget -ErrorAction SilentlyContinue
+    if (-not $wingetCmd) { return $false }
+    Write-Host "  Installing ipmiutil via winget (silent)..."
+    try {
+        winget install --exact --id ipmiutil.ipmiutil --silent `
+            --accept-package-agreements --accept-source-agreements --scope machine
+        return $true
+    } catch {
+        Write-Warn "winget install failed: $($_.Exception.Message)  -  trying direct download"
+        return $false
+    }
+}
+
+function Install-IpmiutilViaDownload {
+    # Official ipmiutil Windows installer, hosted on SourceForge. The 'latest'
+    # redirect keeps this URL stable across releases.
+    $url  = "https://sourceforge.net/projects/ipmiutil/files/latest/download"
+    $dest = Join-Path $env:TEMP "ipmiutil-setup.exe"
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Write-Host "  Downloading ipmiutil installer..."
+        Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
+    } catch {
+        Write-Warn "Download failed: $($_.Exception.Message)"
+        return $false
+    }
+    Write-Host "  Running silent install..."
+    try {
+        $p = Start-Process -FilePath $dest -ArgumentList '/SILENT', '/NORESTART' -Wait -PassThru
+        Remove-Item $dest -Force -ErrorAction SilentlyContinue
+        return ($p.ExitCode -eq 0)
+    } catch {
+        Write-Warn "Installer launch failed: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+Write-Step "12 / 12  ipmiutil (BMC firmware version)"
+
+$ipmiutilReady = $false
+$ipmiCmd = Get-IpmiutilCommand
+if ($ipmiCmd) {
+    $ipmiutilReady = $true
+    $ipmiSrc = if ($ipmiCmd -is [System.Management.Automation.CommandInfo]) { $ipmiCmd.Source } else { $ipmiCmd }
+    Write-Skip "ipmiutil already installed: $ipmiSrc"
+} else {
+    $installed = Install-IpmiutilViaWinget
+    if (-not $installed) { $installed = Install-IpmiutilViaDownload }
+
+    $machinePath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
+    if ($machinePath) { $env:Path = "$machinePath;$env:Path" }
+    $ipmiCmd = Get-IpmiutilCommand
+
+    if ($ipmiCmd) {
+        $ipmiutilReady = $true
+        Write-OK "ipmiutil installed and ready"
+    } elseif ($installed) {
+        $ipmiutilReady = $true   # installed; PATH refresh pending - works after reboot
+        Write-Warn "ipmiutil was installed but is not on PATH in this session."
+        Write-Host "         It will be available after the reboot."
+    } else {
+        Write-Warn "Automatic ipmiutil install did not succeed."
+        Write-Host "         BMC version will report 'N/A' until ipmiutil is installed (PWR015)."
+        Write-Host "         Install manually from https://ipmiutil.sourceforge.io/ , then re-run."
+    }
+}
+
+
 # -- Summary -------------------------------------------------------------------
 
 Write-Host ""
@@ -682,6 +775,11 @@ if ($reportPyReady) {
     Write-Host "  report.py         : present (HTML reports auto-generated after each cycle)"
 } else {
     Write-Host "  report.py         : not available - copy from src/python/report.py manually"
+}
+if ($ipmiutilReady) {
+    Write-Host "  ipmiutil          : installed (PWR015 BMC firmware reporting)"
+} else {
+    Write-Host "  ipmiutil          : install manually (PWR015 BMC firmware reporting)"
 }
 Write-Host ""
 Write-Host "  >>> Reboot required for all changes to take effect. <<<" -ForegroundColor Yellow

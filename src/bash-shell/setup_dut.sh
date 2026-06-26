@@ -18,6 +18,7 @@
 #      unattended, even after an unclean shutdown (no operator at the console)
 #   8. (Optional) Registers a systemd oneshot service to run dev_detect.sh at boot
 #   9. Ensures Python 3 is present and downloads report.py for HTML rendering
+#  10. Installs dmidecode + ipmitool for BIOS / BMC firmware-version reporting (PWR015)
 #
 # This script is intentionally idempotent: running it multiple times is safe.
 #
@@ -63,7 +64,7 @@
 
 set -Eeuo pipefail
 
-_script_ver="00.00.02"
+_script_ver="00.00.03"
 
 # ---------- 0. Root privilege check (FWK033) ----------------------------------
 # MUST be the first executable action, before any other output, so an operator
@@ -229,7 +230,7 @@ fi
 
 # ---------- 1. OpenSSH Server ----------------------------------------------------
 
-_step "1 / 8  OpenSSH Server"
+_step "1 / 10  OpenSSH Server"
 
 if command -v sshd >/dev/null 2>&1; then
   _skip "openssh-server already installed"
@@ -246,7 +247,7 @@ _ok "sshd running, startup = enabled"
 
 # ---------- 2. Firewall: SSH (TCP 22) and ICMP ping -------------------------------
 
-_step "2 / 8  Firewall rules"
+_step "2 / 10  Firewall rules"
 
 if command -v ufw >/dev/null 2>&1; then
   _ufw_status="$(ufw status | head -1)"
@@ -276,7 +277,7 @@ fi
 # wall, shutdown, reboot) fails immediately with exit 255 — which is the
 # "DUT OS detected: windows (uname -s exit 255)" symptom on a Linux DUT.
 
-_step "3 / 8  SSH key for ${_test_user}"
+_step "3 / 10  SSH key for ${_test_user}"
 
 _ssh_dir="${_target_home}/.ssh"
 _auth_file="${_ssh_dir}/authorized_keys"
@@ -327,12 +328,16 @@ fi
 # password that BatchMode will never supply.
 # The restore helper is also included so the Pi can trigger test-environment
 # restore over SSH when a test session completes.
+# dmidecode and ipmitool are included too: PWR015 firmware-version reporting runs
+# "sudo dmidecode -s bios-version" and "sudo ipmitool mc info" over the same
+# BatchMode SSH session every cycle, which would otherwise hang on a password
+# prompt. Both tools are installed in step 10.
 
-_step "4 / 8  NOPASSWD sudo (shutdown / reboot / poweroff / restore)"
+_step "4 / 10  NOPASSWD sudo (shutdown / reboot / poweroff / restore / dmidecode / ipmitool)"
 
 _restore_helper="/usr/local/lib/automatic-testing/dut-restore-test-env"
 _sudoers_file="/etc/sudoers.d/99-automatic-testing-${_test_user}"
-_sudoers_line="${_test_user} ALL=(ALL) NOPASSWD: /sbin/shutdown, /sbin/reboot, /sbin/poweroff, /usr/sbin/shutdown, /usr/sbin/reboot, /usr/sbin/poweroff, ${_restore_helper}"
+_sudoers_line="${_test_user} ALL=(ALL) NOPASSWD: /sbin/shutdown, /sbin/reboot, /sbin/poweroff, /usr/sbin/shutdown, /usr/sbin/reboot, /usr/sbin/poweroff, /usr/sbin/dmidecode, /usr/bin/ipmitool, ${_restore_helper}"
 
 if [[ -f "${_sudoers_file}" ]] && grep -qF "${_sudoers_line}" "${_sudoers_file}"; then
   _skip "NOPASSWD sudo already configured: ${_sudoers_file}"
@@ -396,7 +401,7 @@ _ok "Restore helper deployed: ${_restore_helper}"
 # bypassing the GNOME session manager's interactive shutdown dialog that causes
 # HANG_SHUTDOWN during power_cycle.py tests.
 
-_step "5 / 8  Power management (no sleep / suspend / hibernate)"
+_step "5 / 10  Power management (no sleep / suspend / hibernate)"
 
 test_env_sleep_mask
 test_env_logind_apply
@@ -405,7 +410,7 @@ echo "         Restore: sudo ./setup_dut.sh --restore"
 
 # ---------- 6. Disable unattended-upgrades automatic reboot -----------------------
 
-_step "6 / 9  Unattended-upgrades automatic reboot"
+_step "6 / 10  Unattended-upgrades automatic reboot"
 
 _uu_conf="/etc/apt/apt.conf.d/50unattended-upgrades"
 if [[ -f "${_uu_conf}" ]]; then
@@ -443,7 +448,7 @@ fi
 # Setting both to 0 makes every boot proceed unattended regardless of how the
 # previous boot ended.
 
-_step "7 / 9  GRUB: unattended boot (no console operator during automated tests)"
+_step "7 / 10  GRUB: unattended boot (no console operator during automated tests)"
 
 _grub_conf="/etc/default/grub"
 if [[ -f "${_grub_conf}" ]]; then
@@ -485,7 +490,7 @@ fi
 # This ensures dev_detect.sh's own autorun_setup() sees the service as already
 # installed and skips the redundant re-installation on its first manual run.
 
-_step "8 / 9  dev_detect.sh at boot"
+_step "8 / 10  dev_detect.sh at boot"
 
 # --- Migrate: remove old dut-dev-detect.{timer,service} from previous versions ---
 _unit_dir="/etc/systemd/system"
@@ -546,7 +551,7 @@ fi
 
 # ---------- 8. Python 3 runtime + report.py renderer --------------------------------
 
-_step "9 / 9  Python 3 runtime + report.py renderer"
+_step "9 / 10  Python 3 runtime + report.py renderer"
 
 if command -v python3 >/dev/null 2>&1; then
   _skip "Python already installed: $(python3 --version 2>&1)"
@@ -580,6 +585,38 @@ else
 fi
 
 
+# ---------- 10. BIOS / BMC firmware inventory tools (PWR015) ----------------------
+#
+# power_cycle.py / reboot.py record the DUT's BIOS and BMC firmware versions
+# each cycle (PWR015):
+#   BIOS : sudo dmidecode -s bios-version
+#   BMC  : sudo ipmitool mc info   (in-band, over the IPMI KCS interface)
+# dmidecode is usually present in the base install but not guaranteed; ipmitool
+# is not. Both are installed here so the firmware columns are populated rather
+# than reported as "N/A". A DUT with no BMC still installs ipmitool cleanly —
+# the command simply finds no controller and PWR015 records "N/A", which is the
+# expected steady state, not an error. (NOPASSWD sudo for both was granted in
+# step 4 so the Pi can run them over BatchMode SSH.)
+
+_step "10 / 10  BIOS / BMC firmware tools (dmidecode + ipmitool)"
+
+_fw_tools_ready=1
+for _pkg in dmidecode ipmitool; do
+  if command -v "${_pkg}" >/dev/null 2>&1; then
+    _skip "${_pkg} already installed: $(command -v "${_pkg}")"
+  else
+    echo "  Installing ${_pkg}..."
+    apt-get update -qq
+    if apt-get install -y -qq "${_pkg}"; then
+      _ok "${_pkg} installed"
+    else
+      _warn "Could not install ${_pkg} — BIOS/BMC version may report 'N/A' (PWR015)"
+      _fw_tools_ready=0
+    fi
+  fi
+done
+
+
 # ---------- Summary -------------------------------------------------------------------
 
 echo
@@ -595,7 +632,7 @@ elif (( ${_existing_keys:-0} > 0 )); then
 else
   echo "  Pi SSH key        : NOT authorized (pass --pi-key to enable passwordless SSH)"
 fi
-echo "  NOPASSWD sudo     : shutdown/reboot/poweroff/restore for ${_test_user}"
+echo "  NOPASSWD sudo     : shutdown/reboot/poweroff/restore/dmidecode/ipmitool for ${_test_user}"
 echo "  Restore helper    : ${_restore_helper}  (auto-called by Pi on test complete)"
 echo "  Power management  : no sleep/suspend/hibernate; HandlePowerKey=poweroff"
 echo "  logind drop-in    : ${TEST_ENV_LOGIND_DROPIN}"
@@ -615,6 +652,11 @@ if [[ "${_report_ready:-0}" -eq 1 ]]; then
   echo "  report.py         : present (HTML reports can be rendered locally)"
 else
   echo "  report.py         : not available — copy from src/python/report.py manually"
+fi
+if [[ "${_fw_tools_ready:-0}" -eq 1 ]]; then
+  echo "  BIOS/BMC tools    : dmidecode + ipmitool installed (PWR015 firmware reporting)"
+else
+  echo "  BIOS/BMC tools    : install dmidecode/ipmitool manually (PWR015 firmware reporting)"
 fi
 echo
 echo "  >>> Verify from the Pi: ssh ${_test_user}@<this-host> 'uname -s' should print 'Linux' <<<"
