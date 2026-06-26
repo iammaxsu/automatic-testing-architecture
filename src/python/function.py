@@ -239,22 +239,32 @@ def detect_firmware(
     }
 
 
-def restore_dut_env(host: str, port: int, ssh_user: str, timeout: int = 30) -> bool:
-    """SSH into the Linux DUT and run the test-environment restore helper.
+def restore_dut_env(
+    host: str, port: int, ssh_user: str, dut_os: str = "linux", timeout: int = 30
+) -> bool:
+    """SSH into the DUT and run the test-environment restore helper.
 
-    The helper (config.DUT_RESTORE_HELPER, installed by setup_dut.sh) reverses
-    the logind drop-in and sleep-target masks without touching framework
-    infrastructure (SSH key, sudoers, dev-detect autorun). Never raises.
-    Returns True on success, False on any failure (caller logs a manual fallback
-    hint in the warning message).
+    On Linux, runs config.DUT_RESTORE_HELPER (installed by setup_dut.sh), which
+    reverses the logind drop-in and sleep-target masks. On Windows, runs
+    setup_dut.ps1 -Restore (config.DUT_RESTORE_HELPER_WIN), which reverses the
+    power-scheme changes from setup_dut.ps1 step 6. Neither touches framework
+    infrastructure (SSH key/service, sudoers, scheduled tasks, auto-logon).
+    Never raises. Returns True on success, False on any failure (caller logs a
+    manual fallback hint in the warning message).
     """
     log = logging.getLogger("function")
+    if dut_os == "windows":
+        remote_cmd = f'powershell -ExecutionPolicy Bypass -File "{config.DUT_RESTORE_HELPER_WIN}" -Restore'
+        fallback_hint = f"{config.DUT_RESTORE_HELPER_WIN} -Restore"
+    else:
+        remote_cmd = f"sudo {config.DUT_RESTORE_HELPER}"
+        fallback_hint = "sudo ./setup_dut.sh --restore"
     cmd = [
         "ssh",
         *ssh_base_opts(timeout),
         "-p", str(port),
         f"{ssh_user}@{host}",
-        f"sudo {config.DUT_RESTORE_HELPER}",
+        remote_cmd,
     ]
     try:
         result = subprocess.run(
@@ -265,13 +275,13 @@ def restore_dut_env(host: str, port: int, ssh_user: str, timeout: int = 30) -> b
             log.info("DUT test-environment restored (%s@%s).", ssh_user, host)
             return True
         log.warning(
-            "DUT restore failed (exit %d) — run manually: sudo ./setup_dut.sh --restore\n%s",
-            result.returncode, result.stderr.strip(),
+            "DUT restore failed (exit %d) — run manually: %s\n%s",
+            result.returncode, fallback_hint, result.stderr.strip(),
         )
         return False
     except Exception as exc:
         log.warning(
-            "DUT restore failed: %s — run manually: sudo ./setup_dut.sh --restore", exc
+            "DUT restore failed: %s — run manually: %s", exc, fallback_hint
         )
         return False
 

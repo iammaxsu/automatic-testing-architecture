@@ -523,9 +523,11 @@ def main() -> int:
     overall_ok = all(v == PASS for v in verdicts.values()) and len(verdicts) > 0
     log.info("OVERALL: %s", "PASS" if overall_ok else "FAIL")
 
-    # Restore DUT test-environment settings (reverses setup_dut.sh changes).
+    # Restore DUT test-environment settings (reverses setup_dut.ps1 changes).
+    # sleep_test.py only targets Windows DUTs (the RTC wake-timer helper is
+    # PowerShell-only), so dut_os is always "windows" here.
     if not _stop_requested and args.ssh_user:
-        function.restore_dut_env(args.host, args.port, args.ssh_user)
+        function.restore_dut_env(args.host, args.port, args.ssh_user, "windows")
 
     return 0 if overall_ok else 2
 

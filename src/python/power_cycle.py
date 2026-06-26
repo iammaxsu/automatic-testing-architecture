@@ -843,11 +843,10 @@ def main() -> int:
     session["updated_at"] = function.now_iso()
     function.write_json(str(session_path), session)
 
-    # Restore DUT test-environment settings (reverses setup_dut.sh changes).
-    # Skipped when no SSH user is configured (pure ATX-relay mode); manual
-    # fallback: sudo ./setup_dut.sh --restore on the DUT.
+    # Restore DUT test-environment settings (reverses setup_dut.sh / setup_dut.ps1
+    # changes). Skipped when no SSH user is configured (pure ATX-relay mode).
     if session.get("status") == "complete" and args.ssh_user:
-        function.restore_dut_env(args.host, args.port, args.ssh_user)
+        function.restore_dut_env(args.host, args.port, args.ssh_user, args.dut_os)
 
     # Finalise
     result["ended_at"] = function.now_iso()

@@ -25,6 +25,9 @@
      11. Installs Python 3 and downloads report.py so reboot.ps1 can auto-generate HTML reports
      12. Installs ipmiutil for BMC firmware-version reporting (PWR015)
 
+    Pass -Restore to instead revert the step-6 power-scheme changes and exit
+    (mirrors setup_dut.sh --restore on Linux); see the -Restore parameter help.
+
     SSH authentication summary:
       - Blank-password account  : steps 3 + 5 allow password-free SSH login out of the box.
       - Password-protected account: pass -PiSshPublicKey with the Pi's public key; the key is
@@ -86,6 +89,13 @@
     Required for Ansible to manage this DUT via SSH using PowerShell modules.
     In Ansible inventory set: ansible_connection=ssh ansible_shell_type=powershell
 
+.PARAMETER Restore
+    Reverts only the test-specific power-scheme changes made by step 6
+    (all timeouts, power-button action) back to Windows defaults, then exits.
+    Framework infrastructure (SSH, firewall, scheduled tasks, auto-logon) is
+    intentionally left in place. Mirrors setup_dut.sh --restore on Linux.
+    This is what the Pi calls over SSH once a test session completes.
+
 .EXAMPLE
     # Zero-argument run: SSH + firewall + power settings, AND both startup tasks
     # (reboot.ps1 / dev_detect.ps1 are auto-detected in this same folder).
@@ -108,6 +118,11 @@
     .\setup_dut.ps1 -AnsibleSSH
 
 .EXAMPLE
+    # Revert the test-specific power-scheme changes (called by the Pi over SSH
+    # once a test session completes)
+    .\setup_dut.ps1 -Restore
+
+.EXAMPLE
     # Complete lab setup: auto-logon + device detection + reboot task + Ansible SSH
     .\setup_dut.ps1 -TestUser "testuser" `
                     -DevDetectScript "C:\TestAutomation\powershell\dev_detect.ps1" `
@@ -123,7 +138,8 @@ param(
     [int]   $DevDetectStartupDelaySec = 30,
     [string]$RebootScript             = "",
     [int]   $RebootStartupDelaySec    = 60,
-    [switch]$AnsibleSSH
+    [switch]$AnsibleSSH,
+    [switch]$Restore
 )
 
 Set-StrictMode -Version Latest
@@ -148,6 +164,22 @@ if (-not $_isAdmin) {
     Write-Host "  SSH   : log in as an account in the Administrators group" -ForegroundColor Yellow
     Write-Host ""
     exit 1
+}
+
+# -- Restore mode: undo test-environment changes and exit ----------------------
+# Reverts only the "temporary, for-testing" power-scheme changes from step 6
+# (all timeouts, power-button action) via powercfg -restoredefaultschemes.
+# Framework infrastructure (SSH, firewall, scheduled tasks, auto-logon) is
+# intentionally left in place. This is what the Pi calls over SSH once a test
+# session completes, mirroring setup_dut.sh --restore on Linux.
+if ($Restore) {
+    Write-Host "Restore mode: reverting DUT test-environment changes..."
+    Write-Host ""
+    powercfg -restoredefaultschemes
+    Write-Host "  Power scheme restored to Windows defaults."
+    Write-Host ""
+    Write-Host "  Restore complete. Re-apply test settings any time with: .\setup_dut.ps1"
+    exit 0
 }
 
 # -- Version & shared library --------------------------------------------------

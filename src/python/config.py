@@ -61,6 +61,13 @@ OFF_TIME_SEC  = 60          # CLI: --off   Phase 4: fixed wait after power-off
 # logind and sleep-target changes. Manual fallback: sudo ./setup_dut.sh --restore
 DUT_RESTORE_HELPER    = "/usr/local/lib/automatic-testing/dut-restore-test-env"
 
+# Path of setup_dut.ps1 on the Windows DUT, deployed alongside the other
+# PowerShell test scripts (same convention as SLEEP_REMOTE_HELPER below).
+# Called via SSH as: powershell -ExecutionPolicy Bypass -File <this> -Restore
+# to revert the test-specific power-scheme changes. Manual fallback:
+# .\setup_dut.ps1 -Restore
+DUT_RESTORE_HELPER_WIN = r"C:\TestAutomation\setup_dut.ps1"
+
 # ---------- DUT liveness (network) ----------
 DUT_HOST              = ""  # CLI: --host   IP/hostname; "" disables liveness checks
 DUT_PORT              = 22  # CLI: --port   TCP port to probe (22 = SSH)
