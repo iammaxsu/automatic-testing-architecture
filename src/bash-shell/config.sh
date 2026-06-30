@@ -102,26 +102,33 @@ setup_session() {
 # names: enp* = PCI/onboard Ethernet (Intel etc.), enx* = USB Ethernet (name carries
 # the MAC), eno* = onboard, eth* = legacy. The default tests only enp* — this both
 # matches the usual Intel-NIC target and conveniently skips USB management NICs.
-# Broaden it to also test USB NICs, e.g. '^(enp|enx)', or everything: '^(enp|enx|eno|eth)'.
+# Broaden it to also test USB NICs, e.g. ^(enp|enx), or everything: ^(enp|enx|eno|eth).
 # Extended regex (grep -E). MAC include/exclude below applies to whatever this matches,
 # so when you broaden this, ALSO pin the management/SSH NIC via _net_exclude_macs (or
 # use _net_include_macs to whitelist only the NICs you want) to avoid testing it.
-: "${_net_nic_name_regex:='^enp'}"
+# NOTE: do NOT wrap the value in quotes here — in the `: "${var:=...}"` form the inner
+# quotes become part of the value. Write it bare, e.g.  _net_nic_name_regex:=^(enp|enx)
+# (surrounding quotes are stripped defensively, but bare is the intended form).
+: "${_net_nic_name_regex:=^enp}"
 
 # NET019: select which NICs participate, by MAC address. A MAC is the most
 # stable, OS-independent NIC identity (unlike enpXsY names). Both lists accept
 # multiple entries separated by comma, semicolon, or whitespace; matching is
 # case-insensitive and both ':' and '-' separators are accepted. CLI overrides:
 # --include-mac / --exclude-mac (each overrides the matching list for that run).
+# As above, write the value BARE (no surrounding quotes) in the `: "${var:=...}"`
+# form, e.g.  _net_include_macs:=00-E0-4C-68-00-56,00-E0-4C-68-00-2D
+# (stray surrounding/embedded quotes are stripped defensively, but bare is intended).
 : "${_net_include_macs:=}"       # NET019: whitelist. When non-empty, ONLY NICs whose
                                  #   MAC matches an entry are tested; all others become
                                  #   SKIPPED. Empty = every NIC is a candidate.
+                                 #   Example (two): 00-E0-4C-68-00-56,00-E0-4C-68-00-2D
 : "${_net_exclude_macs:=}"       # NET019 / NET012: blacklist. NICs whose MAC matches an
                                  #   entry are never tested — use it to pin the management
                                  #   / SSH-lifeline NIC so net_test never reconfigures it.
                                  #   Exclude wins over include. Example (single):
-                                 #   '00-E0-4C-68-00-56'  Example (two): '00-E0-4C-68-00-56,
-                                 #   AA-BB-CC-DD-EE-FF'
+                                 #   00-E0-4C-68-00-56   Example (two):
+                                 #   00-E0-4C-68-00-56,AA-BB-CC-DD-EE-FF
 
 # ---------- fio Parameters ----------
 # ===== Basis =====

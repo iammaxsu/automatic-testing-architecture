@@ -354,11 +354,22 @@ unset _ethArray even_ethArray odd_ethArray skipped_ethArray excluded_ethArray ex
 declare -ga _ethArray even_ethArray odd_ethArray skipped_ethArray excluded_ethArray excluded_reasonArray
 
 # NET019: MAC helpers for include/exclude-by-MAC NIC selection.
-# Normalize a MAC to lowercase, colon-separated, no spaces.
+# Strip a single pair of surrounding quotes from a value. The config idiom
+# `: "${var:='value'}"` keeps the inner quotes as literal characters (they are
+# inside the outer double quotes), so a user who writes '^enp' or '00-..-56'
+# would otherwise get quote-contaminated values. Be tolerant: strip them.
+__strip_quotes() {
+  local _s="$1"
+  _s="${_s#[\"\']}"
+  _s="${_s%[\"\']}"
+  echo "${_s}"
+}
+
+# Normalize a MAC to lowercase, colon-separated, no spaces or stray quotes.
 __norm_mac() {
   local _m="${1,,}"
   _m="${_m//-/:}"
-  _m="${_m// /}"
+  _m="${_m//[\'\" ]/}"
   echo "${_m}"
 }
 
@@ -425,7 +436,7 @@ netns_del() {
   # Clean up namespaces for any interface this test manages. The interface set is
   # configurable (_net_nic_name_regex), so match ns_<ifn> against the same pattern
   # rather than a hardcoded ns_enp* — otherwise ns_enx*/ns_eth* namespaces leak.
-  local _nic_re="${_net_nic_name_regex:-^enp}"
+  local _nic_re; _nic_re="$(__strip_quotes "${_net_nic_name_regex:-^enp}")"; _nic_re="${_nic_re:-^enp}"
   while read -r ns; do
     [[ -z "$ns" ]] && continue
     [[ "$ns" == ns_* ]] || continue
@@ -447,7 +458,7 @@ netns_add() {
   excluded_ethArray=()
   excluded_reasonArray=()
   # Use ip -o to get single-line per link; sanitize names
-  local _nic_re="${_net_nic_name_regex:-^enp}"
+  local _nic_re; _nic_re="$(__strip_quotes "${_net_nic_name_regex:-^enp}")"; _nic_re="${_nic_re:-^enp}"
   while IFS= read -r name; do
     name="$(__sanitize_if "$name")"
     [[ -n "$name" ]] && _ethArray+=("$name")

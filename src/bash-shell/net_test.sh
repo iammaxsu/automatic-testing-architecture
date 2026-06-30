@@ -27,6 +27,11 @@
 #   - Summary is assembled after all pairs complete (wait)
 #
 # Changelog:
+#   v00.00.16  NET019 fix: tolerate surrounding/embedded quotes in _net_nic_name_regex
+#              and the MAC lists. The `: "${var:='value'}"` config idiom keeps the
+#              inner quotes as literal characters, which silently broke matching
+#              (pattern became "'^enp'"); values are now quote-stripped defensively
+#              and the shipped defaults/examples use the bare form.
 #   v00.00.15  NET019: configurable NIC name discovery (_net_nic_name_regex, default
 #              '^enp') so USB (enx*) / other NICs can be tested; diagnostic message
 #              when filtering leaves <2 NICs (lists pattern, MAC lists, and the
@@ -74,7 +79,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
 fi
 
 export _net_test_version
-: "${_net_test_version:="00.00.15"}"
+: "${_net_test_version:="00.00.16"}"
 
 echo "[INFO] running net_test.sh v${_net_test_version}."
 
