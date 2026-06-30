@@ -98,6 +98,16 @@ setup_session() {
                                  #   ping crosses the link, then restore the MTU.
 : "${_net_jumbo_mtu:=9000}"      # NET018: jumbo MTU to test (bytes); DF payload = MTU-28.
 
+# NET019: which interface NAMES are even considered for testing. Linux predictable
+# names: enp* = PCI/onboard Ethernet (Intel etc.), enx* = USB Ethernet (name carries
+# the MAC), eno* = onboard, eth* = legacy. The default tests only enp* — this both
+# matches the usual Intel-NIC target and conveniently skips USB management NICs.
+# Broaden it to also test USB NICs, e.g. '^(enp|enx)', or everything: '^(enp|enx|eno|eth)'.
+# Extended regex (grep -E). MAC include/exclude below applies to whatever this matches,
+# so when you broaden this, ALSO pin the management/SSH NIC via _net_exclude_macs (or
+# use _net_include_macs to whitelist only the NICs you want) to avoid testing it.
+: "${_net_nic_name_regex:='^enp'}"
+
 # NET019: select which NICs participate, by MAC address. A MAC is the most
 # stable, OS-independent NIC identity (unlike enpXsY names). Both lists accept
 # multiple entries separated by comma, semicolon, or whitespace; matching is

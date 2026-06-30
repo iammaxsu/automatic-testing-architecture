@@ -349,7 +349,7 @@ prepare_net_tools() {
   fi
 }
 
-# ---------- Netns (enp* only) ----------
+# ---------- Netns (interface set via _net_nic_name_regex, default enp*) ----------
 unset _ethArray even_ethArray odd_ethArray skipped_ethArray excluded_ethArray excluded_reasonArray
 declare -ga _ethArray even_ethArray odd_ethArray skipped_ethArray excluded_ethArray excluded_reasonArray
 
@@ -422,16 +422,21 @@ netns_del() {
   fi
   sudo rm -f /run/netns/ns_ 2>/dev/null || true
 
+  # Clean up namespaces for any interface this test manages. The interface set is
+  # configurable (_net_nic_name_regex), so match ns_<ifn> against the same pattern
+  # rather than a hardcoded ns_enp* — otherwise ns_enx*/ns_eth* namespaces leak.
+  local _nic_re="${_net_nic_name_regex:-^enp}"
   while read -r ns; do
     [[ -z "$ns" ]] && continue
-    [[ "$ns" != ns_enp* ]] && continue
-    found=1
+    [[ "$ns" == ns_* ]] || continue
     local ifn="${ns#ns_}"; ifn="$(__sanitize_if "$ifn")"
+    [[ "$ifn" =~ $_nic_re ]] || continue
+    found=1
     __move_back_to_root "${ifn}"
     sudo ip netns del "$ns" >/dev/null 2>&1 || true
     echo "[INFO] deleted $ns"
   done < <(ip netns list 2>/dev/null | awk '{print $1}')
-  (( found )) || echo "[INFO] no ns_enp* to delete"
+  (( found )) || echo "[INFO] no managed namespaces (${_nic_re}) to delete"
   sleep 0.2
 }
 
@@ -442,13 +447,14 @@ netns_add() {
   excluded_ethArray=()
   excluded_reasonArray=()
   # Use ip -o to get single-line per link; sanitize names
+  local _nic_re="${_net_nic_name_regex:-^enp}"
   while IFS= read -r name; do
     name="$(__sanitize_if "$name")"
     [[ -n "$name" ]] && _ethArray+=("$name")
-  done < <(ip -o link show | awk -F': ' '{print $2}' | grep -E '^enp' | sort -n)
+  done < <(ip -o link show | awk -F': ' '{print $2}' | grep -E "${_nic_re}" | sort -n)
 
   local n=${#_ethArray[@]}
-  echo "[DEBUG] root enp*: ${_ethArray[*]}"
+  echo "[DEBUG] root NICs (${_nic_re}): ${_ethArray[*]}"
 
   # NET011: filter out NICs explicitly excluded via --skip / _net_test_skip_nics
   if [[ -v _net_test_skip_nics ]] && (( ${#_net_test_skip_nics[@]} > 0 )); then
@@ -503,7 +509,20 @@ netns_add() {
   fi
 
   if (( n < 2 )); then
-    echo "[FATAL] Need at least 2 enp* NICs in root; found $n"
+    echo "[FATAL] Need at least 2 testable NICs; found $n after filtering."
+    echo "        NIC name pattern (_net_nic_name_regex): ${_nic_re}"
+    [[ -n "${_net_include_macs:-}" ]] && echo "        _net_include_macs (whitelist): ${_net_include_macs}"
+    [[ -n "${_net_exclude_macs:-}" ]] && echo "        _net_exclude_macs (blacklist): ${_net_exclude_macs}"
+    if (( ${#excluded_ethArray[@]} > 0 )); then
+      echo "        Excluded this run:"
+      local _xi
+      for _xi in "${!excluded_ethArray[@]}"; do
+        echo "          - ${excluded_ethArray[_xi]} ($(__nic_mac "${excluded_ethArray[_xi]}")) : ${excluded_reasonArray[_xi]:-?}"
+      done
+    fi
+    echo "        Hint: check the MACs above against the NICs actually present (ip -o link show),"
+    echo "        and if your target NICs are USB (enx*) or other types, widen _net_nic_name_regex"
+    echo "        (e.g. '^(enp|enx)') in config.sh."
     even_ethArray=(); odd_ethArray=(); skipped_ethArray=()
     return 1
   fi
@@ -517,7 +536,7 @@ netns_add() {
   local _active_n=$(( n - (n % 2) ))   # round down to nearest even number
   if (( n % 2 == 1 )); then
     skipped_ethArray+=("${_ethArray[n-1]}")
-    echo "[WARN] Odd NIC count (${n} enp* interfaces found)." \
+    echo "[WARN] Odd NIC count (${n} interfaces found)." \
          "'${_ethArray[n-1]}' has no pair and will be skipped." \
          "It will appear as N/A in the summary." >&2
   fi

@@ -27,6 +27,10 @@
 #   - Summary is assembled after all pairs complete (wait)
 #
 # Changelog:
+#   v00.00.15  NET019: configurable NIC name discovery (_net_nic_name_regex, default
+#              '^enp') so USB (enx*) / other NICs can be tested; diagnostic message
+#              when filtering leaves <2 NICs (lists pattern, MAC lists, and the
+#              actual excluded NICs + reasons).
 #   v00.00.14  NET019: MAC-based NIC include/exclude (--include-mac / --exclude-mac
 #              and _net_include_macs / _net_exclude_macs); SKIPPED rows now carry
 #              the specific exclusion reason. Brings MAC-based exclude to the Bash
@@ -70,7 +74,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
 fi
 
 export _net_test_version
-: "${_net_test_version:="00.00.14"}"
+: "${_net_test_version:="00.00.15"}"
 
 echo "[INFO] running net_test.sh v${_net_test_version}."
 
