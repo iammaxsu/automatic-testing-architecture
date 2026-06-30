@@ -483,6 +483,48 @@ def _render(result: dict) -> str:
   {method_cards}
 </div>"""
 
+    # Calibration section — auto-measured boot time → boot timeout (BUG0036).
+    # Rendered for any test that ran a calibrate phase (power_cycle and reboot),
+    # so each DUT's measured boot time is visible and comparable across DUTs.
+    calibrate_section = ""
+    cal        = result.get("calibrate") or {}
+    cal_cycles = cal.get("cycles", [])
+    if cal_cycles:
+        cal_boots = [c["boot_time_sec"] for c in cal_cycles
+                     if c.get("boot_time_sec") is not None and c.get("verdict") == "PASS"]
+        cal_set   = cal.get("boot_timeout_sec")
+        sf        = cal.get("safety_factor")
+        cal_min   = f"{min(cal_boots):.1f}s" if cal_boots else "-"
+        cal_max   = f"{max(cal_boots):.1f}s" if cal_boots else "-"
+        cal_set_s = f"{cal_set}s" if cal_set is not None else "not set"
+        sf_s      = f"×{sf}" if sf is not None else "-"
+        def _cal_boot_str(c):
+            bt = c.get("boot_time_sec")
+            return f"{bt:.1f}s" if bt is not None else "—"
+        cal_rows  = "".join(
+            f'<tr><td>{c.get("n")}</td>'
+            f'<td style="color:{_verdict_colour(c.get("verdict","-"))};font-weight:600">'
+            f'{c.get("verdict","-")}</td>'
+            f'<td>{_cal_boot_str(c)}</td>'
+            f'</tr>'
+            for c in cal_cycles
+        )
+        calibrate_section = f"""
+<div class="section-title">Calibration (auto-measured boot time → boot timeout)</div>
+<div class="cards">
+  <div class="card"><div class="label">Calibrate cycles</div><div class="value">{len(cal_cycles)}</div></div>
+  <div class="card"><div class="label">Measured min</div><div class="value">{cal_min}</div></div>
+  <div class="card"><div class="label">Measured max</div><div class="value">{cal_max}</div></div>
+  <div class="card"><div class="label">Safety factor</div><div class="value">{sf_s}</div></div>
+  <div class="card"><div class="label">Boot timeout set</div><div class="value">{cal_set_s}</div></div>
+</div>
+<table>
+  <thead><tr><th>Calibrate cycle</th><th>Verdict</th><th>Boot time</th></tr></thead>
+  <tbody>
+    {cal_rows}
+  </tbody>
+</table>"""
+
     # Shutdown time chart + method distribution chart HTML (power_cycle only)
     shutdown_chart_html = ""
     if has_shutdown:
@@ -653,6 +695,7 @@ def _render(result: dict) -> str:
 
 {shutdown_stats_section}
 {method_breakdown_section}
+{calibrate_section}
 
 <!-- Failure table -->
 <div class="section-title">Failed cycles detail</div>

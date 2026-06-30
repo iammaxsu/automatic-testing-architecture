@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-06-26 06:05 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-06-30 07:30 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -150,13 +150,14 @@ pie showData title Requirements by status
 
 ## Bugs
 
-**Total:** 35
+**Total:** 36
 
 ### By status
 
 | Status | Count |
 | --- | --- |
 | open | 14 |
+| in-progress | 1 |
 | resolved | 9 |
 | closed | 10 |
 | invalid | 2 |
@@ -164,6 +165,7 @@ pie showData title Requirements by status
 ```mermaid
 pie showData title Bugs by status
     "open" : 14
+    "in-progress" : 1
     "resolved" : 9
     "closed" : 10
     "invalid" : 2
@@ -174,7 +176,7 @@ pie showData title Bugs by status
 | OS | Count |
 | --- | --- |
 | Ubuntu 26.04 LTS | 17 |
-| Ubuntu 24.04 LTS | 13 |
+| Ubuntu 24.04 LTS | 14 |
 | Windows 11 | 7 |
 | Windows 11 (zh-TW) | 2 |
 | Windows 11 (English / en-US) | 1 |
@@ -198,6 +200,7 @@ pie showData title Bugs by status
 | [BUG0022](bugs/open/BUG0022-the-notification-is-misleading.md) | 2026-05-14 | open | The notification is misleading |
 | [BUG0023](bugs/open/BUG0023-two-log-dir-echo-statements-joined-on-one-line-in-.md) | 2026-05-14 | open | Two log_dir echo statements joined on one line in function.sh |
 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | 2026-06-05 | open | power_cycle.py msg.exe notification not shown on DUT during test |
+| [BUG0036](bugs/open/BUG0036-reboot-slow-boot-misjudged-dead.md) | 2026-06-30 | in-progress | `reboot.py` misjudges a slow-booting DUT as dead |
 
 ## Traceability
 
@@ -216,6 +219,7 @@ pie showData title Bugs by status
 | FWK028 | [BUG0031](bugs/closed/BUG0031-os-probe-runs-before-power-on.md) | resolved |
 | FWK028 | [BUG0035](bugs/closed/BUG0035-result-json-write-crash-loses-run.md) | resolved |
 | FWK031 | [BUG0034](bugs/closed/BUG0034-reboot-os-probe-before-init-dut.md) | resolved |
+| FWK031 | [BUG0036](bugs/open/BUG0036-reboot-slow-boot-misjudged-dead.md) | in-progress |
 | FWK032 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
 | FWK034 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
 | FWK035 | [BUG0033](bugs/closed/BUG0033-ssh-changed-host-key-blocks-all-cycles.md) | resolved |
@@ -252,6 +256,8 @@ pie showData title Bugs by status
 | PWR012 | [BUG0034](bugs/closed/BUG0034-reboot-os-probe-before-init-dut.md) | resolved |
 | PWR012 | [BUG0035](bugs/closed/BUG0035-result-json-write-crash-loses-run.md) | resolved |
 | PWR012 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
+| PWR012 | [BUG0036](bugs/open/BUG0036-reboot-slow-boot-misjudged-dead.md) | in-progress |
+| PWR013 | [BUG0036](bugs/open/BUG0036-reboot-slow-boot-misjudged-dead.md) | in-progress |
 | SET007 | [BUG0032](bugs/closed/BUG0032-grub-menu-can-block-unattended-reboot-tests.md) | resolved |
 | SLP001 | [BUG0020](bugs/open/BUG0020-sleep-test-not-yet-integrated-or-verified.md) | open |
 | SLP002 | [BUG0028](bugs/closed/BUG0028-sleep-test-detect-crashes-on-localized-windows.md) | resolved |
@@ -280,7 +286,6 @@ _(may indicate untested code paths — worth a review)_
 | [PWR007](requirements/PWR007.md) | implemented | Safety Controls: Consecutive Fail Abort and Graceful Stop |
 | [PWR008](requirements/PWR008.md) | implemented | Power Cycle Test Warmup and Initial-State Normalization |
 | [PWR010](requirements/PWR010.md) | implemented | Cycle Phase Timing Model and Parameter Defaults |
-| [PWR013](requirements/PWR013.md) | implemented | Reboot Test Initial State Normalisation |
 | [SET005](requirements/SET005.md) | implemented | Windows DUT Pre-test Bootstrap Script |
 | [SET006](requirements/SET006.md) | implemented | Dual-Layer Configuration: config.py as Default Reference |
 

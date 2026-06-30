@@ -543,6 +543,7 @@ def _new_result(args: argparse.Namespace, session_id: str, m: int,
         "calibrate": {
             "cycles":            [],       # each calibrate cycle's boot_time_sec
             "boot_timeout_sec":  None,     # computed from calibrate; None if skipped
+            "safety_factor":     config.CALIBRATE_SAFETY_FACTOR,
         },
         "cycles":          [],
         "summary":         {},

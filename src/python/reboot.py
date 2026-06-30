@@ -21,7 +21,12 @@
 #                             default: derived from --host
 #   --no-check                skip network liveness checks (useful for dry-run)
 #   --dry-run                 run logic without issuing SSH reboot
-#   --boot-timeout SECONDS    max wait for DUT to come back online (default: 120)
+#   --boot-timeout SECONDS    max wait for DUT to come back online (default: 120;
+#                             overridden by auto-calibration when --calibrate > 0)
+#   --boot-ceiling SECONDS    absolute max boot wait for init power-on + calibration,
+#                             and cap on the calibrated timeout (default: 360)
+#   --calibrate N             calibration cycles to auto-measure boot time before the
+#                             counted test (0 = disabled; default from config)
 #   --ssh-user USERNAME       SSH login for reboot command (required)
 #   --ssh-cmd COMMAND         reboot command to run over SSH (default: "sudo reboot")
 #   --new-session             force a new session instead of resuming an incomplete one (LOG023)
@@ -38,10 +43,12 @@
 #
 # Init behaviour (function.init_dut escalation chain):
 #   DUT responds (ping OR SSH)       → begin first cycle immediately
-#   DUT offline                      → GPIO power-on press, wait up to --boot-timeout
+#   DUT offline                      → GPIO power-on press, wait up to --boot-ceiling
 #   still offline                    → GPIO force-off + power-on (DUT was hung)
 #   still offline                    → abort (DUT may be dead)
 #   no GPIO pin + --init-wait N      → wait up to N s for a still-booting DUT
+# The ceiling (not the short --boot-timeout) is used here so a slow-but-healthy
+# DUT is not force-cycled and misjudged as dead (BUG0036).
 #
 # Verdicts per cycle:
 #   PASS      — DUT came back online within BOOT_TIMEOUT after reboot command
@@ -49,6 +56,7 @@
 #   SSH_ERROR — reboot command could not be sent (SSH unreachable before reboot)
 
 import argparse
+import copy
 import logging
 import os
 import signal
@@ -123,7 +131,19 @@ def parse_args() -> argparse.Namespace:
                    help="Simulate reboot without issuing SSH command")
     p.add_argument("--boot-timeout",  default=config.BOOT_TIMEOUT_SEC, type=int,
                    dest="boot_timeout",
-                   help="Max seconds waiting for DUT to come back online (default: %(default)s)")
+                   help="Max seconds waiting for DUT to come back online (default: %(default)s). "
+                        "Overridden by auto-calibration when --calibrate > 0.")
+    p.add_argument("--boot-ceiling",  default=config.BOOT_CEILING_SEC, type=int,
+                   dest="boot_ceiling",
+                   help="Absolute maximum boot wait, used for the init power-on and the "
+                        "calibration phase (before the DUT's typical boot time is known), "
+                        "and as the cap on the auto-calibrated timeout (default: %(default)s)")
+    p.add_argument("--calibrate",     default=config.CALIBRATE_CYCLES, type=int,
+                   dest="calibrate_cycles",
+                   help="Calibration cycles to measure boot time before the counted test "
+                        "(0 = disabled, use --boot-timeout directly). boot_timeout is then "
+                        "set to max(observed) x %.1f, capped at --boot-ceiling (default: %%(default)s)"
+                        % config.CALIBRATE_SAFETY_FACTOR)
     p.add_argument("--ssh-user",      default=config.SHUTDOWN_SSH_USER,
                    dest="ssh_user",
                    help="SSH username for reboot command (required at runtime)")
@@ -354,6 +374,66 @@ def run_one_cycle(
     return rec
 
 
+# ── calibration phase (BUG0036) ─────────────────────────────────────────────────
+
+def _run_calibrate_phase(args, checker, result: dict) -> None:
+    """Measure the DUT's reboot round-trip boot time, then set args.boot_timeout.
+
+    Mirrors power_cycle.py's calibrate phase. Runs args.calibrate_cycles reboot
+    cycles with the boot wait raised to boot_ceiling, records each measured boot
+    time, then sets boot_timeout = max(observed) x CALIBRATE_SAFETY_FACTOR,
+    capped at boot_ceiling. Calibrate cycles are NOT counted in the main summary;
+    they are stored in result["calibrate"] for the report so each DUT's measured
+    boot time is visible and comparable.
+
+    Requires the DUT to already be online (call after init_dut) and SSH usable.
+    """
+    n_cal = args.calibrate_cycles
+    log.info("=== Calibrate: %d cycle(s) — measuring boot time (ceiling %ds) ===",
+             n_cal, args.boot_ceiling)
+
+    # Temporary args: raise the boot wait to the ceiling for measurement.
+    cal_args = copy.copy(args)
+    cal_args.boot_timeout = args.boot_ceiling
+
+    boot_times = []
+    for c in range(1, n_cal + 1):
+        if _stop_requested:
+            break
+        log.info("[CAL %d/%d] ──────────────────────────────────────", c, n_cal)
+        rec = run_one_cycle(c, n_cal, cal_args, checker)
+        boot_t = rec.get("boot_time_sec")
+        log.info("[CAL %d/%d] verdict: %s  boot: %s s",
+                 c, n_cal, rec["verdict"],
+                 f"{boot_t:.1f}" if boot_t is not None and rec["verdict"] == PASS else "—")
+        result["calibrate"]["cycles"].append({
+            "n":             c,
+            "verdict":       rec["verdict"],
+            "boot_time_sec": boot_t,
+        })
+        if rec["verdict"] == PASS and boot_t is not None:
+            boot_times.append(boot_t)
+
+    if boot_times:
+        computed   = round(max(boot_times) * config.CALIBRATE_SAFETY_FACTOR)
+        calibrated = min(computed, args.boot_ceiling)
+        log.info(
+            "=== Calibrate complete — boot times: min=%.1fs max=%.1fs "
+            "→ boot_timeout set to %ds (max × %.1f, capped at %ds) ===",
+            min(boot_times), max(boot_times),
+            calibrated, config.CALIBRATE_SAFETY_FACTOR, args.boot_ceiling,
+        )
+        args.boot_timeout = calibrated
+        result["calibrate"]["boot_timeout_sec"] = calibrated
+        result["config"]["boot_timeout_sec"]    = calibrated
+    else:
+        log.warning(
+            "=== Calibrate: no successful boots — keeping boot_timeout=%ds ===",
+            args.boot_timeout,
+        )
+        result["calibrate"]["boot_timeout_sec"] = None
+
+
 # ── summary helpers ────────────────────────────────────────────────────────────
 
 def _build_summary(cycles: list, target: int) -> dict:
@@ -386,12 +466,19 @@ def _new_result(args: argparse.Namespace, session_id: str, m: int) -> dict:
             "off_time_sec":     (config.REBOOT_AUTO_SETTLE_SEC if args.off_time == "auto"
                                   else args.off_time),
             "boot_timeout_sec": args.boot_timeout,
+            "boot_ceiling_sec": args.boot_ceiling,
             "dead_timeout_sec": config.DEAD_TIMEOUT_SEC,
+            "calibrate_cycles": args.calibrate_cycles,
             "ssh_user":         args.ssh_user or None,
             "ssh_cmd":          args.ssh_cmd,
             "dut_os":           args.dut_os,
             "debug_mode":       bool(args.debug),
             "bmc_host":         args.bmc_host or None,
+        },
+        "calibrate": {
+            "cycles":           [],     # each calibrate cycle's measured boot_time_sec
+            "boot_timeout_sec": None,   # computed from calibrate; None if skipped/failed
+            "safety_factor":    config.CALIBRATE_SAFETY_FACTOR,
         },
         "cycles":          [],
         "summary":         {},
@@ -465,7 +552,11 @@ def main() -> int:
     log.info("  Inter-cycle delay: %s", (
         f"auto (~{config.REBOOT_AUTO_SETTLE_SEC}s settle, reboot immediately after)"
         if args.off_time == "auto" else f"{args.off_time}s fixed"))
-    log.info("  Boot TO : %ds",  args.boot_timeout)
+    log.info("  Boot TO : %ds (ceiling %ds)",  args.boot_timeout, args.boot_ceiling)
+    log.info("  Calibrate: %d cycle(s)%s",
+             args.calibrate_cycles,
+             "" if args.calibrate_cycles > 0
+             else " (disabled — using --boot-timeout directly)")
     log.info("  SSH user: %s",   args.ssh_user or "(none)")
     log.info("  SSH cmd : %s",   args.ssh_cmd if args.ssh_cmd
                                   else "(auto — resolved after DUT is online)")
@@ -506,7 +597,9 @@ def main() -> int:
             checker,
             relay,
             args.type,
-            boot_timeout=args.boot_timeout,
+            # Use the ceiling (not the short per-cycle boot_timeout) so a slow but
+            # healthy DUT is not force-cycled and misjudged as dead (BUG0036).
+            boot_timeout=args.boot_ceiling,
             # Forced-recovery "stay off" duration (FWK031 Step 3) — a physical
             # power-cycle concern, unrelated to --off's inter-cycle pacing.
             off_time=config.OFF_TIME_SEC,
@@ -541,6 +634,18 @@ def main() -> int:
                  session_id, len(result["cycles"]), m)
     else:
         result = _new_result(args, session_id, m)
+
+    # ── Calibrate phase (new session only) ───────────────────────────────────────
+    # Measure the DUT's reboot round-trip boot time and set boot_timeout for the
+    # counted test automatically, so a slow-booting DUT need not pass --boot-timeout
+    # by hand (BUG0036). Requires SSH (reboot is issued over SSH) and liveness.
+    if (args.calibrate_cycles > 0 and not resuming and not args.dry_run
+            and checker and args.ssh_user and not _stop_requested):
+        _run_calibrate_phase(args, checker, result)
+        try:
+            function.write_result_json(str(json_path), result)  # persist calibrate data
+        except OSError as exc:
+            log.warning("Could not persist calibrate data (%s) — continuing", exc)
 
     consecutive_fails = 0
     has_had_success   = any(c.get("verdict") == PASS
