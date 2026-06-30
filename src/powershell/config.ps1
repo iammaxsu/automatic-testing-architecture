@@ -73,6 +73,14 @@ $_net_exclude_macs     = '00-E0-4C-68-00-56'   # NET012: comma-separated MAC add
                               #   management NIC(s) for unattended / Ansible-driven runs.
                               #   Example (single): '00-50-56-C0-00-08'
                               #   Example (two):    '00-50-56-C0-00-08, AA-BB-CC-DD-EE-FF'
+$_net_include_macs     = ''   # NET019: whitelist of MAC addresses.  When non-empty, ONLY
+                              #   NICs whose MAC matches an entry are tested; every other
+                              #   NIC becomes SKIPPED.  Same format as $_net_exclude_macs
+                              #   (comma/space/;-separated, case-insensitive, ':' or '-').
+                              #   Empty (default) = all vendor-filtered NICs are candidates.
+                              #   Exclusions always win: a MAC that is also the management /
+                              #   lifeline NIC stays excluded even if listed here (NET012).
+                              #   CLI override: -IncludeMac. Example: '00-50-56-C0-00-09'
 # Multi-speed testing (NET004): each NIC is driven at every link speed it
 # advertises (10/100/1000/2500/10000 Mbps, ...), set via the *SpeedDuplex
 # advanced property.  A pair is tested only at speeds BOTH NICs support.

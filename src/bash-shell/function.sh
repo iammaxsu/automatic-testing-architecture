@@ -350,8 +350,46 @@ prepare_net_tools() {
 }
 
 # ---------- Netns (enp* only) ----------
-unset _ethArray even_ethArray odd_ethArray skipped_ethArray excluded_ethArray
-declare -ga _ethArray even_ethArray odd_ethArray skipped_ethArray excluded_ethArray
+unset _ethArray even_ethArray odd_ethArray skipped_ethArray excluded_ethArray excluded_reasonArray
+declare -ga _ethArray even_ethArray odd_ethArray skipped_ethArray excluded_ethArray excluded_reasonArray
+
+# NET019: MAC helpers for include/exclude-by-MAC NIC selection.
+# Normalize a MAC to lowercase, colon-separated, no spaces.
+__norm_mac() {
+  local _m="${1,,}"
+  _m="${_m//-/:}"
+  _m="${_m// /}"
+  echo "${_m}"
+}
+
+# Read a NIC's MAC (normalized). Empty string if unavailable.
+__nic_mac() {
+  local _if="$1" _mac=""
+  [[ -r "/sys/class/net/${_if}/address" ]] && _mac="$(cat "/sys/class/net/${_if}/address" 2>/dev/null)"
+  __norm_mac "${_mac}"
+}
+
+# Split a comma/semicolon/space-separated MAC list into a normalized array.
+# Usage: __mac_split <out_array_name> "<list>"
+__mac_split() {
+  local -n _out="$1"; local _raw="$2"; local _tok
+  _out=()
+  _raw="${_raw//[,;]/ }"
+  for _tok in ${_raw}; do
+    _tok="$(__norm_mac "${_tok}")"
+    [[ -n "${_tok}" ]] && _out+=("${_tok}")
+  done
+}
+
+# Is a normalized MAC present in a list of normalized MACs?
+# Usage: __mac_in_list <needle> <mac>...
+__mac_in_list() {
+  local _needle="$1"; shift
+  local _m
+  [[ -z "${_needle}" ]] && return 1
+  for _m in "$@"; do [[ "${_needle}" == "${_m}" ]] && return 0; done
+  return 1
+}
 
 __sanitize_if() {
   # strip CR/LF and anything after '@' (e.g., vlan/master decorations)
@@ -402,6 +440,7 @@ netns_add() {
 
   _ethArray=()
   excluded_ethArray=()
+  excluded_reasonArray=()
   # Use ip -o to get single-line per link; sanitize names
   while IFS= read -r name; do
     name="$(__sanitize_if "$name")"
@@ -422,6 +461,7 @@ netns_add() {
       if (( _excluded )); then
         echo "[INFO] NIC '${_ifn}' excluded by --skip (NET011) — will not be tested."
         excluded_ethArray+=("${_ifn}")
+        excluded_reasonArray+=("--skip flag (NET011)")
       else
         _filtered+=("${_ifn}")
       fi
@@ -429,6 +469,37 @@ netns_add() {
     _ethArray=("${_filtered[@]+"${_filtered[@]}"}")
     n=${#_ethArray[@]}
     echo "[DEBUG] After --skip filter: ${_ethArray[*]:-<none>}"
+  fi
+
+  # NET019: filter by MAC address — exclude (blacklist) then include (whitelist).
+  # Precedence: _net_exclude_macs wins over _net_include_macs. Pinning the
+  # management / SSH-lifeline NIC in _net_exclude_macs is also the NET012
+  # protection mechanism, so it must never be overridden by an include entry.
+  local -a _inc_macs=() _exc_macs=()
+  local _have_inc=0 _have_exc=0
+  [[ -n "${_net_include_macs:-}" ]] && { __mac_split _inc_macs "${_net_include_macs}"; (( ${#_inc_macs[@]} > 0 )) && _have_inc=1; }
+  [[ -n "${_net_exclude_macs:-}" ]] && { __mac_split _exc_macs "${_net_exclude_macs}"; (( ${#_exc_macs[@]} > 0 )) && _have_exc=1; }
+  if (( _have_inc || _have_exc )); then
+    local _filtered2=() _mac _reason
+    for _ifn in "${_ethArray[@]}"; do
+      _mac="$(__nic_mac "${_ifn}")"
+      _reason=""
+      if (( _have_exc )) && __mac_in_list "${_mac}" "${_exc_macs[@]}"; then
+        _reason="excluded by _net_exclude_macs (NET019)"
+      elif (( _have_inc )) && ! __mac_in_list "${_mac}" "${_inc_macs[@]}"; then
+        _reason="not in _net_include_macs (NET019)"
+      fi
+      if [[ -n "${_reason}" ]]; then
+        echo "[INFO] NIC '${_ifn}' (${_mac:-no-mac}) ${_reason} — will not be tested."
+        excluded_ethArray+=("${_ifn}")
+        excluded_reasonArray+=("${_reason}")
+      else
+        _filtered2+=("${_ifn}")
+      fi
+    done
+    _ethArray=("${_filtered2[@]+"${_filtered2[@]}"}")
+    n=${#_ethArray[@]}
+    echo "[DEBUG] After MAC filter (NET019): ${_ethArray[*]:-<none>}"
   fi
 
   if (( n < 2 )); then

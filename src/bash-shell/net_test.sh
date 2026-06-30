@@ -2,11 +2,21 @@
 # net_test.sh — IPv4/IPv6 connectivity + throughput, parallel pair execution
 #
 # Usage:
-#   ./net_test.sh [loops] [--skip <nic>[,<nic>...]] [--skip <nic>] ...
+#   ./net_test.sh [loops] [--skip <nic>[,<nic>...]] \
+#                 [--include-mac <mac>[,<mac>...]] [--exclude-mac <mac>[,<mac>...]]
 #
 #   --skip / --exclude   Comma-separated or repeated flag.  Named NICs are
 #                        excluded from namespace creation and testing.
 #                        Example: ./net_test.sh 3 --skip enp3s0,enp4s0
+#
+#   --include-mac        NET019 whitelist: when given, ONLY NICs whose MAC matches
+#                        are tested; all others become SKIPPED.  Comma/space
+#                        separated, repeatable; ':' or '-' separators, any case.
+#   --exclude-mac        NET019 blacklist: NICs whose MAC matches are never tested
+#                        (e.g. the management / SSH-lifeline NIC).  Exclude wins
+#                        over include.  Both override _net_include_macs /
+#                        _net_exclude_macs from config for this run.
+#                        Example: ./net_test.sh 3 --exclude-mac 00-E0-4C-68-00-56
 #
 # Parallel design:
 #   - All pairs start simultaneously (background &)
@@ -17,6 +27,10 @@
 #   - Summary is assembled after all pairs complete (wait)
 #
 # Changelog:
+#   v00.00.14  NET019: MAC-based NIC include/exclude (--include-mac / --exclude-mac
+#              and _net_include_macs / _net_exclude_macs); SKIPPED rows now carry
+#              the specific exclusion reason. Brings MAC-based exclude to the Bash
+#              side (previously PowerShell-only) per FWK036.
 #   v00.00.13  Per-loop init/recover (kill leftover iperf3 for this pair's
 #              subnet before/after each loop) and per-loop port rotation
 #              (5201/5202 .. wrapping after 10 loops) so a stale server/socket
@@ -56,7 +70,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
 fi
 
 export _net_test_version
-: "${_net_test_version:="00.00.13"}"
+: "${_net_test_version:="00.00.14"}"
 
 echo "[INFO] running net_test.sh v${_net_test_version}."
 
@@ -92,10 +106,13 @@ check_api_versions "net_test.sh" "${_requires_config_api}" "${_requires_function
 # ---------- Parse CLI ----------
 parse_common_cli "$@"
 
-# ---------- Parse --skip / --exclude (NET011) ----------
+# ---------- Parse --skip / --exclude (NET011) and --include-mac / --exclude-mac (NET019) ----------
 # Supports: --skip enp3s0,enp4s0   or   --skip enp3s0 --skip enp4s0
-# NICs in this list are excluded from namespace creation and testing.
+#           --include-mac AA:BB:.. --exclude-mac CC-DD-..  (comma/space/; separated, repeatable)
+# --skip removes NICs by name; --include-mac/--exclude-mac select by MAC (NET019),
+# overriding _net_include_macs / _net_exclude_macs from config for this run.
 declare -ga _net_test_skip_nics=()
+_cli_inc_macs=""; _cli_exc_macs=""; _cli_inc_set=0; _cli_exc_set=0
 _rem2=(); _ri=0
 while [[ ${_ri} -lt ${#REM_ARGS[@]} ]]; do
   _ra="${REM_ARGS[${_ri}]}"
@@ -111,6 +128,16 @@ while [[ ${_ri} -lt ${#REM_ARGS[@]} ]]; do
         for _snic in "${_s[@]}"; do [[ -n "${_snic}" ]] && _net_test_skip_nics+=("${_snic}"); done
       fi
       ;;
+    --include-mac=*) _cli_inc_macs="${_cli_inc_macs} ${_ra#*=}"; _cli_inc_set=1 ;;
+    --exclude-mac=*) _cli_exc_macs="${_cli_exc_macs} ${_ra#*=}"; _cli_exc_set=1 ;;
+    --include-mac)
+      (( _ri++ )) || true
+      [[ ${_ri} -lt ${#REM_ARGS[@]} ]] && { _cli_inc_macs="${_cli_inc_macs} ${REM_ARGS[${_ri}]}"; _cli_inc_set=1; }
+      ;;
+    --exclude-mac)
+      (( _ri++ )) || true
+      [[ ${_ri} -lt ${#REM_ARGS[@]} ]] && { _cli_exc_macs="${_cli_exc_macs} ${REM_ARGS[${_ri}]}"; _cli_exc_set=1; }
+      ;;
     *) _rem2+=("${_ra}") ;;
   esac
   (( _ri++ )) || true
@@ -120,6 +147,11 @@ if (( ${#_net_test_skip_nics[@]} > 0 )); then
   echo "[INFO] --skip list: ${_net_test_skip_nics[*]}"
 fi
 export _net_test_skip_nics
+# CLI MAC lists override the config defaults for this run (NET019).
+(( _cli_inc_set )) && _net_include_macs="${_cli_inc_macs# }"
+(( _cli_exc_set )) && _net_exclude_macs="${_cli_exc_macs# }"
+[[ -n "${_net_include_macs:-}" ]] && echo "[INFO] include-mac (NET019): ${_net_include_macs}"
+[[ -n "${_net_exclude_macs:-}" ]] && echo "[INFO] exclude-mac (NET019): ${_net_exclude_macs}"
 
 set -- "${REM_ARGS[@]}"
 
@@ -843,11 +875,17 @@ for (( loop_n=1; loop_n<=_loops_this_run; loop_n++ )); do
     done
   fi
 
-  # SKIPPED rows for NICs excluded via --skip (NET011)
+  # SKIPPED rows for NICs excluded via --skip (NET011) or by MAC (NET019)
   if (( ${#excluded_ethArray[@]} > 0 )); then
-    for _ex in "${excluded_ethArray[@]}"; do
+    for _xi in "${!excluded_ethArray[@]}"; do
+      _ex="${excluded_ethArray[_xi]}"
+      case "${excluded_reasonArray[_xi]:-}" in
+        *_exclude_macs*) _tag="excl-mac" ;;
+        *_include_macs*) _tag="not-incl" ;;
+        *)               _tag="--skip"   ;;
+      esac
       printf "%-23s | %10s | %8s | %8s | %18s | %18s | %18s | %18s\n" \
-        "${_ex}(--skip)" "SKIPPED" "-" "-" "-" "-" "-" "-" >> "${_netsum}"
+        "${_ex}(${_tag})" "SKIPPED" "-" "-" "-" "-" "-" "-" >> "${_netsum}"
     done
   fi
 
@@ -860,14 +898,17 @@ echo "[INFO] Main log : ${_netlog}"
 echo "[INFO] Summary  : ${_netsum}"
 echo "[INFO] Pair logs: ${log_root}/net_test_pair*_${_run_ts}.log"
 
-# Append SKIPPED entries for NICs excluded via --skip (NET011).
-# Each excluded NIC gets one entry with verdict=SKIPPED so it appears in the
-# HTML report and result.json, making it visible to reviewers.
+# Append SKIPPED entries for NICs excluded via --skip (NET011) or by MAC (NET019).
+# Each excluded NIC gets one entry with verdict=SKIPPED and its specific reason so
+# it appears in the HTML report and result.json, making it visible to reviewers.
 if (( ${#excluded_ethArray[@]} > 0 )); then
-  for _ex in "${excluded_ethArray[@]}"; do
+  for _xi in "${!excluded_ethArray[@]}"; do
+    _ex="${excluded_ethArray[_xi]}"
+    _exr="${excluded_reasonArray[_xi]:---skip flag (NET011)}"
     _jq_pairs=$(jq \
       --arg name "${_ex}" \
-      '. + [{ name: $name, skip_reason: "--skip flag (NET011)",
+      --arg reason "${_exr}" \
+      '. + [{ name: $name, skip_reason: $reason,
               speeds: [{ speed_mbps: 0, ipv4_ping: "SKIPPED", ipv6_ping: "SKIPPED",
                 throughput: { tcp_fwd_mbps: 0, tcp_rev_mbps: 0,
                               udp_fwd_mbps: 0, udp_rev_mbps: 0 },

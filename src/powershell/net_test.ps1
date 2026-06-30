@@ -65,10 +65,20 @@
     iPerf3_<ev>_n_<od>_<n>of<m>_<type>_spd<spd>_<ts>.log         per-run client (NET013)
     iPerf3_<ev>_n_<od>_<n>of<m>_<type>_spd<spd>_<ts>_server.log  per-run server (NET013)
 
+  NIC SELECTION BY MAC (NET019)
+    -ExcludeMac / $_net_exclude_macs : NICs with these MAC(s) are never tested
+      (management / SSH-lifeline NIC). -IncludeMac / $_net_include_macs : when
+      non-empty, ONLY NICs with these MAC(s) are tested; all others are SKIPPED.
+      Exclude wins over include, and the session/management lifeline (NET012) is
+      always excluded even if its MAC is listed in the include set. MAC matching
+      is case-insensitive and accepts ':' or '-' separators.
+
 .EXAMPLE
   .\net_test.ps1
   .\net_test.ps1 -Loops 3 -Speeds "1000,10000"
   .\net_test.ps1 -Lifeline "Ethernet 4"
+  .\net_test.ps1 -IncludeMac "00-50-56-C0-00-09"
+  .\net_test.ps1 -ExcludeMac "00-E0-4C-68-00-56"
   .\net_test.ps1 -DryRun
 #>
 
@@ -83,6 +93,8 @@ param(
     [int]    $TcpPassPct   = 0,    # TCP pass threshold % of link speed (0 = config)
     [int]    $LinkWaitSec  = 0,    # max wait for link after a speed change (0 = config)
     [string] $Lifeline    = '',    # NIC name(s) to exclude, comma-separated (CLI override; prefer $_net_exclude_macs in config, NET012)
+    [string] $IncludeMac  = '',    # NET019 whitelist: only test NICs with these MAC(s); '' = config _net_include_macs
+    [string] $ExcludeMac  = '',    # NET019 blacklist: never test NICs with these MAC(s); '' = config _net_exclude_macs
     [switch] $DryRun,              # skip actual IP/speed changes and iperf3 runs
     [string] $ConfigFile   = ''    # path to config.ps1 (default: beside this script)
 )
@@ -113,7 +125,7 @@ trap {
     break
 }
 
-$_script_ver                = '00.00.31'
+$_script_ver                = '00.00.32'
 $_requires_function_ps1_api = '00.00.02'
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Write-Host "net_test.ps1 v$_script_ver" -ForegroundColor Cyan
@@ -159,6 +171,10 @@ $cfgLinkWaitSec  = [int]   (Get-CfgVal '_net_link_wait_sec'   30)
 $cfgAutonegWaitSec = [int] (Get-CfgVal '_net_link_wait_autoneg_sec' 90)
 $StrictLifeline  = [int]   (Get-CfgVal '_net_strict_lifeline' 1)
 $cfgExcludeMacs  = [string](Get-CfgVal '_net_exclude_macs'    '')
+$cfgIncludeMacs  = [string](Get-CfgVal '_net_include_macs'    '')   # NET019
+# CLI overrides config for this run (NET019).
+if ($ExcludeMac -ne '') { $cfgExcludeMacs = $ExcludeMac }
+if ($IncludeMac -ne '') { $cfgIncludeMacs = $IncludeMac }
 $Iperf3AutoInst  = [int]   (Get-CfgVal '_net_iperf3_auto_install' 1)
 $Iperf3WingetId  = [string](Get-CfgVal '_net_iperf3_winget_id' 'ar51an.iPerf3')
 $Iperf3ChocoPkg  = [string](Get-CfgVal '_net_iperf3_choco_pkg' 'iperf3')
@@ -498,6 +514,8 @@ if ($_allNics.Count -eq 0) {
 # can outrank the real management NIC).  When the script runs from a local console
 # there is no remote session, so nothing is excluded and every NIC is testable.
 $_excluded = [System.Collections.Generic.List[string]]::new()
+# NET019: per-NIC exclusion reason, surfaced in result.json SKIPPED entries.
+$_skipReason = @{}
 
 # Step 1: resolve MAC addresses from config to NIC names.
 foreach ($rawMac in ($cfgExcludeMacs -split '[,;\s]+' | Where-Object { $_ -ne '' })) {
@@ -507,6 +525,7 @@ foreach ($rawMac in ($cfgExcludeMacs -split '[,;\s]+' | Where-Object { $_ -ne ''
          Select-Object -First 1
     if ($null -ne $a) {
         [void]$_excluded.Add($a.Name)
+        $_skipReason[$a.Name] = 'excluded by _net_exclude_macs (NET012/NET019)'
         Write-Host ("         Excl MAC " + $rawMac.PadRight(17) + ": " + $a.Name) -ForegroundColor DarkGray
     } else {
         Write-Warning "NET012: MAC $rawMac not found on this system -- ignored."
@@ -518,6 +537,7 @@ foreach ($ln in ($Lifeline -split '[,;]+' | Where-Object { $_ -ne '' })) {
     $ln = $ln.Trim()
     if ($ln -ne '' -and -not $_excluded.Contains($ln)) {
         [void]$_excluded.Add($ln)
+        $_skipReason[$ln] = '-Lifeline flag (NET012)'
         Write-Host ("         Excl -Lifeline  : " + $ln) -ForegroundColor DarkGray
     }
 }
@@ -544,6 +564,7 @@ try {
             $nicName = (Get-NetAdapter -InterfaceIndex $own.InterfaceIndex -ErrorAction SilentlyContinue).Name
             if ($null -ne $nicName -and -not $_excluded.Contains($nicName)) {
                 [void]$_excluded.Add($nicName)
+                $_skipReason[$nicName] = 'carries active SSH/RDP session (NET012)'
                 Write-Host ("         Excl (session)  : $nicName  (carries active SSH/RDP session, local $lip)") -ForegroundColor DarkGray
             }
         }
@@ -556,7 +577,9 @@ try {
 # -- Build skip set (NET011) ---------------------------------------------------
 $_skipSet = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 foreach ($s in ($Skip -split '[,;]+' | Where-Object { $_ -ne '' })) {
-    [void]$_skipSet.Add($s.Trim())
+    $_sn = $s.Trim()
+    [void]$_skipSet.Add($_sn)
+    if (-not $_skipReason.ContainsKey($_sn)) { $_skipReason[$_sn] = '-Skip flag (NET011)' }
 }
 foreach ($excl in $_excluded) {
     if ($_skipSet.Contains($excl)) {
@@ -568,6 +591,27 @@ foreach ($excl in $_excluded) {
             Write-Warning "NET012: '$excl' is in the exclusion list and in the test candidate set; removing."
         }
         [void]$_skipSet.Add($excl)
+    }
+}
+
+# -- Include whitelist by MAC (NET019) -----------------------------------------
+# When $_net_include_macs is non-empty, ONLY NICs whose MAC matches are tested;
+# every other NIC is added to the skip set. This runs AFTER the exclusion/skip
+# build above and only ever ADDS to the skip set, so an exclusion or lifeline NIC
+# is never rescued by an include entry (exclusions always win, NET012).
+$_includeMacs = @($cfgIncludeMacs -split '[,;\s]+' |
+                  Where-Object { $_ -ne '' } |
+                  ForEach-Object { ($_ -replace '[-:]', '').ToUpper() })
+if ($_includeMacs.Count -gt 0) {
+    Write-Host ("         Include MAC(s) : " + ($_includeMacs -join ', ') + "  (NET019 whitelist)") -ForegroundColor DarkGray
+    foreach ($nic in $_allNics) {
+        if ($_skipSet.Contains($nic)) { continue }   # already excluded; leave it
+        $mac = ((Get-NetAdapter -Name $nic -ErrorAction SilentlyContinue).MacAddress -replace '[-:]', '').ToUpper()
+        if ($_includeMacs -notcontains $mac) {
+            [void]$_skipSet.Add($nic)
+            $_skipReason[$nic] = 'not in _net_include_macs (NET019)'
+            Write-Host ("         Excl (not-incl) : $nic  (MAC $mac not in include list, NET019)") -ForegroundColor DarkGray
+        }
     }
 }
 
@@ -1771,11 +1815,14 @@ foreach ($u in $_unpairedNics) {
     }
 }
 
-$_skipList = @($Skip -split '[,;]+' | Where-Object { $_ -ne '' } | ForEach-Object { $_.Trim() })
-foreach ($ex in $_skipList) {
+# SKIPPED entries for every excluded candidate NIC, each with its specific reason
+# (NET011 -Skip, NET012 lifeline/management, or NET019 MAC include/exclude), so the
+# result.json and rendered report show why each NIC was not tested.
+foreach ($ex in $_skippedNics) {
+    $_reason = if ($_skipReason.ContainsKey($ex)) { $_skipReason[$ex] } else { 'excluded' }
     $_allPairs += @{
         name        = $ex
-        skip_reason = '-Skip flag (NET011)'
+        skip_reason = $_reason
         speeds      = @(@{ speed_mbps=0; ipv4_ping='SKIPPED'; ipv6_ping='SKIPPED'
                            throughput=@{tcp_fwd_mbps=0;tcp_rev_mbps=0;udp_fwd_mbps=0;udp_rev_mbps=0}
                            verdict='SKIPPED' })

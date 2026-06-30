@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-06-30 07:53 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-06-30 08:06 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -18,14 +18,14 @@ _Generated 2026-06-30 07:53 · regenerate with `python scripts/stats.py > STATUS
 
 | Status | Count |
 | --- | --- |
-| proposed | 109 |
-| implementing | 8 |
+| proposed | 108 |
+| implementing | 9 |
 | implemented | 29 |
 
 ```mermaid
 pie showData title Requirements by status
-    "proposed" : 109
-    "implementing" : 8
+    "proposed" : 108
+    "implementing" : 9
     "implemented" : 29
 ```
 

@@ -98,6 +98,21 @@ setup_session() {
                                  #   ping crosses the link, then restore the MTU.
 : "${_net_jumbo_mtu:=9000}"      # NET018: jumbo MTU to test (bytes); DF payload = MTU-28.
 
+# NET019: select which NICs participate, by MAC address. A MAC is the most
+# stable, OS-independent NIC identity (unlike enpXsY names). Both lists accept
+# multiple entries separated by comma, semicolon, or whitespace; matching is
+# case-insensitive and both ':' and '-' separators are accepted. CLI overrides:
+# --include-mac / --exclude-mac (each overrides the matching list for that run).
+: "${_net_include_macs:=}"       # NET019: whitelist. When non-empty, ONLY NICs whose
+                                 #   MAC matches an entry are tested; all others become
+                                 #   SKIPPED. Empty = every NIC is a candidate.
+: "${_net_exclude_macs:=}"       # NET019 / NET012: blacklist. NICs whose MAC matches an
+                                 #   entry are never tested — use it to pin the management
+                                 #   / SSH-lifeline NIC so net_test never reconfigures it.
+                                 #   Exclude wins over include. Example (single):
+                                 #   '00-E0-4C-68-00-56'  Example (two): '00-E0-4C-68-00-56,
+                                 #   AA-BB-CC-DD-EE-FF'
+
 # ---------- fio Parameters ----------
 # ===== Basis =====
 #     --rw=read      --bs=1m    --iodepth=8   --numjobs=1   --size=1g   --runtime=5
