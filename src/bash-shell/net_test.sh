@@ -27,6 +27,14 @@
 #   - Summary is assembled after all pairs complete (wait)
 #
 # Changelog:
+#   v00.00.17  No silent pair failure: an unhandled error in a backgrounded pair
+#              worker (which runs under set -Eeuo pipefail) used to exit the
+#              subshell with no trace, so the pair vanished from the summary and
+#              rendered as NOT_TESTED — taking that speed's ICMP result with it.
+#              Add an ERR trap (_pair_abort) that records an ERROR entry with the
+#              failing line+command into result.json and the summary, and harden
+#              the optional NET016 counter snapshots so they can never abort the
+#              essential throughput test.
 #   v00.00.16  NET019 fix: tolerate surrounding/embedded quotes in _net_nic_name_regex
 #              and the MAC lists. The `: "${var:='value'}"` config idiom keeps the
 #              inner quotes as literal characters, which silently broke matching
@@ -79,7 +87,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
 fi
 
 export _net_test_version
-: "${_net_test_version:="00.00.16"}"
+: "${_net_test_version:="00.00.17"}"
 
 echo "[INFO] running net_test.sh v${_net_test_version}."
 
@@ -443,6 +451,40 @@ _iperf3_progress() {
   printf "\r  %-78s\r" "" >&2   # clear the progress line
 }
 
+# Record a pair worker's abnormal termination instead of letting it vanish.
+# Pair workers run backgrounded under `set -Eeuo pipefail`, so an unhandled
+# failure exits the subshell with no trace and the pair renders as NOT_TESTED
+# with no reason (and any ICMP result from the in-flight speed is lost, because
+# results are only written at the END of each speed iteration). This ERR-trap
+# handler captures the failing line+command and writes an ERROR entry to the
+# pair's result JSON and summary so the failure is visible and diagnosable.
+# Invoked from a trap set inside _run_pair; relies on bash dynamic scope (set -E)
+# to see that pair's locals (pair_idx, pair, pairlog, pair_sum, pair_json,
+# _netspd, v4_res, v6_res).
+_pair_abort() {
+  local _rc=$? _ln="${1:-?}" _cmd="${2:-?}"
+  trap - ERR   # never recurse if a command below also fails
+  local _why="worker aborted (exit ${_rc}) at line ${_ln}: ${_cmd}"
+  echo "[ERROR] Pair ${pair_idx:-?} (${pair:-?}) ${_why}" >> "${pairlog:-/dev/null}" 2>/dev/null || true
+  _main_log "[Pair ${pair_idx:-?}] ERROR — ${_why}" 2>/dev/null || true
+  if [[ -n "${pair_json:-}" && -f "${pair_json:-}" ]]; then
+    local _ej
+    if _ej=$(jq --argjson speed "${_netspd:-0}" \
+                --arg v4 "${v4_res:-N/A}" --arg v6 "${v6_res:-N/A}" \
+                --arg reason "${_why}" \
+                '.speeds += [{ speed_mbps:$speed, ipv4_ping:$v4, ipv6_ping:$v6,
+                   throughput:{tcp_fwd_mbps:0,tcp_rev_mbps:0,udp_fwd_mbps:0,udp_rev_mbps:0},
+                   verdict:"ERROR", reason:$reason }]' "${pair_json}" 2>/dev/null); then
+      echo "${_ej}" > "${pair_json}"
+    fi
+  fi
+  if [[ -n "${pair_sum:-}" ]]; then
+    printf "%-23s | %10s | %8s | %8s | %18s | %18s | %18s | %18s\n" \
+      "${pair:-pair}(ERROR)" "${_netspd:-?}" "${v4_res:-N/A}" "${v6_res:-N/A}" "-" "-" "-" "-" \
+      >> "${pair_sum}" 2>/dev/null || true
+  fi
+}
+
 # ---------- Per-pair worker ----------
 # Runs in a subshell (called with &).
 # Each pair has its own detail log and a temp summary file.
@@ -461,6 +503,10 @@ _run_pair() {
   # Written incrementally during the speed loop; merged after wait by parent.
   local pair_json="${log_root}/.pair${pair_idx}_data_${_run_ts}.json.tmp"
   jq -n --arg name "$pair" '{ name: $name, speeds: [] }' > "${pair_json}"
+
+  # Surface (don't swallow) an unhandled failure anywhere in this worker.
+  local _netspd="" v4_res="" v6_res=""   # so the handler can reference them safely
+  trap '_pair_abort "${LINENO}" "${BASH_COMMAND}"' ERR
 
   {
     echo "============= Pair ${pair_idx}: ${pair} ============="
@@ -552,8 +598,8 @@ _run_pair() {
     # NET016: snapshot error/drop counters on both NICs BEFORE the runs.
     local _err_before_ev="" _err_before_od=""
     if [[ "${_net_err_counter_check:-1}" == "1" ]]; then
-      _err_before_ev="$(_nic_err_snapshot "ns_${ev}" "${ev}")"
-      _err_before_od="$(_nic_err_snapshot "ns_${od}" "${od}")"
+      _err_before_ev="$(_nic_err_snapshot "ns_${ev}" "${ev}" || true)"
+      _err_before_od="$(_nic_err_snapshot "ns_${od}" "${od}" || true)"
     fi
 
     # iperf3 log filenames include speed so parallel runs don't collide
@@ -645,8 +691,8 @@ _run_pair() {
     local _err_total=0 _err_json="null"
     if [[ "${_net_err_counter_check:-1}" == "1" && -n "${_err_before_ev}" ]]; then
       local _eaft_ev _eaft_od
-      _eaft_ev="$(_nic_err_snapshot "ns_${ev}" "${ev}")"
-      _eaft_od="$(_nic_err_snapshot "ns_${od}" "${od}")"
+      _eaft_ev="$(_nic_err_snapshot "ns_${ev}" "${ev}" || true)"
+      _eaft_od="$(_nic_err_snapshot "ns_${od}" "${od}" || true)"
       read -r _b_ev_rxe _b_ev_txe _b_ev_rxd _b_ev_txd <<< "${_err_before_ev}"
       read -r _b_od_rxe _b_od_txe _b_od_rxd _b_od_txd <<< "${_err_before_od}"
       read -r _a_ev_rxe _a_ev_txe _a_ev_rxd _a_ev_txd <<< "${_eaft_ev}"
