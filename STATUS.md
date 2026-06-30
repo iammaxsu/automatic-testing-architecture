@@ -1,30 +1,30 @@
 # Project Status
 
-_Generated 2026-06-30 07:30 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-06-30 07:53 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
-**Total:** 144
+**Total:** 146
 
 ### By priority
 
 | Priority | Count |
 | --- | --- |
-| Must | 123 |
-| Should | 19 |
+| Must | 124 |
+| Should | 20 |
 | — | 2 |
 
 ### By status
 
 | Status | Count |
 | --- | --- |
-| proposed | 107 |
+| proposed | 109 |
 | implementing | 8 |
 | implemented | 29 |
 
 ```mermaid
 pie showData title Requirements by status
-    "proposed" : 107
+    "proposed" : 109
     "implementing" : 8
     "implemented" : 29
 ```
@@ -38,9 +38,9 @@ pie showData title Requirements by status
 | DOC | 4 | 0 | 4 |
 | DSK | 10 | 0 | 8 |
 | FUN | 7 | 0 | 6 |
-| FWK | 35 | 0 | 28 |
+| FWK | 36 | 0 | 29 |
 | LOG | 25 | 0 | 24 |
-| NET | 17 | 0 | 17 |
+| NET | 18 | 0 | 18 |
 | PWR | 15 | 0 | 1 |
 | SET | 7 | 0 | 4 |
 | SLP | 5 | 0 | 5 |
@@ -106,6 +106,7 @@ pie showData title Requirements by status
 | [FWK027](requirements/FWK027.md) | proposed | No Silent State Mutation in Helper Functions |
 | [FWK032](requirements/FWK032.md) | proposed | In-Test DUT User Notification |
 | [FWK033](requirements/FWK033.md) | proposed | Privilege Precondition Check |
+| [FWK036](requirements/FWK036.md) | proposed | Cross-Language Feature Parity |
 | [LOG001](requirements/LOG001.md) | proposed | Logs Directory Creation |
 | [LOG002](requirements/LOG002.md) | proposed | All Test Output in logs/ |
 | [LOG003](requirements/LOG003.md) | proposed | Log Filename Includes Test Name |
