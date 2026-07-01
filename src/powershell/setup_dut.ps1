@@ -30,8 +30,10 @@
 
     SSH authentication summary:
       - Blank-password account  : steps 3 + 5 allow password-free SSH login out of the box.
-      - Password-protected account: pass -PiSshPublicKey with the Pi's public key; the key is
-        installed in administrators_authorized_keys so SSH never prompts for a password.
+      - Password-protected account: supply the Pi's public key; it is installed in
+        administrators_authorized_keys so SSH never prompts for a password. Easiest is
+        to drop the Pi's id_ed25519.pub next to these scripts (auto-detected, FWK034);
+        or pass -PiSshPublicKeyFile PATH, or -PiSshPublicKey "<inline string>".
 
     This script is intentionally idempotent: running it multiple times is safe.
 
@@ -76,12 +78,24 @@
 
 .PARAMETER PiSshPublicKey
     The SSH public key of the Raspberry Pi controller (contents of ~/.ssh/id_rsa.pub
-    or ~/.ssh/id_ed25519.pub on the Pi).
+    or ~/.ssh/id_ed25519.pub on the Pi), passed inline as a string.
     When provided, the key is appended to C:\ProgramData\ssh\administrators_authorized_keys
     so the Pi can SSH into this DUT without any password, regardless of whether the
     Windows account has a password set.
     Obtain the key on the Pi with: cat ~/.ssh/id_ed25519.pub
     (or id_rsa.pub if using RSA keys)
+    In most cases you do NOT need to paste it: see -PiSshPublicKeyFile below.
+
+.PARAMETER PiSshPublicKeyFile
+    Path to a file containing the Pi controller's public key, instead of pasting
+    it inline with -PiSshPublicKey. Solves the chicken-and-egg problem (the key
+    lives on the Pi, but this script runs on the DUT): on the Pi, copy
+    ~/.ssh/id_ed25519.pub into the SAME folder as setup_dut.ps1 when you deploy
+    the scripts (USB / scp / Ansible). If a SINGLE *.pub file is present next to
+    setup_dut.ps1, it is auto-detected with no argument at all, so a plain
+    '.\setup_dut.ps1' installs the key. Pass this only to point at a file
+    elsewhere or to disambiguate when multiple *.pub files are present.
+    A public key is not secret, so shipping it beside the scripts is safe.
 
 .PARAMETER AnsibleSSH
     When specified, configures PowerShell as the default shell for SSH connections
@@ -106,7 +120,16 @@
     .\setup_dut.ps1 -TestUser "testuser" -TestPassword ""
 
 .EXAMPLE
-    # Password-protected account: install Pi SSH key for passwordless login
+    # Password-protected account, key auto-detected: drop the Pi's id_ed25519.pub
+    # next to setup_dut.ps1, then just run it - the key is picked up automatically.
+    .\setup_dut.ps1 -TestUser "testuser"
+
+.EXAMPLE
+    # Password-protected account: point at the Pi key file explicitly
+    .\setup_dut.ps1 -TestUser "testuser" -PiSshPublicKeyFile "C:\TestAutomation\pi_id_ed25519.pub"
+
+.EXAMPLE
+    # Password-protected account: install Pi SSH key inline for passwordless login
     .\setup_dut.ps1 -TestUser "testuser" -PiSshPublicKey "ssh-ed25519 AAAA...key... pi@raspberrypi"
 
 .EXAMPLE
@@ -134,6 +157,7 @@ param(
     [string]$TestUser                 = "",
     [string]$TestPassword             = "",
     [string]$PiSshPublicKey           = "",
+    [string]$PiSshPublicKeyFile       = "",
     [string]$DevDetectScript          = "",
     [int]   $DevDetectStartupDelaySec = 30,
     [string]$RebootScript             = "",
@@ -184,7 +208,7 @@ if ($Restore) {
 
 # -- Version & shared library --------------------------------------------------
 
-$_script_ver                = '00.00.18'
+$_script_ver                = '00.00.19'
 $_requires_function_ps1_api = '00.00.01'
 
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -223,6 +247,36 @@ if ($DevDetectScript -eq "") {
     if (Test-Path $_siblingDevDetect) {
         $DevDetectScript = $_siblingDevDetect
         Write-Host "         Auto-detected dev_detect.ps1 : $_siblingDevDetect" -ForegroundColor DarkGray
+    }
+}
+
+# -- Resolve the Pi public key (FWK034) ---------------------------------------
+# Chicken-and-egg: this script runs ON the DUT but needs the Raspberry Pi
+# controller's PUBLIC key, which lives on the Pi.  Rather than make the operator
+# paste it by hand, the Pi drops its public key file into the SAME folder it
+# copies the scripts into (USB, scp, Ansible), and setup_dut.ps1 reads it here.
+# Precedence: 1. -PiSshPublicKey (inline string) wins.
+#             2. -PiSshPublicKeyFile PATH (explicit file).
+#             3. A single *.pub file sitting next to this script (auto-detected).
+# A public key is not secret, so shipping it beside the scripts is safe.
+if ($PiSshPublicKey -eq "" -and $PiSshPublicKeyFile -eq "") {
+    $_pubCandidates = @(Get-ChildItem -Path $_script_root -Filter '*.pub' -File -ErrorAction SilentlyContinue)
+    if ($_pubCandidates.Count -eq 1) {
+        $PiSshPublicKeyFile = $_pubCandidates[0].FullName
+        Write-Host "         Auto-detected Pi public key file : $PiSshPublicKeyFile" -ForegroundColor DarkGray
+    } elseif ($_pubCandidates.Count -gt 1) {
+        Write-Warn "Multiple *.pub files next to the script - not guessing which is the Pi key:"
+        $_pubCandidates | ForEach-Object { Write-Host "           $($_.Name)" -ForegroundColor DarkGray }
+        Write-Host "         Pass -PiSshPublicKeyFile to choose one." -ForegroundColor DarkGray
+    }
+}
+# Read the key file (explicit or auto-detected) into $PiSshPublicKey.
+if ($PiSshPublicKey -eq "" -and $PiSshPublicKeyFile -ne "") {
+    if (Test-Path $PiSshPublicKeyFile) {
+        $PiSshPublicKey = ((Get-Content -Path $PiSshPublicKeyFile -Raw) -replace '\r?\n', ' ').Trim()
+        Write-Host "         Loaded Pi public key from        : $PiSshPublicKeyFile" -ForegroundColor DarkGray
+    } else {
+        Write-Warn "PiSshPublicKeyFile not found: $PiSshPublicKeyFile - SSH key install will be skipped."
     }
 }
 
@@ -320,9 +374,10 @@ if ($PiSshPublicKey -ne "") {
     Write-OK "administrators_authorized_keys ACL fixed (SYSTEM + Administrators only)"
     Write-Host "         Test from the Pi: ssh $TestUser@$($env:COMPUTERNAME)"
 } else {
-    Write-Skip "SSH key install skipped (no -PiSshPublicKey supplied)"
+    Write-Skip "SSH key install skipped (no Pi public key supplied or found)"
     Write-Host "         If the account has no password, steps 3+5 already allow passwordless SSH."
-    Write-Host "         If it has a password, pass -PiSshPublicKey `"<content of ~/.ssh/id_ed25519.pub>`""
+    Write-Host "         If it has a password, drop the Pi's id_ed25519.pub next to this script"
+    Write-Host "         (auto-detected), or pass -PiSshPublicKeyFile PATH / -PiSshPublicKey `"<string>`"."
 }
 
 
