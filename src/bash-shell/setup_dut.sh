@@ -40,10 +40,14 @@
 #                               Public key of the Pi controller (contents of
 #                               ~/.ssh/id_ed25519.pub on the Pi). Installed into
 #                               --test-user's authorized_keys (idempotent).
-#                               Auto-detected when omitted: a single *.pub file
-#                               sitting next to this script, else an interactive
-#                               paste prompt when run on a terminal.
-#   --pi-key-file PATH          Same as --pi-key but read the key from a file.
+#                               Auto-detected when omitted: EVERY *.pub file
+#                               sitting next to this script is installed
+#                               (authorized_keys is a list — multiple controllers
+#                               / operators / rotated keys all work in one run);
+#                               else an interactive paste prompt when run on a
+#                               terminal.
+#   --pi-key-file PATH          Same as --pi-key but read the key(s) from a file
+#                               (one key per line; blank/# lines ignored).
 #   --dev-detect-script PATH    Path to dev_detect.sh to register as a boot-time
 #                               systemd service. Default: auto-detect a sibling
 #                               dev_detect.sh next to this script (FWK034).
@@ -64,7 +68,7 @@
 
 set -Eeuo pipefail
 
-_script_ver="00.00.03"
+_script_ver="00.00.04"
 
 # ---------- 0. Root privilege check (FWK033) ----------------------------------
 # MUST be the first executable action, before any other output, so an operator
@@ -117,17 +121,32 @@ fi
 
 _mode="setup"           # setup | restore
 _test_user=""           # empty = auto-detect after parsing (see below)
-_pi_key=""
-_pi_key_source=""       # human-readable origin of the key, for log messages
+_pi_keys=()             # authorized_keys is a LIST — collect every key to install
+_pi_key_source=""       # human-readable origin of the key(s), for log messages
 _dev_detect_script=""
 _dev_detect_delay=30
+
+# Append every non-blank, non-comment line of a key file as one authorized key.
+# A .pub is normally one line, but this also supports a file holding several keys.
+_add_keys_from_file() {
+  local _f="$1" _line
+  if [[ ! -r "${_f}" ]]; then
+    echo "  [WARN] Pi key file not readable: ${_f}" >&2
+    return 0
+  fi
+  while IFS= read -r _line || [[ -n "${_line}" ]]; do
+    [[ -z "${_line//[[:space:]]/}" ]] && continue   # blank line
+    [[ "${_line}" == \#* ]] && continue             # comment
+    _pi_keys+=("${_line}")
+  done < "${_f}"
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --restore)           _mode="restore"; shift ;;
     --test-user)         _test_user="$2"; shift 2 ;;
-    --pi-key)            _pi_key="$2"; _pi_key_source="--pi-key argument"; shift 2 ;;
-    --pi-key-file)       _pi_key="$(cat "$2")"; _pi_key_source="$2"; shift 2 ;;
+    --pi-key)            _pi_keys+=("$2"); _pi_key_source="--pi-key argument"; shift 2 ;;
+    --pi-key-file)       _add_keys_from_file "$2"; _pi_key_source="$2"; shift 2 ;;
     --dev-detect-script) _dev_detect_script="$2"; shift 2 ;;
     --dev-detect-delay)  _dev_detect_delay="$2"; shift 2 ;;
     -h|--help)
@@ -192,36 +211,35 @@ if [[ -z "${_target_home}" ]]; then
   exit 1
 fi
 
-# ---------- Auto-detect the Pi public key (FWK034) -----------------------------
-# Resolve the controller's SSH public key when --pi-key/--pi-key-file was not
+# ---------- Auto-detect the Pi public key(s) (FWK034) --------------------------
+# Resolve the controller's SSH public key(s) when --pi-key/--pi-key-file was not
 # given. Priority:
 #   1. explicit --pi-key / --pi-key-file (handled above)
-#   2. a single *.pub file deployed next to this script (the Pi can drop its
-#      public key into the same folder it copies the scripts into)
+#   2. EVERY *.pub file deployed next to this script — authorized_keys is a list,
+#      so all keys found are installed (the Pi can drop one or more public keys
+#      into the same folder it copies the scripts into; multiple controllers /
+#      operators / rotated keys all work in one run, no need to run once per key)
 #   3. an interactive paste prompt, only when running attached to a terminal
 # If none is found the SSH-key step reports it and continues (see step 3).
-if [[ -z "${_pi_key}" ]]; then
+if (( ${#_pi_keys[@]} == 0 )); then
   shopt -s nullglob
   _pub_candidates=( "${_script_root}"/*.pub )
   shopt -u nullglob
-  if (( ${#_pub_candidates[@]} == 1 )); then
-    _pi_key="$(cat "${_pub_candidates[0]}")"
-    _pi_key_source="${_pub_candidates[0]}"
-    echo "         Auto-detected Pi public key file             : ${_pub_candidates[0]}"
-  elif (( ${#_pub_candidates[@]} > 1 )); then
-    echo "         Multiple *.pub files next to the script — not guessing:"
-    printf '           - %s\n' "${_pub_candidates[@]}"
-    echo "         Pass --pi-key-file to choose one."
+  if (( ${#_pub_candidates[@]} > 0 )); then
+    for _pc in "${_pub_candidates[@]}"; do _add_keys_from_file "${_pc}"; done
+    _pi_key_source="$(IFS=', '; echo "${_pub_candidates[*]}")"
+    echo "         Auto-detected Pi public key file(s): ${_pub_candidates[*]}"
+    echo "         Loaded ${#_pi_keys[@]} key(s) from ${#_pub_candidates[@]} file(s)."
   fi
 
-  if [[ -z "${_pi_key}" && -t 0 ]]; then
+  if (( ${#_pi_keys[@]} == 0 )) && [[ -t 0 ]]; then
     echo
     echo "  No Pi public key supplied and none found next to the script."
     echo "  On the Raspberry Pi controller run:  cat ~/.ssh/id_ed25519.pub"
     echo "  then paste that single line here (or press Enter to skip):"
     read -r -p "  Pi public key> " _pasted || true
     if [[ -n "${_pasted:-}" ]]; then
-      _pi_key="${_pasted}"
+      _pi_keys+=("${_pasted}")
       _pi_key_source="interactive paste"
     fi
   fi
@@ -289,18 +307,25 @@ if [[ -f "${_auth_file}" ]]; then
   _existing_keys="${_existing_keys:-0}"
 fi
 
-if [[ -n "${_pi_key}" ]]; then
+if (( ${#_pi_keys[@]} > 0 )); then
   mkdir -p "${_ssh_dir}"
   chmod 700 "${_ssh_dir}"
   touch "${_auth_file}"
   chmod 600 "${_auth_file}"
 
-  if grep -qF "${_pi_key}" "${_auth_file}" 2>/dev/null; then
-    _skip "Pi SSH public key already authorized (${_pi_key_source}) — nothing to do"
-  else
-    echo "${_pi_key}" >> "${_auth_file}"
-    _ok "Pi SSH public key installed from ${_pi_key_source}"
-  fi
+  # Append each key only if not already present (idempotent), so re-running is
+  # safe and extra keys can be added later without removing existing ones.
+  _added=0
+  _dup=0
+  for _key in "${_pi_keys[@]}"; do
+    if grep -qF "${_key}" "${_auth_file}" 2>/dev/null; then
+      _dup=$(( _dup + 1 ))
+    else
+      echo "${_key}" >> "${_auth_file}"
+      _added=$(( _added + 1 ))
+    fi
+  done
+  _ok "Pi SSH public key(s): ${_added} added, ${_dup} already present (source: ${_pi_key_source})"
 
   chown -R "${_test_user}:${_test_user}" "${_ssh_dir}"
   _ok "ownership/permissions fixed: ${_ssh_dir} (700), authorized_keys (600)"
@@ -625,12 +650,12 @@ echo "  DUT Setup Complete"
 echo "========================================================"
 echo "  Test user         : ${_test_user}"
 echo "  SSH (TCP 22)      : installed + running"
-if [[ -n "${_pi_key}" ]]; then
-  echo "  Pi SSH key        : authorized (${_auth_file}, source: ${_pi_key_source})"
+if (( ${#_pi_keys[@]} > 0 )); then
+  echo "  Pi SSH key(s)     : ${#_pi_keys[@]} authorized (${_auth_file}, source: ${_pi_key_source})"
 elif (( ${_existing_keys:-0} > 0 )); then
-  echo "  Pi SSH key        : already authorized (${_existing_keys} key(s) — left as-is)"
+  echo "  Pi SSH key(s)     : already authorized (${_existing_keys} key(s) — left as-is)"
 else
-  echo "  Pi SSH key        : NOT authorized (pass --pi-key to enable passwordless SSH)"
+  echo "  Pi SSH key(s)     : NOT authorized (pass --pi-key to enable passwordless SSH)"
 fi
 echo "  NOPASSWD sudo     : shutdown/reboot/poweroff/restore/dmidecode/ipmitool for ${_test_user}"
 echo "  Restore helper    : ${_restore_helper}  (auto-called by Pi on test complete)"

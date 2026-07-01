@@ -87,15 +87,18 @@
     In most cases you do NOT need to paste it: see -PiSshPublicKeyFile below.
 
 .PARAMETER PiSshPublicKeyFile
-    Path to a file containing the Pi controller's public key, instead of pasting
-    it inline with -PiSshPublicKey. Solves the chicken-and-egg problem (the key
-    lives on the Pi, but this script runs on the DUT): on the Pi, copy
+    Path to a file containing the Pi controller's public key(s), instead of
+    pasting inline with -PiSshPublicKey. Solves the chicken-and-egg problem (the
+    key lives on the Pi, but this script runs on the DUT): on the Pi, copy
     ~/.ssh/id_ed25519.pub into the SAME folder as setup_dut.ps1 when you deploy
-    the scripts (USB / scp / Ansible). If a SINGLE *.pub file is present next to
-    setup_dut.ps1, it is auto-detected with no argument at all, so a plain
-    '.\setup_dut.ps1' installs the key. Pass this only to point at a file
-    elsewhere or to disambiguate when multiple *.pub files are present.
-    A public key is not secret, so shipping it beside the scripts is safe.
+    the scripts (USB / scp / Ansible).
+    Auto-detection: with NO argument, EVERY *.pub file next to setup_dut.ps1 is
+    read and ALL keys found are installed (authorized_keys is a list) - so
+    multiple Pi controllers, multiple operators, or a rotated old+new key pair
+    all work in a single '.\setup_dut.ps1' run; you do not run it once per key.
+    Pass this only to load a key file that lives elsewhere. The file itself may
+    also contain more than one key (one per line).
+    A public key is not secret, so shipping the file(s) beside the scripts is safe.
 
 .PARAMETER AnsibleSSH
     When specified, configures PowerShell as the default shell for SSH connections
@@ -208,7 +211,7 @@ if ($Restore) {
 
 # -- Version & shared library --------------------------------------------------
 
-$_script_ver                = '00.00.19'
+$_script_ver                = '00.00.20'
 $_requires_function_ps1_api = '00.00.01'
 
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -250,33 +253,46 @@ if ($DevDetectScript -eq "") {
     }
 }
 
-# -- Resolve the Pi public key (FWK034) ---------------------------------------
+# -- Resolve the Pi public key(s) (FWK034) ------------------------------------
 # Chicken-and-egg: this script runs ON the DUT but needs the Raspberry Pi
-# controller's PUBLIC key, which lives on the Pi.  Rather than make the operator
-# paste it by hand, the Pi drops its public key file into the SAME folder it
-# copies the scripts into (USB, scp, Ansible), and setup_dut.ps1 reads it here.
-# Precedence: 1. -PiSshPublicKey (inline string) wins.
-#             2. -PiSshPublicKeyFile PATH (explicit file).
-#             3. A single *.pub file sitting next to this script (auto-detected).
-# A public key is not secret, so shipping it beside the scripts is safe.
-if ($PiSshPublicKey -eq "" -and $PiSshPublicKeyFile -eq "") {
-    $_pubCandidates = @(Get-ChildItem -Path $_script_root -Filter '*.pub' -File -ErrorAction SilentlyContinue)
-    if ($_pubCandidates.Count -eq 1) {
-        $PiSshPublicKeyFile = $_pubCandidates[0].FullName
-        Write-Host "         Auto-detected Pi public key file : $PiSshPublicKeyFile" -ForegroundColor DarkGray
-    } elseif ($_pubCandidates.Count -gt 1) {
-        Write-Warn "Multiple *.pub files next to the script - not guessing which is the Pi key:"
-        $_pubCandidates | ForEach-Object { Write-Host "           $($_.Name)" -ForegroundColor DarkGray }
-        Write-Host "         Pass -PiSshPublicKeyFile to choose one." -ForegroundColor DarkGray
-    }
-}
-# Read the key file (explicit or auto-detected) into $PiSshPublicKey.
-if ($PiSshPublicKey -eq "" -and $PiSshPublicKeyFile -ne "") {
-    if (Test-Path $PiSshPublicKeyFile) {
-        $PiSshPublicKey = ((Get-Content -Path $PiSshPublicKeyFile -Raw) -replace '\r?\n', ' ').Trim()
-        Write-Host "         Loaded Pi public key from        : $PiSshPublicKeyFile" -ForegroundColor DarkGray
+# controller's PUBLIC key(s), which live on the Pi.  Rather than make the operator
+# paste them, the Pi drops its public key file(s) into the SAME folder it copies
+# the scripts into (USB, scp, Ansible), and setup_dut.ps1 reads them here.
+# Precedence: 1. -PiSshPublicKey (inline string) wins (single key).
+#             2. -PiSshPublicKeyFile PATH (explicit file; may hold >1 key line).
+#             3. ALL *.pub files sitting next to this script (auto-detected).
+# authorized_keys is a LIST, so every key found is installed -- multiple Pi
+# controllers / operators / rotated keys all work in one run, no need to run the
+# script once per key. A public key is not secret, so shipping the file(s)
+# beside the scripts is safe.
+$_piKeys = @()
+if ($PiSshPublicKey -ne "") {
+    $_k = $PiSshPublicKey.Trim()
+    if ($_k -ne "") { $_piKeys += $_k }
+} else {
+    $_keyFiles = @()
+    if ($PiSshPublicKeyFile -ne "") {
+        if (Test-Path $PiSshPublicKeyFile) {
+            $_keyFiles += (Resolve-Path $PiSshPublicKeyFile).Path
+        } else {
+            Write-Warn "PiSshPublicKeyFile not found: $PiSshPublicKeyFile - SSH key install will be skipped."
+        }
     } else {
-        Write-Warn "PiSshPublicKeyFile not found: $PiSshPublicKeyFile - SSH key install will be skipped."
+        $_keyFiles = @(Get-ChildItem -Path $_script_root -Filter '*.pub' -File -ErrorAction SilentlyContinue |
+                       Select-Object -ExpandProperty FullName)
+        if ($_keyFiles.Count -gt 0) {
+            Write-Host ("         Auto-detected Pi public key file(s) : " + ($_keyFiles -join ', ')) -ForegroundColor DarkGray
+        }
+    }
+    # Read every non-empty, non-comment line from each file as one key.
+    foreach ($_f in $_keyFiles) {
+        foreach ($_line in (Get-Content -Path $_f)) {
+            $_line = $_line.Trim()
+            if ($_line -ne "" -and -not $_line.StartsWith("#")) { $_piKeys += $_line }
+        }
+    }
+    if ($_keyFiles.Count -gt 0) {
+        Write-Host ("         Loaded " + $_piKeys.Count + " Pi public key(s) from file(s).") -ForegroundColor DarkGray
     }
 }
 
@@ -352,21 +368,27 @@ if (-not (Test-Path $sshConfigPath)) {
 # accounts in the Administrators group.  The file needs strict ACL (SYSTEM + Admins only)
 # or sshd ignores it.
 
-if ($PiSshPublicKey -ne "") {
+if ($_piKeys.Count -gt 0) {
     $authDir  = "C:\ProgramData\ssh"
     $authFile = Join-Path $authDir "administrators_authorized_keys"
 
     if (-not (Test-Path $authDir)) { New-Item -Path $authDir -ItemType Directory -Force | Out-Null }
 
-    # Append the key only if it is not already present (idempotent).
+    # Append each key only if not already present (idempotent), so re-running is
+    # safe and additional keys can be added later without removing existing ones.
     $existing = @()
     if (Test-Path $authFile) { $existing = @(Get-Content $authFile) }
-    if ($existing -notcontains $PiSshPublicKey) {
-        Add-Content -Path $authFile -Value $PiSshPublicKey -Encoding UTF8
-        Write-OK "Pi SSH public key appended to $authFile"
-    } else {
-        Write-Skip "Pi SSH public key already present in $authFile"
+    $_added = 0; $_dup = 0
+    foreach ($_key in $_piKeys) {
+        if ($existing -notcontains $_key) {
+            Add-Content -Path $authFile -Value $_key -Encoding UTF8
+            $existing += $_key
+            $_added++
+        } else {
+            $_dup++
+        }
     }
+    Write-OK "Pi SSH public key(s): $_added added, $_dup already present -> $authFile"
 
     # Strict ACL: remove inherited permissions, grant SYSTEM and Administrators full control.
     # Without this sshd (running as SYSTEM) silently ignores the file.
@@ -843,10 +865,10 @@ if ($RebootScript -ne "" -and (Test-Path $RebootScript)) {
 } else {
     Write-Host "  Task Scheduler    : DUT-Reboot    not configured"
 }
-if ($PiSshPublicKey -ne "") {
-    Write-Host "  Pi SSH key        : installed (administrators_authorized_keys)"
+if ($_piKeys.Count -gt 0) {
+    Write-Host "  Pi SSH key(s)     : $($_piKeys.Count) installed (administrators_authorized_keys)"
 } else {
-    Write-Host "  Pi SSH key        : not installed (ok if account has no password)"
+    Write-Host "  Pi SSH key(s)     : none installed (ok if account has no password)"
 }
 if ($AnsibleSSH) {
     Write-Host "  Ansible SSH       : DefaultShell = PowerShell 5.1"
