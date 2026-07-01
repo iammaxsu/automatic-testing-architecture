@@ -413,7 +413,10 @@ __sanitize_if() {
 }
 
 __move_back_to_root() {
-  local ifn="$(__sanitize_if "$1")" ns="ns_${ifn}"
+  # Split the declaration: `local ifn=... ns="ns_${ifn}"` would expand ${ifn}
+  # before ifn is assigned, aborting under `set -u` (see _nic_err_snapshot).
+  local ifn; ifn="$(__sanitize_if "$1")"
+  local ns="ns_${ifn}"
   if ip netns list 2>/dev/null | grep -q -E "^${ns}\b"; then
     echo "[DEBUG] move-back ${ifn} from ${ns} -> root"
     sudo ip netns exec "${ns}" ip link set dev "${ifn}" down 2>/dev/null || true

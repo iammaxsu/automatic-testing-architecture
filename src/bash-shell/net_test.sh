@@ -27,6 +27,12 @@
 #   - Summary is assembled after all pairs complete (wait)
 #
 # Changelog:
+#   v00.00.18  BUG0037 root cause: _nic_err_snapshot (and __move_back_to_root in
+#              function.sh) declared `local ifn=$2 b=...${ifn}...` in ONE local
+#              statement — ${ifn} is expanded before ifn is assigned, so under
+#              `set -u` it aborted with "ifn: unbound variable", silently killing
+#              every pair worker at the NET016 snapshot before iperf3 ever ran.
+#              Split the declarations so the referenced var is assigned first.
 #   v00.00.17  No silent pair failure: an unhandled error in a backgrounded pair
 #              worker (which runs under set -Eeuo pipefail) used to exit the
 #              subshell with no trace, so the pair vanished from the summary and
@@ -87,7 +93,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
 fi
 
 export _net_test_version
-: "${_net_test_version:="00.00.17"}"
+: "${_net_test_version:="00.00.18"}"
 
 echo "[INFO] running net_test.sh v${_net_test_version}."
 
@@ -323,7 +329,12 @@ _extract_udp_loss() {    # loss percent (without %), or empty
 # NET016: snapshot rx/tx error + drop counters for an interface inside its
 # namespace, driver-independently via /sys.  Prints "rxerr txerr rxdrop txdrop".
 _nic_err_snapshot() {
-  local ns="$1" ifn="$2" b="/sys/class/net/${ifn}/statistics" v
+  # NOTE: split the declaration — a single `local ns=$1 ifn=$2 b=...${ifn}...`
+  # expands ${ifn} while building the `local` argument list, BEFORE ifn is
+  # assigned, so under `set -u` it aborts with "ifn: unbound variable" (this was
+  # silently killing every pair worker at the NET016 snapshot). Assign ifn first.
+  local ns="$1" ifn="$2"
+  local b="/sys/class/net/${ifn}/statistics" v
   local out=""
   for v in rx_errors tx_errors rx_dropped tx_dropped; do
     local n
