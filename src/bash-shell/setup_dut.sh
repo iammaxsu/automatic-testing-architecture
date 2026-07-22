@@ -16,7 +16,9 @@
 #   6. Disables unattended-upgrades automatic reboot
 #   7. Sets GRUB_TIMEOUT=0 and GRUB_RECORDFAIL_TIMEOUT=0 so every boot proceeds
 #      unattended, even after an unclean shutdown (no operator at the console)
-#   8. (Optional) Registers a systemd oneshot service to run dev_detect.sh at boot
+#   8. (Optional) INSTALLS (but does not enable) a systemd oneshot unit for
+#      dev_detect.sh — setup only prepares it; boot-time execution is turned on
+#      by dev_detect.sh itself when you start a detection campaign
 #   9. Ensures Python 3 is present and downloads report.py for HTML rendering
 #  10. Installs dmidecode + ipmitool for BIOS / BMC firmware-version reporting (PWR015)
 #
@@ -68,7 +70,7 @@
 
 set -Eeuo pipefail
 
-_script_ver="00.00.04"
+_script_ver="00.00.05"
 
 # ---------- 0. Root privilege check (FWK033) ----------------------------------
 # MUST be the first executable action, before any other output, so an operator
@@ -538,11 +540,15 @@ if [[ -n "${_dev_detect_script}" ]]; then
     _dev_detect_unit="${_unit_dir}/${_dev_detect_svc}.service"
     _dev_detect_log="${_dev_detect_workdir}/logs/systemd_${_dev_detect_svc}.log"
 
-    if systemctl is-enabled --quiet "${_dev_detect_svc}.service" 2>/dev/null; then
-      _skip "dev-detect.service already installed and enabled — nothing to do"
-    else
-      mkdir -p "$(dirname "${_dev_detect_log}")"
-      cat > "${_dev_detect_unit}" <<EOF
+    # setup_dut INSTALLS the unit file but deliberately does NOT enable it.
+    # "setup" means prepare, not run: no dev_detect executes (and no wall
+    # broadcast appears) merely from running setup_dut.sh and rebooting. The
+    # boot-time execution is enabled by dev_detect.sh itself (autorun_setup) when
+    # the operator actually starts a detection campaign, and disabled again when
+    # the target loop count is reached. Deploying the unit here just makes it
+    # ready and consistent.
+    mkdir -p "$(dirname "${_dev_detect_log}")"
+    cat > "${_dev_detect_unit}" <<EOF
 [Unit]
 Description=dev-detect (run once per boot until done)
 After=network-online.target
@@ -561,11 +567,14 @@ ExecStart=/usr/bin/env bash -lc '${_dev_detect_script}'
 [Install]
 WantedBy=multi-user.target
 EOF
-      systemctl daemon-reload
-      systemctl enable "${_dev_detect_svc}.service" >/dev/null 2>&1
-      _ok "systemd service 'dev-detect.service' registered (boot + ${_dev_detect_delay}s sleep, runs as root)"
-      echo "         Script : ${_dev_detect_script}"
-    fi
+    systemctl daemon-reload
+    # Leave it DISABLED. Also actively disable it, so re-running this script on a
+    # DUT set up by an older setup_dut version (which enabled it) fixes that too.
+    systemctl disable "${_dev_detect_svc}.service" >/dev/null 2>&1 || true
+    _ok "systemd unit 'dev-detect.service' installed — NOT enabled (setup installs; you run dev_detect.sh to test)"
+    echo "         Script : ${_dev_detect_script}"
+    echo "         Enable  it yourself with: sudo systemctl enable dev-detect.service"
+    echo "         (or just run dev_detect.sh — it enables boot persistence for a campaign and self-disables when done)"
   fi
 else
   _skip "dev_detect.sh not configured (not found next to setup_dut.sh)"

@@ -1231,7 +1231,13 @@ sysd_disable_boot_task() {
 autorun_disable_if_done() {
   local cname="${1:?}" svc="${2:?}"
   local base="${_log_dir:-${_tool_path:-$PWD}/logs}"
-  local cfile="${base}/session_state/counter.${cname}"
+  # Prefer the EXACT counter file that counter_init cached this run. Recomputing
+  # the path from _log_dir can point at a different file than where the counter
+  # was actually written (counter_init caches _session_state_dir, and it may run
+  # before log_dir()), so relying on the recomputed path alone silently read an
+  # empty counter → __m=0 → the service was never disabled and dev_detect re-ran
+  # every boot (BUG0038). Fall back to the recomputed path only if unset.
+  local cfile="${_counter_file:-${base}/session_state/counter.${cname}}"
   local __m=0 __n=0
   if [[ -s "$cfile" ]]; then
     # shellcheck disable=SC1090,SC1091

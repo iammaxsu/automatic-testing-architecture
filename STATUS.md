@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-07-01 06:52 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-07-22 09:51 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -151,7 +151,7 @@ pie showData title Requirements by status
 
 ## Bugs
 
-**Total:** 37
+**Total:** 38
 
 ### By status
 
@@ -159,7 +159,7 @@ pie showData title Requirements by status
 | --- | --- |
 | open | 14 |
 | in-progress | 1 |
-| resolved | 10 |
+| resolved | 11 |
 | closed | 10 |
 | invalid | 2 |
 
@@ -167,7 +167,7 @@ pie showData title Requirements by status
 pie showData title Bugs by status
     "open" : 14
     "in-progress" : 1
-    "resolved" : 10
+    "resolved" : 11
     "closed" : 10
     "invalid" : 2
 ```
@@ -176,8 +176,8 @@ pie showData title Bugs by status
 
 | OS | Count |
 | --- | --- |
-| Ubuntu 26.04 LTS | 18 |
-| Ubuntu 24.04 LTS | 15 |
+| Ubuntu 26.04 LTS | 19 |
+| Ubuntu 24.04 LTS | 16 |
 | Windows 11 | 7 |
 | Windows 11 (zh-TW) | 2 |
 | Windows 11 (English / en-US) | 1 |
@@ -211,8 +211,11 @@ pie showData title Bugs by status
 | --- | --- | --- |
 | CMP005 | [BUG0011](bugs/closed/BUG0011-dev-detect-aborts-silently-when-an-upstream-detect.md) | closed |
 | DET009 | [BUG0012](bugs/open/BUG0012-dev-detect-first-run-snapshot-vs-golden-template-n.md) | open |
+| DET012 | [BUG0038](bugs/closed/BUG0038-dev-detect-reruns-every-boot.md) | resolved |
+| DET013 | [BUG0038](bugs/closed/BUG0038-dev-detect-reruns-every-boot.md) | resolved |
 | FUN005 | [BUG0013](bugs/open/BUG0013-log-entries-do-not-include-log-level-prefix.md) | open |
 | FWK011 | [BUG0037](bugs/closed/BUG0037-net-test-local-unbound-var-kills-pair.md) | resolved |
+| FWK013 | [BUG0038](bugs/closed/BUG0038-dev-detect-reruns-every-boot.md) | resolved |
 | FWK025 | [BUG0014](bugs/closed/BUG0014-root-requirement-of-detection-scripts-not-formalis.md) | closed |
 | FWK026 | [BUG0002](bugs/closed/BUG0002-cannot-open-dev-detect-sh-html-report.md) | closed |
 | FWK026 | [BUG0014](bugs/closed/BUG0014-root-requirement-of-detection-scripts-not-formalis.md) | closed |
@@ -275,7 +278,6 @@ _(may indicate untested code paths — worth a review)_
 
 | ID | Status | Title |
 | --- | --- | --- |
-| [DET012](requirements/DET012.md) | implemented | Windows Hardware Baseline Verification |
 | [DSK009](requirements/DSK009.md) | implemented | fio Engine and Write-Consistency Flags Aligned with KDiskMark v3.2.0 |
 | [FUN007](requirements/FUN007.md) | implemented | Windows PowerShell Shared Function Library |
 | [FWK002](requirements/FWK002.md) | implemented | Cross-Language Naming Conventions |
