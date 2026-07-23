@@ -18,8 +18,16 @@
 # variable and passed to ipmitool via -E, never on a command line.
 # IPMITOOL_BIN overrides the binary so the suite can run against a mock.
 #
+# Engine note: after the src/robot/spike evaluation, out-of-band IPMI is
+# driven by wrapping the ipmitool CLI (not python-ipmi / the Kontron
+# robotframework-ipmilibrary, whose native + ipmitool-backend paths both
+# failed to decode this BMC's responses). See docs/architecture.md.
+#
 # Changelog:
 #   00.00.01  Initial version
+#   00.00.02  Phase 1 functional keywords: device id (mc info), IPMI
+#             version / chassis power status, sensor-by-name assertions,
+#             SEL entry-list parsing. All read-only (safe on a live DUT).
 
 import csv
 import os
@@ -43,7 +51,7 @@ class BMCLibrary:
     """Keywords for IPMI sensor / SEL testing against one BMC."""
 
     ROBOT_LIBRARY_SCOPE = "SUITE"
-    ROBOT_LIBRARY_VERSION = "00.00.01"
+    ROBOT_LIBRARY_VERSION = "00.00.02"
 
     def __init__(self, host=None, user=None, interface="lanplus",
                  timeout=60, retries=3, retry_delay=5):
@@ -123,6 +131,44 @@ class BMCLibrary:
             if name not in curr:
                 diffs.append("sensor disappeared: %s (was %s)" % (name, prev_map[name]))
         return diffs
+
+    @staticmethod
+    def _parse_key_value(output):
+        """Parse ``Label : Value`` output (``mc info``, ``chassis status``).
+
+        Returns an ordered dict keyed by the exact label. Indented
+        continuation lines (e.g. the ``Additional Device Support`` list in
+        ``mc info``) have no colon and are skipped.
+        """
+        result = {}
+        for line in output.splitlines():
+            if ":" not in line or line[:1].isspace():
+                continue
+            key, value = line.split(":", 1)
+            key = key.strip()
+            if key:
+                result[key] = value.strip()
+        return result
+
+    @staticmethod
+    def _parse_sel_elist(output):
+        """Parse ``sel elist`` into a list of dicts (empty list if no entries)."""
+        entries = []
+        for line in output.splitlines():
+            line = line.strip()
+            if not line or "|" not in line:
+                continue  # e.g. "SEL has no entries"
+            f = [p.strip() for p in line.split("|")]
+            entries.append({
+                "id": f[0],
+                "date": f[1] if len(f) > 1 else "",
+                "time": f[2] if len(f) > 2 else "",
+                "sensor": f[3] if len(f) > 3 else "",
+                "event": f[4] if len(f) > 4 else "",
+                "direction": f[5] if len(f) > 5 else "",
+                "raw": line,
+            })
+        return entries
 
     # ---------- keywords ----------
 
@@ -253,3 +299,91 @@ class BMCLibrary:
         return {"cycles": cycles, "comm_fails": comm_fails,
                 "sel_start": sel_start, "sel_end": sel_end,
                 "samples_csv": str(csv_path)}
+
+    # ---------- Phase 1 functional keywords (read-only) ----------
+    # Coverage modelled on the openbmc-test-automation and Arm SBMR-ACS IPMI
+    # suites, implemented over the ipmitool CLI. Everything here is read-only
+    # and safe to run against a live DUT: no power control, no config writes.
+
+    def get_bmc_info(self):
+        """Return the Management Controller info dict from ``mc info``.
+
+        Keys are the ipmitool labels, e.g. "Device ID", "Firmware Revision",
+        "IPMI Version", "Manufacturer ID", "Product ID".
+        """
+        info = self._parse_key_value(self.run_ipmitool("mc", "info"))
+        if not info:
+            raise RuntimeError("`mc info` returned no parsable fields")
+        return info
+
+    def bmc_should_be_reachable(self):
+        """Fail unless the BMC answers ``mc info`` with a Device ID."""
+        info = self.get_bmc_info()
+        if "Device ID" not in info:
+            raise AssertionError("BMC responded but `mc info` has no Device ID: %s"
+                                 % ", ".join(info) or "empty")
+        logger.info("BMC reachable: %s / firmware %s / IPMI %s"
+                    % (info.get("Device ID"), info.get("Firmware Revision"),
+                       info.get("IPMI Version")))
+        return info
+
+    def ipmi_version_should_be(self, expected):
+        """Fail unless ``mc info`` reports the given IPMI version (e.g. 2.0)."""
+        actual = self.get_bmc_info().get("IPMI Version")
+        if actual != str(expected):
+            raise AssertionError("IPMI version is %r, expected %r"
+                                 % (actual, str(expected)))
+
+    def get_sensor(self, name):
+        """Return one sensor's dict by name (case-insensitive); fail if absent."""
+        wanted = name.strip().lower()
+        for s in self.get_sensor_readings():
+            if s["name"].lower() == wanted:
+                return s
+        raise AssertionError("sensor %r not found in sensor list" % name)
+
+    def sensor_should_be_present(self, name):
+        """Fail unless a sensor with the given name exists."""
+        self.get_sensor(name)
+
+    def sensor_status_should_be(self, name, expected):
+        """Fail unless the named sensor's status equals ``expected`` (e.g. ok)."""
+        s = self.get_sensor(name)
+        if s["status"] != str(expected):
+            raise AssertionError("sensor %s status is %r (value=%s), expected %r"
+                                 % (name, s["status"], s["value"], str(expected)))
+
+    def sensor_reading_should_be_between(self, name, low, high):
+        """Fail unless the named sensor's numeric reading is within [low, high]."""
+        s = self.get_sensor(name)
+        try:
+            value = float(s["value"])
+        except ValueError:
+            raise AssertionError("sensor %s reads %r (status=%s), not a number"
+                                 % (name, s["value"], s["status"]))
+        if not (float(low) <= value <= float(high)):
+            raise AssertionError("sensor %s = %s %s, outside [%s, %s]"
+                                 % (name, s["value"], s["unit"], low, high))
+
+    def get_chassis_status(self):
+        """Return the chassis status dict from ``chassis status``."""
+        status = self._parse_key_value(self.run_ipmitool("chassis", "status"))
+        if "System Power" not in status:
+            raise RuntimeError("`chassis status` has no System Power field")
+        return status
+
+    def chassis_power_should_be_on(self):
+        """Fail unless ``chassis status`` reports System Power = on."""
+        power = self.get_chassis_status().get("System Power")
+        if power != "on":
+            raise AssertionError("chassis System Power is %r, expected 'on'" % power)
+
+    def get_sel_entries(self):
+        """Return SEL entries as a list of dicts (empty list if none)."""
+        return self._parse_sel_elist(self.run_ipmitool("sel", "elist"))
+
+    def sel_should_be_readable(self):
+        """Fail unless the SEL can be read (``sel info`` returns a count)."""
+        count = self.get_sel_entry_count()
+        logger.info("SEL readable: %d entries" % count)
+        return count
