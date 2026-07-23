@@ -58,6 +58,11 @@ Two independent problems compound:
 - **`function.sh` `autorun_disable_if_done`:** read the counter from the exact
   file `counter_init` cached (`${_counter_file:-<recomputed>}`), so "done" is
   detected reliably and the service is actually disabled.
+- **`dev_detect.sh`:** only call `autorun_setup` (boot persistence) for a
+  multi-loop campaign (`_m > 1`). A single run (`_m == 1`, the default) now runs
+  purely in the foreground and touches no systemd unit — `autorun_setup` exists
+  to protect a multi-boot campaign from missing persistence, a risk that does not
+  apply to a one-shot detection.
 
 ## Verification
 

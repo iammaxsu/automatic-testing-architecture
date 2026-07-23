@@ -58,7 +58,7 @@ fi
 set -Eeuo pipefail
 
 export _dev_detect_version
-: "${_dev_detect_version:="00.00.06"}"
+: "${_dev_detect_version:="00.00.07"}"
 #: "${_dev_detect_requires_config_api_version:=00.00.01}"
 #: "${_dev_detect_requires_function_api_version:=00.00.01}"
 
@@ -986,9 +986,14 @@ _entry_full="$(readlink -f "${BASH_SOURCE[0]:-$0}")"
 # DET013: snapshot mode hands the persistent loop to an external
 # orchestrator -- do not install autorun (it would race with the
 # orchestrator's own reboot/power-cycle control).
-if [[ "${_snapshot_only}" -eq 0 ]]; then
-  # 第一次手動執行時，若沒裝過 systemd autorun，幫自己裝起來
-  # 讓它在每次開機自動再跑一次，直到達到 m 次為止。
+#
+# Only install boot persistence for a MULTI-loop campaign (_m > 1): a single run
+# (_m == 1, the default) completes in one foreground pass and needs no boot
+# service. autorun_setup exists to guard against the operator starting an N-boot
+# campaign without persistence — that risk does not exist for a one-shot run, so
+# a plain `dev_detect.sh` stays purely foreground and touches no systemd unit.
+if [[ "${_snapshot_only}" -eq 0 && "${_m}" -gt 1 ]]; then
+  # 讓它在每次開機自動再跑一次，直到達到 m 次為止（僅多次 campaign 需要）。
   autorun_setup "dev" "${_m}" "${_entry_full}" "${REM_ARGS[@]:-}"
 fi
 
