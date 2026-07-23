@@ -16,7 +16,7 @@ after the code that motivated it changes.
 **Date:** 2026-06-18
 **Status:** Accepted
 **Area:** BMC / IPMI testing (Phase 1); `src/robot/lib/BMCLibrary.py`,
-`src/robot/bmc_ipmi.robot`, `src/bash-shell/bmc_sensor_test.sh`
+`src/robot/ipmi/` (per-area suites), `src/bash-shell/bmc_sensor_test.sh`
 
 ### Context
 

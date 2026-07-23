@@ -28,9 +28,12 @@
 #   00.00.02  Phase 1 functional keywords: device id (mc info), IPMI
 #             version / chassis power status, sensor-by-name assertions,
 #             SEL entry-list parsing. All read-only (safe on a live DUT).
+#   00.00.03  Phase 1 areas: FRU inventory, SDR repository info, LAN
+#             configuration, user list. All read-only.
 
 import csv
 import os
+import re
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -51,7 +54,7 @@ class BMCLibrary:
     """Keywords for IPMI sensor / SEL testing against one BMC."""
 
     ROBOT_LIBRARY_SCOPE = "SUITE"
-    ROBOT_LIBRARY_VERSION = "00.00.02"
+    ROBOT_LIBRARY_VERSION = "00.00.03"
 
     def __init__(self, host=None, user=None, interface="lanplus",
                  timeout=60, retries=3, retry_delay=5):
@@ -169,6 +172,24 @@ class BMCLibrary:
                 "raw": line,
             })
         return entries
+
+    @staticmethod
+    def _parse_fru(output):
+        """Parse ``fru print`` (indented ``Key : Value``) into a dict.
+
+        Unlike ``_parse_key_value`` this keeps indented lines (FRU fields are
+        indented). With multiple FRU devices the last value per key wins,
+        which is fine for the presence/identity checks below.
+        """
+        result = {}
+        for line in output.splitlines():
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            key = key.strip()
+            if key:
+                result[key] = value.strip()
+        return result
 
     # ---------- keywords ----------
 
@@ -387,3 +408,116 @@ class BMCLibrary:
         count = self.get_sel_entry_count()
         logger.info("SEL readable: %d entries" % count)
         return count
+
+    # -- FRU (fru print) --
+
+    def get_fru_info(self, fru_id=0):
+        """Return the FRU inventory dict from ``fru print <id>``."""
+        info = self._parse_fru(self.run_ipmitool("fru", "print", str(fru_id)))
+        if not info:
+            raise RuntimeError("`fru print %s` returned no parsable fields" % fru_id)
+        return info
+
+    def fru_should_be_readable(self, fru_id=0):
+        """Fail unless FRU inventory reads back with a Board or Product field."""
+        info = self.get_fru_info(fru_id)
+        if not any(k.startswith("Board") or k.startswith("Product") for k in info):
+            raise AssertionError("FRU %s has no Board/Product fields: %s"
+                                 % (fru_id, ", ".join(info) or "empty"))
+        return info
+
+    def fru_should_have_identity(self, fru_id=0):
+        """Fail unless at least one FRU identity field is present and non-empty.
+
+        Lenient by design: boards vary in which of Board Mfg / Board Product /
+        Product Manufacturer / Product Name they populate.
+        """
+        info = self.get_fru_info(fru_id)
+        fields = ("Board Mfg", "Board Product", "Product Manufacturer",
+                  "Product Name")
+        present = {f: info[f] for f in fields if info.get(f)}
+        if not present:
+            raise AssertionError("FRU %s has no non-empty identity field (%s)"
+                                 % (fru_id, ", ".join(fields)))
+        logger.info("FRU %s identity: %s" % (fru_id, present))
+        return present
+
+    def fru_field_should_not_be_empty(self, field, fru_id=0):
+        """Fail unless the named FRU field is present and non-empty."""
+        value = self.get_fru_info(fru_id).get(field)
+        if not value:
+            raise AssertionError("FRU field %r is missing or empty (fru %s)"
+                                 % (field, fru_id))
+        return value
+
+    # -- SDR repository (sdr info) --
+
+    def get_sdr_repository_info(self):
+        """Return the SDR repository info dict from ``sdr info``."""
+        info = self._parse_key_value(self.run_ipmitool("sdr", "info"))
+        if not info:
+            raise RuntimeError("`sdr info` returned no parsable fields")
+        return info
+
+    def sdr_repository_should_be_populated(self):
+        """Fail unless the SDR repository reports at least one record."""
+        info = self.get_sdr_repository_info()
+        raw = info.get("Record Count") or info.get("Record count")
+        digits = "".join(c for c in (raw or "") if c.isdigit())
+        if not digits:
+            raise AssertionError("cannot find SDR Record Count in: %s"
+                                 % ", ".join(info))
+        count = int(digits)
+        if count < 1:
+            raise AssertionError("SDR repository is empty (Record Count=%d)" % count)
+        logger.info("SDR repository: %d records" % count)
+        return count
+
+    # -- LAN configuration (lan print) --
+
+    def get_lan_config(self, channel=1):
+        """Return the LAN configuration dict from ``lan print <channel>``."""
+        info = self._parse_key_value(self.run_ipmitool("lan", "print", str(channel)))
+        if not info:
+            raise RuntimeError("`lan print %s` returned no parsable fields" % channel)
+        return info
+
+    def lan_should_have_ip_address(self, channel=1):
+        """Fail unless the BMC LAN channel reports a non-zero IPv4 address."""
+        ip = self.get_lan_config(channel).get("IP Address", "")
+        if not ip or ip == "0.0.0.0":
+            raise AssertionError("BMC LAN channel %s has no IP address (got %r)"
+                                 % (channel, ip))
+        logger.info("BMC LAN channel %s IP: %s" % (channel, ip))
+        return ip
+
+    def lan_mac_should_be_valid(self, channel=1):
+        """Fail unless the BMC LAN channel reports a valid, non-zero MAC."""
+        mac = self.get_lan_config(channel).get("MAC Address", "")
+        if (not re.match(r"^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$", mac)
+                or mac.lower() == "00:00:00:00:00:00"):
+            raise AssertionError("BMC LAN channel %s MAC invalid (got %r)"
+                                 % (channel, mac))
+        return mac
+
+    # -- Users (user list) --
+
+    def get_user_list(self, channel=1):
+        """Return the raw ``user list <channel>`` table."""
+        return self.run_ipmitool("user", "list", str(channel))
+
+    def user_list_should_be_readable(self, channel=1):
+        """Fail unless ``user list`` returns a table with an ID/Name header."""
+        out = self.get_user_list(channel)
+        if "ID" not in out or "Name" not in out:
+            raise AssertionError("`user list %s` did not return a user table:\n%s"
+                                 % (channel, out.strip()[:200]))
+        return out
+
+    def user_should_be_present(self, name, channel=1):
+        """Fail unless a user row with the given name (2nd column) exists."""
+        for line in self.get_user_list(channel).splitlines():
+            cols = line.split()
+            if len(cols) >= 2 and cols[0].isdigit() and cols[1] == name:
+                return
+        raise AssertionError("user %r not found in `user list %s`" % (name, channel))
