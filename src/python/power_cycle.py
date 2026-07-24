@@ -293,8 +293,25 @@ def run_one_cycle(
 
         if not ok:
             rec["verdict"] = NO_BOOT
-            rec["notes"]   = f"DUT did not come online within {args.boot_timeout}s"
-            log.warning("Cycle %d: NO_BOOT", n)
+            # Distinguish a slow-but-booting DUT from one that never powered on:
+            # if it responded to ping at any point it WAS coming up (SSH just
+            # wasn't ready in time → raise the timeout); if it never pinged it
+            # likely did not power on (check the power-button press / DUT state).
+            if getattr(checker, "ping_seen_during_wait", False):
+                rec["no_boot_kind"] = "slow_boot"
+                rec["notes"] = (
+                    f"boot exceeded timeout: DUT responded to ping but SSH was not "
+                    f"ready within {args.boot_timeout}s (slow boot — consider a higher "
+                    f"--boot-timeout / more --calibrate cycles)"
+                )
+            else:
+                rec["no_boot_kind"] = "no_power_on"
+                rec["notes"] = (
+                    f"suspected no power-on: DUT never responded to ping within "
+                    f"{args.boot_timeout}s (check the power-button press / DUT power "
+                    f"state — not a boot-time timeout)"
+                )
+            log.warning("Cycle %d: NO_BOOT (%s)", n, rec["no_boot_kind"])
             if args.debug:
                 log.error("Cycle %d: --debug active — leaving relay/DUT state as-is "
                            "for inspection (NOT forcing off)", n)
@@ -391,6 +408,43 @@ def run_one_cycle(
         time.sleep(1)
 
     return rec
+
+
+def _adapt_boot_timeout(args: argparse.Namespace, rec: dict, result: dict = None) -> None:
+    """Flag a near-miss boot and adaptively raise boot_timeout (NEAR_MISS_FRAC).
+
+    Calibration samples only a few boots and can under-estimate the timeout for a
+    DUT with a bimodal / occasionally-long boot time. When a PASSING cycle boots
+    within NEAR_MISS_FRAC of the current timeout, mark it and raise the timeout to
+    (boot × safety factor) capped at the ceiling, so a later slightly-slower boot
+    is not failed. Disabled when NEAR_MISS_FRAC == 0.
+    """
+    frac = getattr(config, "NEAR_MISS_FRAC", 0)
+    if not frac or rec.get("verdict") != PASS:
+        return
+    bt = rec.get("boot_time_sec")
+    if bt is None:
+        return
+    if bt < frac * args.boot_timeout:
+        return
+    rec["near_miss"] = True
+    ceiling = getattr(args, "boot_ceiling", config.BOOT_CEILING_SEC)
+    new_to = min(round(bt * config.CALIBRATE_SAFETY_FACTOR), ceiling)
+    if new_to > args.boot_timeout:
+        log.warning(
+            "Cycle %d: boot %.1fs is within %.0f%% of boot_timeout %ds — raising "
+            "boot_timeout to %ds (adaptive; ceiling %ds)",
+            rec.get("n"), bt, frac * 100, args.boot_timeout, new_to, ceiling,
+        )
+        args.boot_timeout = new_to
+        if result is not None:
+            result.setdefault("config", {})["boot_timeout_sec"] = new_to
+    else:
+        log.warning(
+            "Cycle %d: boot %.1fs is within %.0f%% of boot_timeout %ds (already at "
+            "ceiling %ds — cannot raise further; DUT boot is close to the limit)",
+            rec.get("n"), bt, frac * 100, args.boot_timeout, ceiling,
+        )
 
 
 def _run_calibrate_phase(
@@ -781,6 +835,8 @@ def main() -> int:
                                 leave_on=(args.leave_on and is_last), result=result)
             result["cycles"].append(rec)
             last_n = n
+
+            _adapt_boot_timeout(args, rec, result)
 
             if rec["verdict"] == PASS:
                 has_had_success   = True

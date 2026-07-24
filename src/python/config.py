@@ -95,8 +95,20 @@ HEALTH_CHECK_INTERVAL = 30  # Seconds between liveness probes during ON_TIME (ph
 # the main test, removing the need to guess platform-specific values.
 #
 # Set CALIBRATE_CYCLES = 0 to disable and use BOOT_TIMEOUT_SEC directly.
-CALIBRATE_CYCLES        = 3    # CLI: --calibrate   0 = disabled
+# A small sample can miss a DUT's slow-boot tail (bimodal / occasionally-long
+# boots), so the calibrated timeout is only a STARTING point — see NEAR_MISS_FRAC.
+CALIBRATE_CYCLES        = 5    # CLI: --calibrate   0 = disabled
 CALIBRATE_SAFETY_FACTOR = 1.5  # boot_timeout = max(calibrate times) × this
+
+# Adaptive boot timeout / near-miss detection.
+# Calibration only samples a few boots and can under-estimate the timeout for a
+# DUT whose boot time is bimodal or occasionally long. During the main test, if a
+# cycle PASSES but its boot time is >= NEAR_MISS_FRAC of the current boot_timeout,
+# it is flagged as a "near miss" and the boot_timeout is raised on the fly to
+# (that boot time × CALIBRATE_SAFETY_FACTOR), capped at the boot ceiling. This
+# self-corrects an under-estimated timeout instead of failing a later, slightly
+# slower boot. Set to 0 to disable adaptive raising (keep the fixed timeout).
+NEAR_MISS_FRAC          = 0.9
 
 # ---------- Shutdown ----------
 SHUTDOWN_SSH_USER = ""      # CLI: --ssh-user   SSH login for graceful OS shutdown.

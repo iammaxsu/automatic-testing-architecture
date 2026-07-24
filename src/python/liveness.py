@@ -31,6 +31,8 @@ class LivenessChecker:
         self.ping_count = ping_count
         self.ping_timeout = ping_timeout
         self.tcp_timeout = tcp_timeout
+        # Set by wait_until_alive(): did the DUT respond to ping during the wait?
+        self.ping_seen_during_wait = False
 
     # ------------------------------------------------------------------
     # Low-level probes
@@ -94,17 +96,26 @@ class LivenessChecker:
         """Poll until DUT is fully alive or timeout expires.
 
         Returns (success, elapsed_seconds).
+
+        Side effect: sets self.ping_seen_during_wait to True if the DUT responded
+        to ping at any point during the wait. On a timeout (returns False) this
+        lets the caller distinguish "the DUT was booting (ping came up) but SSH
+        was not ready in time" from "the DUT never responded at all (likely it
+        did not power on)".
         """
         deadline = time.monotonic() + timeout_sec
+        self.ping_seen_during_wait = False
         log.info("Waiting for DUT %s (max %ds) …", self.host, timeout_sec)
 
         while time.monotonic() < deadline:
             if self.is_alive():
+                self.ping_seen_during_wait = True
                 elapsed = timeout_sec - (deadline - time.monotonic())
                 log.info("DUT alive after %.1f s", elapsed)
                 return True, elapsed
             # Distinguish "ping OK but port not ready yet" for informative logging
             if self.ping():
+                self.ping_seen_during_wait = True
                 log.info("ping OK — TCP port %d not ready yet", self.port)
             else:
                 log.info("no ping response from %s", self.host)

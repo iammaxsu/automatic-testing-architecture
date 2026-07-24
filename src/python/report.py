@@ -412,6 +412,30 @@ def _render(result: dict) -> str:
             f'(verdict: {debug_stop.get("verdict") or "n/a"}) — the run is incomplete '
             f'by design; relay/DUT state was left untouched for inspection.'
         )
+    # Near-miss boots: PASSed but boot time was close to the timeout (the timeout
+    # may have been auto-raised). Surfacing them warns that the timeout was tight.
+    near_miss = [c for c in cycles if c.get("near_miss")]
+    if near_miss:
+        nm_cycles = ", ".join(str(c.get("n")) for c in near_miss[:20])
+        more = "" if len(near_miss) <= 20 else f" (+{len(near_miss) - 20} more)"
+        warnings.append(
+            f'{len(near_miss)} cycle(s) booted close to the boot timeout '
+            f'(cycles {nm_cycles}{more}). The boot timeout was raised automatically '
+            f'as this happened, but the DUT boot time is near the limit — consider a '
+            f'higher --boot-timeout / more --calibrate cycles, or investigate why some '
+            f'boots are slow.'
+        )
+    # NO_BOOT that never even pinged: likely a failed power-on, not a slow boot.
+    no_power = [c for c in cycles if c.get("no_boot_kind") == "no_power_on"]
+    if no_power:
+        np_cycles = ", ".join(str(c.get("n")) for c in no_power[:20])
+        more = "" if len(no_power) <= 20 else f" (+{len(no_power) - 20} more)"
+        warnings.append(
+            f'{len(no_power)} NO_BOOT cycle(s) never responded to ping at all '
+            f'(cycles {np_cycles}{more}) — this looks like the DUT did not power on '
+            f'(check the power-button press / relay / DUT power state), NOT a '
+            f'boot-time timeout. Raising --boot-timeout will not help these.'
+        )
     warning_banners = "".join(
         f'<div class="warning-banner">{w}</div>' for w in warnings
     )
