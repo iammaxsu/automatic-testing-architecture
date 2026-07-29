@@ -1,17 +1,17 @@
 # Project Status
 
-_Generated 2026-06-08 02:06 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-07-29 09:23 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
-**Total:** 135
+**Total:** 136
 
 ### By priority
 
 | Priority | Count |
 | --- | --- |
 | Must | 118 |
-| Should | 15 |
+| Should | 16 |
 | — | 2 |
 
 ### By status
@@ -20,13 +20,13 @@ _Generated 2026-06-08 02:06 · regenerate with `python scripts/stats.py > STATUS
 | --- | --- |
 | proposed | 107 |
 | implementing | 3 |
-| implemented | 25 |
+| implemented | 26 |
 
 ```mermaid
 pie showData title Requirements by status
     "proposed" : 107
     "implementing" : 3
-    "implemented" : 25
+    "implemented" : 26
 ```
 
 ### By section
@@ -39,7 +39,7 @@ pie showData title Requirements by status
 | DSK | 10 | 0 | 8 |
 | FUN | 7 | 0 | 6 |
 | FWK | 34 | 0 | 28 |
-| LOG | 24 | 0 | 24 |
+| LOG | 25 | 0 | 24 |
 | NET | 13 | 0 | 13 |
 | PWR | 14 | 0 | 1 |
 | SET | 6 | 0 | 4 |

@@ -107,8 +107,12 @@ export IPMI_PASSWORD   # consumed by ipmitool -E; never on the command line
 DURATION_S="$(awk -v h="${DURATION_HOURS}" 'BEGIN{ printf "%d", h*3600 }')"
 
 # ---------- Session artefacts ----------
+# Per-DUT, per-session directory (LOG025 + LOG023): logs/<dut>/bmc_sensor_<ts>/
+# so runs never overwrite and multiple DUTs stay distinguishable. The <dut>
+# component is filesystem-safe (IPv6 ':' and '/' -> '_').
 SESSION_TS="$(date +%Y%m%dT%H%M%S)"
-SESSION_DIR="${OUT_BASE}/bmc_sensor_${SESSION_TS}"
+_dut_safe="${BMC_HOST//[:\/]/_}"
+SESSION_DIR="${OUT_BASE}/${_dut_safe}/bmc_sensor_${SESSION_TS}"
 mkdir -p "${SESSION_DIR}" || { echo "[FATAL] cannot create ${SESSION_DIR}" >&2; exit 2; }
 
 SAMPLES_CSV="${SESSION_DIR}/samples.csv"

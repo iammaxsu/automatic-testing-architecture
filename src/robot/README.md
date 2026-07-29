@@ -18,10 +18,12 @@ workstation / vserver) against a DUT's BMC over the network.
 cd ~/automatic-testing-architecture
 source .venv/bin/activate                 # see "One-time setup" if this fails
 export IPMI_PASSWORD='<bmc-password>'
-robot -v BMC_HOST:10.0.0.124 -d logs/ipmi src/robot/ipmi/
+./src/robot/run.sh -H 10.0.0.124          # read-only IPMI suite
 ```
 
-Then open `logs/ipmi/report.html`.
+`run.sh` prints the output directory and writes to
+`logs/<dut>/<session>/report.html` — open that. (See "Output layout" below;
+each run gets its own directory, so nothing is overwritten.)
 
 ---
 
@@ -59,16 +61,23 @@ The read-only areas are safe on a DUT that is in use. `power.robot` (power
 control) is **gated** — its tests SKIP unless you enable them (see below), so
 the default run never disrupts the DUT.
 
+Use `run.sh` — it builds a per-DUT, per-session output directory (see
+"Output layout") so runs never overwrite each other:
+
 ```bash
 # read-only areas + gated power (power SKIPS unless enabled) = 18 tests
-robot -v BMC_HOST:10.0.0.124 -d logs/ipmi src/robot/ipmi/
+./src/robot/run.sh -H 10.0.0.124
 
 # one area, by file
-robot -v BMC_HOST:10.0.0.124 -d logs/ipmi src/robot/ipmi/lan.robot
+./src/robot/run.sh -H 10.0.0.124 -s src/robot/ipmi/lan.robot
 
-# one area, by tag (across the suite)
-robot -v BMC_HOST:10.0.0.124 --include fru -d logs/ipmi src/robot/ipmi/
+# one area, by tag (pass-through robot args go after --)
+./src/robot/run.sh -H 10.0.0.124 -- --include fru
 ```
+
+Raw `robot` still works if you prefer — just pass your own `-d` so you do not
+overwrite a previous run, e.g.
+`robot -v BMC_HOST:10.0.0.124 -d logs/10.0.0.124/manual src/robot/ipmi/`.
 
 Areas / tags: `device-id`, `sensor`, `sel`, `chassis`, `fru`, `sdr`, `lan`, `user`, `power` (gated).
 
@@ -94,8 +103,8 @@ gated off by default — every test SKIPS unless you pass
 sweep. Run it deliberately, against a DUT that can tolerate a reboot:
 
 ```bash
-robot -v BMC_HOST:10.0.0.124 -v POWER_TESTS_ENABLED:True \
-      -d logs/power src/robot/ipmi/power.robot
+./src/robot/run.sh -H 10.0.0.124 -s src/robot/ipmi/power.robot -- \
+    -v POWER_TESTS_ENABLED:True -v DUT_HOST:<dut-os-ip> -v POWER_CYCLES:1
 ```
 
 Optional overrides:
@@ -133,6 +142,24 @@ The report header shows the **BMC identity** captured at suite setup — host,
 firmware revision, IPMI version, manufacturer and product — so you can always
 tell which BMC/firmware a run tested. The bash soak records the same firmware
 revision in its `result.json` (`bmc_firmware`).
+
+### Output layout (LOG025)
+
+`run.sh` writes each run to its own directory, keyed by DUT and session:
+
+```
+logs/
+└── 10.0.0.124/                 # <dut>  (BMC host/IP; ':' and '/' -> '_')
+    ├── 20260729T142530/        # <session_id>  (ISO 8601 basic start time)
+    │   ├── report.html
+    │   ├── log.html
+    │   └── output.xml
+    └── 20260729T161004/        # a later run — the earlier one is untouched
+```
+
+So re-running the same suite never overwrites a prior result, and different
+DUTs land in different top-level folders. The bash soak follows the same
+convention: `logs/<dut>/bmc_sensor_<session>/`.
 
 ---
 
