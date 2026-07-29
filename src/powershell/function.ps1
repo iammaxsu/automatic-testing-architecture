@@ -17,7 +17,7 @@ Set-StrictMode -Version Latest
 
 # -- Version -------------------------------------------------------------------
 
-$_function_ps1_api = '00.00.04'
+$_function_ps1_api = '00.00.05'
 
 # -- 1. Console output helpers -------------------------------------------------
 
@@ -477,4 +477,178 @@ function Ensure-Iperf3 {
         Write-Warning "iperf3 download/extract failed: $($_.Exception.Message)"
     }
     return $null
+}
+
+# ============================================================================
+# Memory inventory & usability verification (DET002 / BUG0039)
+# ============================================================================
+# A DIMM can be POPULATED but not USABLE: if the memory controller fails to
+# train it, SPD/SMBIOS still reports the module while the OS never gets the
+# memory. Windows surfaces this natively in Settings > System > About as
+# "192 GB installed (128 GB usable)". The two CIM sources map exactly:
+#   installed = sum of Win32_PhysicalMemory.Capacity      (SPD/SMBIOS view)
+#   usable    = Win32_ComputerSystem.TotalPhysicalMemory  (what the OS can use)
+# Comparing them catches a populated-but-untrained DIMM that a single-source
+# check would call healthy. Mirrors mem_usability_check() in function.sh
+# (FWK036 cross-language parity).
+
+function Get-MemoryInstalledBytes {
+    try {
+        $dimms = @(Get-CimInstance Win32_PhysicalMemory -ErrorAction Stop |
+                   Where-Object { $_.Capacity -gt 0 })
+        if ($dimms.Count -eq 0) { return $null }
+        $sum = 0
+        foreach ($d in $dimms) { $sum += [uint64]$d.Capacity }
+        return [uint64]$sum
+    } catch { return $null }
+}
+
+function Get-MemoryUsableBytes {
+    try {
+        $t = (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).TotalPhysicalMemory
+        if ($null -eq $t -or $t -le 0) { return $null }
+        return [uint64]$t
+    } catch { return $null }
+}
+
+function Get-MemoryDimmInfo {
+    try {
+        return @(Get-CimInstance Win32_PhysicalMemory -ErrorAction Stop |
+                 Where-Object { $_.Capacity -gt 0 })
+    } catch { return @() }
+}
+
+function Format-GiB {
+    param([Nullable[uint64]]$Bytes)
+    if ($null -eq $Bytes) { return 'N/A' }
+    return ('{0:N1}' -f ($Bytes / 1GB))
+}
+
+# DET002 usability verdict. Returns a PSCustomObject:
+#   Result (Pass|Fail|UNKNOWN), InstalledBytes, UsableBytes, DimmCount,
+#   GapBytes, ThresholdBytes, Reason
+function Get-MemoryUsability {
+    $installed = Get-MemoryInstalledBytes
+    $usable    = Get-MemoryUsableBytes
+    $dimms     = Get-MemoryDimmInfo
+    $count     = $dimms.Count
+
+    if ($null -eq $installed -or $null -eq $usable) {
+        return [pscustomobject]@{
+            Result         = 'UNKNOWN'
+            InstalledBytes = $installed
+            UsableBytes    = $usable
+            DimmCount      = $count
+            GapBytes       = $null
+            ThresholdBytes = $null
+            Reason         = 'Win32_PhysicalMemory or Win32_ComputerSystem unavailable - cannot verify DIMM usability (not a pass)'
+        }
+    }
+
+    $gap = 0
+    if ($installed -gt $usable) { $gap = [uint64]($installed - $usable) }
+
+    # Threshold: normal firmware/OS reservation must not trip this, but a whole
+    # missing DIMM must. max(3% of installed, 2 GiB, half the smallest DIMM).
+    $threshold = [uint64]($installed * 0.03)
+    $floor2GiB = [uint64](2 * 1GB)
+    if ($floor2GiB -gt $threshold) { $threshold = $floor2GiB }
+    $smallest = ($dimms | Measure-Object -Property Capacity -Minimum).Minimum
+    if ($smallest) {
+        $halfDimm = [uint64]($smallest / 2)
+        if ($halfDimm -gt $threshold) { $threshold = $halfDimm }
+    }
+
+    if ($gap -gt $threshold) {
+        $result = 'Fail'
+        $reason = ("installed {0} GiB across {1} DIMM(s) but only {2} GiB usable - {3} GiB missing (> {4} GiB tolerance): one or more populated DIMMs were not trained/enabled (defective DIMM, slot, or seating)" -f `
+            (Format-GiB $installed), $count, (Format-GiB $usable), (Format-GiB $gap), (Format-GiB $threshold))
+    } else {
+        $result = 'Pass'
+        $reason = ("installed {0} GiB across {1} DIMM(s), {2} GiB usable - {3} GiB reserved, within {4} GiB tolerance" -f `
+            (Format-GiB $installed), $count, (Format-GiB $usable), (Format-GiB $gap), (Format-GiB $threshold))
+    }
+
+    return [pscustomobject]@{
+        Result         = $result
+        InstalledBytes = $installed
+        UsableBytes    = $usable
+        DimmCount      = $count
+        GapBytes       = $gap
+        ThresholdBytes = $threshold
+        Reason         = $reason
+    }
+}
+
+# ============================================================================
+# System configuration inventory (FWK037)
+# ============================================================================
+# Best-effort snapshot of the DUT configuration so every test's report is
+# self-describing. Informational only - never changes a verdict; a missing
+# source degrades to N/A. Mirrors collect_system_info() in function.sh.
+
+$script:_SysInfoCache = $null
+
+function Get-SystemInfo {
+    param([switch]$Refresh)
+    if ($script:_SysInfoCache -and -not $Refresh) { return $script:_SysInfoCache }
+
+    $os = $null; $cs = $null; $bios = $null; $bb = $null; $csp = $null; $cpus = @()
+    try { $os   = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop } catch {}
+    try { $cs   = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop } catch {}
+    try { $bios = Get-CimInstance Win32_BIOS -ErrorAction Stop } catch {}
+    try { $bb   = Get-CimInstance Win32_BaseBoard -ErrorAction Stop } catch {}
+    try { $csp  = Get-CimInstance Win32_ComputerSystemProduct -ErrorAction Stop } catch {}
+    try { $cpus = @(Get-CimInstance Win32_Processor -ErrorAction Stop) } catch {}
+
+    $mem = Get-MemoryUsability
+
+    $cpuName = if ($cpus.Count -gt 0) { ($cpus | Select-Object -First 1).Name } else { $null }
+    $sockets = if ($cpus.Count -gt 0) { $cpus.Count } else { $null }
+    $cores   = if ($cpus.Count -gt 0) { ($cpus | Measure-Object -Property NumberOfCores -Sum).Sum } else { $null }
+    $logical = if ($cpus.Count -gt 0) { ($cpus | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum } else { $null }
+
+    $script:_SysInfoCache = [pscustomobject]@{
+        hostname             = $env:COMPUTERNAME
+        os                   = if ($os) { $os.Caption } else { $null }
+        os_version           = if ($os) { $os.Version } else { $null }
+        product              = if ($csp) { $csp.Name } else { $null }
+        baseboard            = if ($bb) { $bb.Product } else { $null }
+        serial               = if ($bios) { $bios.SerialNumber } else { $null }
+        bios_version         = if ($bios) { ($bios.SMBIOSBIOSVersion) } else { $null }
+        cpu_model            = $cpuName
+        cpu_sockets          = $sockets
+        cpu_cores_total      = $cores
+        cpu_logical          = $logical
+        memory               = [pscustomobject]@{
+            installed_bytes      = $mem.InstalledBytes
+            usable_bytes         = $mem.UsableBytes
+            dimm_populated_count = $mem.DimmCount
+            gap_bytes            = $mem.GapBytes
+            result               = $mem.Result
+            reason               = $mem.Reason
+        }
+    }
+    return $script:_SysInfoCache
+}
+
+function Get-SystemInfoText {
+    $i = Get-SystemInfo
+    $v = { param($x) if ($null -eq $x -or "$x" -eq '') { 'N/A' } else { "$x" } }
+    $memLine = ('installed {0} GiB across {1} DIMM(s), usable {2} GiB  [{3}]' -f `
+        (Format-GiB $i.memory.installed_bytes), (& $v $i.memory.dimm_populated_count),
+        (Format-GiB $i.memory.usable_bytes), $i.memory.result)
+    @(
+        '========== System configuration (FWK037) =========='
+        ('Hostname     : {0}' -f (& $v $i.hostname))
+        ('OS           : {0} ({1})' -f (& $v $i.os), (& $v $i.os_version))
+        ('Product      : {0}' -f (& $v $i.product))
+        ('Baseboard    : {0}' -f (& $v $i.baseboard))
+        ('Serial       : {0}' -f (& $v $i.serial))
+        ('BIOS         : {0}' -f (& $v $i.bios_version))
+        ('CPU          : {0}' -f (& $v $i.cpu_model))
+        ('CPU topology : sockets={0} cores={1} logical={2}' -f (& $v $i.cpu_sockets), (& $v $i.cpu_cores_total), (& $v $i.cpu_logical))
+        ('Memory       : {0}' -f $memLine)
+        '==================================================='
+    ) -join "`r`n"
 }

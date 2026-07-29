@@ -58,7 +58,7 @@ fi
 set -Eeuo pipefail
 
 export _dev_detect_version
-: "${_dev_detect_version:="00.00.07"}"
+: "${_dev_detect_version:="00.00.08"}"
 #: "${_dev_detect_requires_config_api_version:=00.00.01}"
 #: "${_dev_detect_requires_function_api_version:=00.00.01}"
 
@@ -105,7 +105,7 @@ trap 'fix_log_permissions "${_log_dir:-}" deep' EXIT
 
 # ---- API version check ----
 : "${_requires_config_api:=00.00.01}"
-: "${_requires_function_api:=00.00.02}"
+: "${_requires_function_api:=00.00.05}"
 check_api_versions "dev_detect.sh" "${_requires_config_api}" "${_requires_function_api}"
 
 #_function_require_versions "${_dev_detect_test_name}" "${_dev_detect_requires_config_api_version}" "${_dev_detect_requires_function_api_version}" "${_dev_detect_api_version}"
@@ -380,6 +380,15 @@ detect_ram() {
   if command -v free >/dev/null 2>&1; then
     printf 'Total: %s\n' "$(free -h | awk '/^Mem:/{print $2}')"
   fi
+
+  # DET002/BUG0039: installed (DMI/SPD) vs usable (OS). A DIMM that failed
+  # training still shows up as populated below, so print both totals and the
+  # verdict -- "Populated: 6" alone would hide 2 unusable modules.
+  local _memchk _memres _memreason
+  _memchk="$(mem_usability_check)"
+  _memres="${_memchk%%|*}"
+  _memreason="$(printf '%s' "${_memchk}" | cut -d'|' -f7-)"
+  printf 'Usability: %s — %s\n' "${_memres}" "${_memreason}"
 
   if ! command -v dmidecode >/dev/null 2>&1; then
     echo "dmidecode: not found; cannot list slots/speed/voltage"
@@ -807,6 +816,7 @@ pcie_gpu_scalar() {
 _DEV_DETECT_COMPONENTS=(
   cpu_model
   memory_total_gb
+  memory_usable
   nic_model_counts
   usb_passmark_count
   storage_model_bus_counts
@@ -836,10 +846,42 @@ dev_detect_component_check() {
   _component_golden["${name}"]="${golden}"
 }
 
+# DET002/BUG0039: an INTRINSIC component verdict -- decided by the check itself,
+# not by comparing against a golden. A populated-but-untrained DIMM must FAIL on
+# the very first run, and would be invisible to golden comparison if the golden
+# were captured while already faulty.
+dev_detect_component_set() {
+  local name="$1" result="$2" current="$3"
+  _component_result["${name}"]="${result}"
+  _component_current["${name}"]="${current}"
+  _component_golden["${name}"]=""
+}
+
+# DET002: cross-check DMI-populated memory against OS-usable memory.
+memory_usable_check() {
+  local chk res reason inst use cnt
+  chk="$(mem_usability_check)"
+  res="${chk%%|*}"
+  inst="$(printf '%s' "${chk}" | cut -d'|' -f2)"
+  use="$(printf '%s'  "${chk}" | cut -d'|' -f3)"
+  cnt="$(printf '%s'  "${chk}" | cut -d'|' -f4)"
+  reason="$(printf '%s' "${chk}" | cut -d'|' -f7-)"
+
+  local inst_h="?" use_h="?"
+  [[ -n "${inst}" ]] && inst_h="$(mem_bytes_to_gib "${inst}")"
+  [[ -n "${use}"  ]] && use_h="$(mem_bytes_to_gib "${use}")"
+
+  echo "[RAM] usability: ${res} — ${reason}"
+  # The scalar is the observable configuration, so it is also comparable/loggable.
+  dev_detect_component_set memory_usable "${res}" \
+    "installed=${inst_h}GiB usable=${use_h}GiB dimms=${cnt:-?}"
+}
+
 collect_component_scalars() {
   _component_result=(); _component_current=(); _component_golden=()
   dev_detect_component_check cpu_model               "$(cpu_model_scalar)"
   dev_detect_component_check memory_total_gb          "$(memory_total_gb_scalar)"
+  memory_usable_check
   dev_detect_component_check nic_model_counts         "$(nic_model_counts_scalar)"
   dev_detect_component_check usb_passmark_count       "$(usb_passmark_count_scalar)"
   dev_detect_component_check storage_model_bus_counts "$(storage_model_bus_counts_scalar)"
@@ -847,12 +889,14 @@ collect_component_scalars() {
 }
 
 # DET013: precedence is Fail > INIT > Pass, same rule as the overall verdict.
+# UNKNOWN (DET002: the usability check could not run because dmidecode was
+# unavailable) rolls up like INIT -- it must never be reported as a silent Pass.
 component_rollup_result() {
   local has_fail=0 has_init=0 name
   for name in "${_DEV_DETECT_COMPONENTS[@]}"; do
     case "${_component_result[${name}]:-}" in
-      Fail) has_fail=1 ;;
-      INIT) has_init=1 ;;
+      Fail)            has_fail=1 ;;
+      INIT|UNKNOWN)    has_init=1 ;;
     esac
   done
   if   [[ "${has_fail}" -eq 1 ]]; then echo "Fail"
@@ -901,6 +945,10 @@ collect_inventory_snapshot() {
     printf 'Host: %s\n'   "$(hostname)"
     printf 'Kernel: %s\n' "$(uname -r)"
   } | tee -a "$out"
+
+  # FWK037: system configuration inventory, so the snapshot/report is
+  # self-describing (which CPU / how much RAM produced these results).
+  collect_system_info | tee -a "$out"
 
   # 每個 detect_* 都鏡寫到檔案 + 螢幕
   detect_cpu           | tee -a "$out"

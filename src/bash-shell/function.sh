@@ -8,7 +8,7 @@
 set -Eeuo pipefail
 
 export _function_api_version
-: "${_function_api_version:="00.00.04"}"
+: "${_function_api_version:="00.00.05"}"
 
 # ---------- API version utilities ----------
 _version_ge() {
@@ -2236,6 +2236,14 @@ emit_result_json() {
   fi
   _os_kernel="$(uname -r 2>/dev/null || echo unknown)"
 
+  # FWK037: system configuration inventory, so every test's result.json records
+  # which hardware produced it. Best-effort: fall back to an empty object.
+  local _sysinfo_json
+  _sysinfo_json="$(system_info_json 2>/dev/null || true)"
+  if ! echo "${_sysinfo_json}" | jq . >/dev/null 2>&1; then
+    _sysinfo_json='{}'
+  fi
+
   # Make sure output dir exists
   local _out_dir
   _out_dir="$(dirname "${_output}")"
@@ -2243,6 +2251,7 @@ emit_result_json() {
 
   # Build the JSON using jq
   jq -n \
+    --argjson sysinfo    "${_sysinfo_json}" \
     --arg     schema_v   "${_schema_version}" \
     --arg     t_name     "${_test_name}" \
     --arg     t_version  "${_test_version}" \
@@ -2291,6 +2300,7 @@ emit_result_json() {
           completed: $n
         }
       },
+      system_info: $sysinfo,
       verdict: $verdict,
       summary: $summary,
       details: $details
@@ -2298,4 +2308,267 @@ emit_result_json() {
 
   echo "[INFO] emit_result_json: wrote ${_output}"
   return 0
+}
+
+# ============================================================================
+# Memory inventory & usability verification (DET002 / BUG0039)
+# ============================================================================
+# A DIMM can be POPULATED but not USABLE: if the memory controller fails to
+# train it, SPD/DMI still reports the module (so `dmidecode` lists it) while the
+# OS never gets the memory. Observed on a real DUT: 6x32GB installed, dmidecode
+# shows 6 populated slots, but /proc/meminfo reports only ~128GB (and the BIOS
+# setup screen agrees). Windows shows the same thing natively as
+# "192 GB installed (128 GB usable)". Trusting the DMI view alone would call
+# that machine healthy, so we cross-check the two totals.
+
+# Sum of populated DIMM sizes from DMI/SPD, in bytes. Empty output if dmidecode
+# is unavailable/unreadable (caller must treat that as UNKNOWN, never as 0).
+mem_installed_bytes() {
+  command -v dmidecode >/dev/null 2>&1 || return 1
+  LANG=C dmidecode -t memory 2>/dev/null | awk '
+    /^[ \t]*Size:/ {
+      line=$0; sub(/^[ \t]*Size:[ \t]*/,"",line); sub(/\r$/,"",line)
+      if (line ~ /No Module Installed|Not Installed|Unknown/) next
+      n=line+0                      # leading number, e.g. "32 GB" -> 32
+      if (n <= 0) next
+      if      (line ~ /[Tt]B/) bytes = n * 1024 * 1024 * 1024 * 1024
+      else if (line ~ /[Gg]B/) bytes = n * 1024 * 1024 * 1024
+      else if (line ~ /[Mm]B/) bytes = n * 1024 * 1024
+      else if (line ~ /[Kk]B/) bytes = n * 1024
+      else                     bytes = n
+      total += bytes
+    }
+    END { if (total > 0) printf "%.0f", total }
+  '
+}
+
+# Number of populated DIMM slots per DMI. Empty if dmidecode is unavailable.
+mem_populated_count() {
+  command -v dmidecode >/dev/null 2>&1 || return 1
+  LANG=C dmidecode -t memory 2>/dev/null | awk '
+    /^[ \t]*Size:/ {
+      line=$0; sub(/^[ \t]*Size:[ \t]*/,"",line); sub(/\r$/,"",line)
+      if (line ~ /No Module Installed|Not Installed|Unknown/) next
+      if (line+0 > 0) c++
+    }
+    END { printf "%d", c+0 }
+  '
+}
+
+# Smallest populated DIMM size in bytes (used to size the FAIL threshold).
+mem_smallest_dimm_bytes() {
+  command -v dmidecode >/dev/null 2>&1 || return 1
+  LANG=C dmidecode -t memory 2>/dev/null | awk '
+    /^[ \t]*Size:/ {
+      line=$0; sub(/^[ \t]*Size:[ \t]*/,"",line); sub(/\r$/,"",line)
+      if (line ~ /No Module Installed|Not Installed|Unknown/) next
+      n=line+0; if (n <= 0) next
+      if      (line ~ /[Tt]B/) bytes = n * 1024 * 1024 * 1024 * 1024
+      else if (line ~ /[Gg]B/) bytes = n * 1024 * 1024 * 1024
+      else if (line ~ /[Mm]B/) bytes = n * 1024 * 1024
+      else if (line ~ /[Kk]B/) bytes = n * 1024
+      else                     bytes = n
+      if (min == 0 || bytes < min) min = bytes
+    }
+    END { if (min > 0) printf "%.0f", min }
+  '
+}
+
+# Memory the OS can actually use, in bytes (/proc/meminfo MemTotal is KiB).
+mem_usable_bytes() {
+  [[ -r /proc/meminfo ]] || return 1
+  awk '/^MemTotal:/ { printf "%.0f", $2 * 1024; exit }' /proc/meminfo
+}
+
+# Render bytes as a human GiB string (1 decimal place).
+mem_bytes_to_gib() {
+  awk -v b="${1:-0}" 'BEGIN { printf "%.1f", b / 1073741824 }'
+}
+
+# DET002 usability verdict.
+# Prints: RESULT|installed_bytes|usable_bytes|populated_count|gap_bytes|threshold_bytes|reason
+# RESULT is Pass | Fail | UNKNOWN. UNKNOWN when the DMI view is unavailable --
+# never a silent Pass.
+mem_usability_check() {
+  local installed usable count smallest gap threshold tol_pct tol_floor
+  installed="$(mem_installed_bytes 2>/dev/null || true)"
+  usable="$(mem_usable_bytes 2>/dev/null || true)"
+  count="$(mem_populated_count 2>/dev/null || true)"
+  smallest="$(mem_smallest_dimm_bytes 2>/dev/null || true)"
+
+  if [[ -z "${installed}" || -z "${usable}" ]]; then
+    printf 'UNKNOWN|%s|%s|%s|||dmidecode or /proc/meminfo unavailable — cannot verify DIMM usability (not a pass)\n' \
+      "${installed:-}" "${usable:-}" "${count:-}"
+    return 0
+  fi
+
+  gap=$(( installed - usable ))
+  (( gap < 0 )) && gap=0
+
+  # Threshold: normal firmware/kernel reservation must not trip this, but a
+  # whole missing DIMM must. tolerance = max(3% of installed, 2 GiB, half the
+  # smallest populated DIMM).
+  tol_pct=$(awk -v i="${installed}" 'BEGIN { printf "%.0f", i * 0.03 }')
+  tol_floor=$(( 2 * 1024 * 1024 * 1024 ))
+  threshold="${tol_pct}"
+  (( tol_floor > threshold )) && threshold="${tol_floor}"
+  if [[ -n "${smallest}" ]]; then
+    local half_dimm=$(( smallest / 2 ))
+    (( half_dimm > threshold )) && threshold="${half_dimm}"
+  fi
+
+  if (( gap > threshold )); then
+    printf 'Fail|%s|%s|%s|%s|%s|installed %s GiB across %s DIMM(s) but only %s GiB usable — %s GiB missing (> %s GiB tolerance): one or more populated DIMMs were not trained/enabled (defective DIMM, slot, or seating)\n' \
+      "${installed}" "${usable}" "${count}" "${gap}" "${threshold}" \
+      "$(mem_bytes_to_gib "${installed}")" "${count}" "$(mem_bytes_to_gib "${usable}")" \
+      "$(mem_bytes_to_gib "${gap}")" "$(mem_bytes_to_gib "${threshold}")"
+  else
+    printf 'Pass|%s|%s|%s|%s|%s|installed %s GiB across %s DIMM(s), %s GiB usable — %s GiB reserved, within %s GiB tolerance\n' \
+      "${installed}" "${usable}" "${count}" "${gap}" "${threshold}" \
+      "$(mem_bytes_to_gib "${installed}")" "${count}" "$(mem_bytes_to_gib "${usable}")" \
+      "$(mem_bytes_to_gib "${gap}")" "$(mem_bytes_to_gib "${threshold}")"
+  fi
+}
+
+# ============================================================================
+# System configuration inventory (FWK037)
+# ============================================================================
+# Best-effort snapshot of the DUT's hardware/firmware/OS configuration, so every
+# test's log and report is self-describing ("these results came from THIS CPU
+# with THIS much RAM"). Informational only -- it never changes a verdict, and a
+# missing tool degrades to "N/A" instead of failing the test.
+
+_si_val() { printf '%s' "${1:-N/A}"; }
+
+# Cache so repeated calls in one run are cheap (FWK037 implication 3).
+_SYSINFO_CACHE=""
+
+collect_system_info() {
+  if [[ -n "${_SYSINFO_CACHE}" && "${1:-}" != "--refresh" ]]; then
+    printf '%s' "${_SYSINFO_CACHE}"
+    return 0
+  fi
+
+  # Initialise every local: function.sh runs under `set -u`, where a declared but
+  # never-assigned local is an "unbound variable" fatal error when the tool that
+  # would have filled it (dmidecode, lscpu) is absent.
+  local host="" os="" kernel="" board="" product="" serial="" bios=""
+  local cpu="" sockets="" cores="" threads=""
+  local mem_inst="" mem_use="" mem_cnt="" mem_chk="" mem_res=""
+
+  host="$(hostname 2>/dev/null || true)"
+  kernel="$(uname -r 2>/dev/null || true)"
+  if [[ -r /etc/os-release ]]; then
+    os="$(. /etc/os-release 2>/dev/null; printf '%s' "${PRETTY_NAME:-${NAME:-}}")"
+  fi
+
+  if command -v dmidecode >/dev/null 2>&1; then
+    board="$(dmidecode -s baseboard-product-name 2>/dev/null | head -n1 || true)"
+    product="$(dmidecode -s system-product-name 2>/dev/null | head -n1 || true)"
+    serial="$(dmidecode -s system-serial-number 2>/dev/null | head -n1 || true)"
+    bios="$(dmidecode -s bios-version 2>/dev/null | head -n1 || true)"
+  fi
+
+  if command -v lscpu >/dev/null 2>&1; then
+    cpu="$(LANG=C lscpu | awk -F': +' '/^Model name/{print $2; exit}')"
+    sockets="$(LANG=C lscpu | awk -F': +' '/^Socket\(s\)/{print $2; exit}')"
+    cores="$(LANG=C lscpu | awk -F': +' '/^Core\(s\) per socket/{print $2; exit}')"
+    threads="$(LANG=C lscpu | awk -F': +' '/^CPU\(s\)/{print $2; exit}')"
+  fi
+
+  # Memory: report BOTH the installed (DMI) and usable (OS) totals, plus the
+  # DET002 usability verdict -- the discrepancy is the whole point.
+  mem_chk="$(mem_usability_check)"
+  mem_res="${mem_chk%%|*}"
+  mem_inst="$(printf '%s' "${mem_chk}" | cut -d'|' -f2)"
+  mem_use="$(printf '%s' "${mem_chk}" | cut -d'|' -f3)"
+  mem_cnt="$(printf '%s' "${mem_chk}" | cut -d'|' -f4)"
+
+  local mem_inst_h="N/A" mem_use_h="N/A"
+  [[ -n "${mem_inst}" ]] && mem_inst_h="$(mem_bytes_to_gib "${mem_inst}") GiB"
+  [[ -n "${mem_use}"  ]] && mem_use_h="$(mem_bytes_to_gib "${mem_use}") GiB"
+
+  _SYSINFO_CACHE="$(cat <<EOS
+========== System configuration (FWK037) ==========
+Hostname     : $(_si_val "${host}")
+OS           : $(_si_val "${os}")
+Kernel       : $(_si_val "${kernel}")
+Product      : $(_si_val "${product}")
+Baseboard    : $(_si_val "${board}")
+Serial       : $(_si_val "${serial}")
+BIOS         : $(_si_val "${bios}")
+CPU          : $(_si_val "${cpu}")
+CPU topology : sockets=$(_si_val "${sockets}") cores/socket=$(_si_val "${cores}") logical=$(_si_val "${threads}")
+Memory       : installed ${mem_inst_h} across $(_si_val "${mem_cnt}") DIMM(s), usable ${mem_use_h}  [${mem_res}]
+===================================================
+EOS
+)"
+  printf '%s' "${_SYSINFO_CACHE}"
+}
+
+# Same inventory as a JSON object for result.json (FWK028 canonical form).
+system_info_json() {
+  # All locals initialised — see collect_system_info (set -u safety).
+  local host="" os="" kernel="" board="" product="" serial="" bios=""
+  local cpu="" sockets="" cores="" threads=""
+  local mem_chk="" mem_res="" mem_inst="" mem_use="" mem_cnt="" mem_gap="" mem_reason=""
+
+  host="$(hostname 2>/dev/null || true)"
+  kernel="$(uname -r 2>/dev/null || true)"
+  [[ -r /etc/os-release ]] && os="$(. /etc/os-release 2>/dev/null; printf '%s' "${PRETTY_NAME:-${NAME:-}}")"
+  if command -v dmidecode >/dev/null 2>&1; then
+    board="$(dmidecode -s baseboard-product-name 2>/dev/null | head -n1 || true)"
+    product="$(dmidecode -s system-product-name 2>/dev/null | head -n1 || true)"
+    serial="$(dmidecode -s system-serial-number 2>/dev/null | head -n1 || true)"
+    bios="$(dmidecode -s bios-version 2>/dev/null | head -n1 || true)"
+  fi
+  if command -v lscpu >/dev/null 2>&1; then
+    cpu="$(LANG=C lscpu | awk -F': +' '/^Model name/{print $2; exit}')"
+    sockets="$(LANG=C lscpu | awk -F': +' '/^Socket\(s\)/{print $2; exit}')"
+    cores="$(LANG=C lscpu | awk -F': +' '/^Core\(s\) per socket/{print $2; exit}')"
+    threads="$(LANG=C lscpu | awk -F': +' '/^CPU\(s\)/{print $2; exit}')"
+  fi
+
+  mem_chk="$(mem_usability_check)"
+  mem_res="${mem_chk%%|*}"
+  mem_inst="$(printf '%s' "${mem_chk}" | cut -d'|' -f2)"
+  mem_use="$(printf '%s'  "${mem_chk}" | cut -d'|' -f3)"
+  mem_cnt="$(printf '%s'  "${mem_chk}" | cut -d'|' -f4)"
+  mem_gap="$(printf '%s'  "${mem_chk}" | cut -d'|' -f5)"
+  mem_reason="$(printf '%s' "${mem_chk}" | cut -d'|' -f7-)"
+
+  printf '{'
+  printf '"hostname":%s,'   "$(_si_json_str "${host}")"
+  printf '"os":%s,'         "$(_si_json_str "${os}")"
+  printf '"kernel":%s,'     "$(_si_json_str "${kernel}")"
+  printf '"product":%s,'    "$(_si_json_str "${product}")"
+  printf '"baseboard":%s,'  "$(_si_json_str "${board}")"
+  printf '"serial":%s,'     "$(_si_json_str "${serial}")"
+  printf '"bios_version":%s,' "$(_si_json_str "${bios}")"
+  printf '"cpu_model":%s,'  "$(_si_json_str "${cpu}")"
+  printf '"cpu_sockets":%s,' "$(_si_json_num "${sockets}")"
+  printf '"cpu_cores_per_socket":%s,' "$(_si_json_num "${cores}")"
+  printf '"cpu_logical":%s,' "$(_si_json_num "${threads}")"
+  printf '"memory":{'
+  printf '"installed_bytes":%s,' "$(_si_json_num "${mem_inst}")"
+  printf '"usable_bytes":%s,'    "$(_si_json_num "${mem_use}")"
+  printf '"dimm_populated_count":%s,' "$(_si_json_num "${mem_cnt}")"
+  printf '"gap_bytes":%s,'       "$(_si_json_num "${mem_gap}")"
+  printf '"result":%s,'          "$(_si_json_str "${mem_res}")"
+  printf '"reason":%s'           "$(_si_json_str "${mem_reason}")"
+  printf '}}'
+}
+
+# JSON scalar emitters: empty value -> null, so a missing field is explicit.
+_si_json_str() {
+  [[ -n "${1}" ]] && printf '"%s"' "$(_json_escape_si "${1}")" || printf 'null'
+}
+_si_json_num() {
+  [[ -n "${1}" && "${1}" =~ ^[0-9]+$ ]] && printf '%s' "${1}" || printf 'null'
+}
+
+_json_escape_si() {
+  local s="$1"
+  s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\n'/ }"; s="${s//$'\r'/}"
+  printf '%s' "${s}"
 }

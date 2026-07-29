@@ -261,6 +261,22 @@ def _collect_firmware(rec: dict, args: argparse.Namespace) -> None:
     rec["bmc_method"]   = fw["bmc_method"]
 
 
+def _collect_system_info_once(args: argparse.Namespace, result: dict) -> None:
+    """FWK037: capture the DUT's configuration inventory once per run.
+
+    Best-effort and cheap; a failure never affects the test (mirrors
+    power_cycle.py).
+    """
+    if result is None or result.get("system_info"):
+        return
+    info = function.collect_system_info(
+        args.host, args.port, args.ssh_user, args.dut_os, dry_run=args.dry_run,
+    )
+    if info:
+        result["system_info"] = info
+        function.log_system_info(info)
+
+
 # ── one cycle ──────────────────────────────────────────────────────────────────
 
 def run_one_cycle(
@@ -688,6 +704,11 @@ def main() -> int:
                  session_id, len(result["cycles"]), m)
     else:
         result = _new_result(args, session_id, m)
+
+    # FWK037: inventory the DUT's configuration now — init_dut() has brought it
+    # online, so SSH answers and the snapshot reflects the machine under test.
+    if args.ssh_user and not _stop_requested:
+        _collect_system_info_once(args, result)
 
     # ── Calibrate phase (new session only) ───────────────────────────────────────
     # Measure the DUT's reboot round-trip boot time and set boot_timeout for the

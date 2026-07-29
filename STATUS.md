@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-07-27 08:14 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-07-29 07:48 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -18,14 +18,14 @@ _Generated 2026-07-27 08:14 · regenerate with `python scripts/stats.py > STATUS
 
 | Status | Count |
 | --- | --- |
-| proposed | 109 |
-| implementing | 9 |
+| proposed | 107 |
+| implementing | 11 |
 | implemented | 30 |
 
 ```mermaid
 pie showData title Requirements by status
-    "proposed" : 109
-    "implementing" : 9
+    "proposed" : 107
+    "implementing" : 11
     "implemented" : 30
 ```
 
@@ -55,7 +55,7 @@ pie showData title Requirements by status
 | [CMP005](requirements/CMP005.md) | proposed | Graceful Handling of Unavailable Tools |
 | [CMP006](requirements/CMP006.md) | proposed | Bug OS Column Scope Convention |
 | [DET001](requirements/DET001.md) | proposed | CPU Model and Core Count |
-| [DET002](requirements/DET002.md) | proposed | RAM Capacity, DIMM Population & Usability Verification |
+| [DET002](requirements/DET002.md) | implementing | RAM Capacity, DIMM Population & Usability Verification |
 | [DET003](requirements/DET003.md) | proposed | Network Interface Model and Count |
 | [DET004](requirements/DET004.md) | proposed | USB Device Model and Speed |
 | [DET005](requirements/DET005.md) | proposed | Storage Device Model and Capacity |
@@ -157,17 +157,17 @@ pie showData title Requirements by status
 
 | Status | Count |
 | --- | --- |
-| open | 15 |
+| open | 14 |
 | in-progress | 1 |
-| resolved | 11 |
+| resolved | 12 |
 | closed | 10 |
 | invalid | 2 |
 
 ```mermaid
 pie showData title Bugs by status
-    "open" : 15
+    "open" : 14
     "in-progress" : 1
-    "resolved" : 11
+    "resolved" : 12
     "closed" : 10
     "invalid" : 2
 ```
@@ -202,7 +202,6 @@ pie showData title Bugs by status
 | [BUG0023](bugs/open/BUG0023-two-log-dir-echo-statements-joined-on-one-line-in-.md) | 2026-05-14 | open | Two log_dir echo statements joined on one line in function.sh |
 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | 2026-06-05 | open | power_cycle.py msg.exe notification not shown on DUT during test |
 | [BUG0036](bugs/open/BUG0036-reboot-slow-boot-misjudged-dead.md) | 2026-06-30 | in-progress | `reboot.py` misjudges a slow-booting DUT as dead |
-| [BUG0039](bugs/open/BUG0039-dimm-populated-but-not-usable-undetected.md) | 2026-07-27 | open | A populated-but-unusable DIMM is not detected as a failure |
 
 ## Traceability
 
@@ -211,7 +210,7 @@ pie showData title Bugs by status
 | Requirement | Bug | Bug status |
 | --- | --- | --- |
 | CMP005 | [BUG0011](bugs/closed/BUG0011-dev-detect-aborts-silently-when-an-upstream-detect.md) | closed |
-| DET002 | [BUG0039](bugs/open/BUG0039-dimm-populated-but-not-usable-undetected.md) | open |
+| DET002 | [BUG0039](bugs/closed/BUG0039-dimm-populated-but-not-usable-undetected.md) | resolved |
 | DET009 | [BUG0012](bugs/open/BUG0012-dev-detect-first-run-snapshot-vs-golden-template-n.md) | open |
 | DET012 | [BUG0038](bugs/closed/BUG0038-dev-detect-reruns-every-boot.md) | resolved |
 | DET013 | [BUG0038](bugs/closed/BUG0038-dev-detect-reruns-every-boot.md) | resolved |
@@ -231,7 +230,7 @@ pie showData title Bugs by status
 | FWK034 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
 | FWK035 | [BUG0033](bugs/closed/BUG0033-ssh-changed-host-key-blocks-all-cycles.md) | resolved |
 | FWK035 | [BUG0034](bugs/closed/BUG0034-reboot-os-probe-before-init-dut.md) | resolved |
-| FWK037 | [BUG0039](bugs/open/BUG0039-dimm-populated-but-not-usable-undetected.md) | open |
+| FWK037 | [BUG0039](bugs/closed/BUG0039-dimm-populated-but-not-usable-undetected.md) | resolved |
 | LOG008 | [BUG0004](bugs/open/BUG0004-fio-log-filenames-missing-timestamp-and-result.md) | open |
 | LOG012 | [BUG0024](bugs/closed/BUG0024-extract-bw-fails-on-slow-disks-no-data-0-0-mib-s-f.md) | closed |
 | LOG012 | [BUG0004](bugs/open/BUG0004-fio-log-filenames-missing-timestamp-and-result.md) | open |

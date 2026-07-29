@@ -1,7 +1,8 @@
 ---
 id: BUG0039
-status: open
+status: resolved
 created: 2026-07-27
+closed: 2026-07-27
 os:
   - Ubuntu 24.04 LTS
   - Ubuntu 26.04 LTS

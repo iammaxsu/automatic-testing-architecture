@@ -675,3 +675,235 @@ def resolve_session(base_dir: str, test: str, dut_id: str, target: dict,
 def write_result_json(path: str, data: dict) -> None:
     """Atomically write result dict to path (see write_json)."""
     write_json(path, data)
+
+
+# ---------- System configuration inventory (FWK037) ----------
+# Best-effort snapshot of the DUT's hardware/firmware/OS configuration, gathered
+# over SSH, so every test's result.json and HTML report is self-describing:
+# "these results were produced on THIS CPU with THIS much RAM". Informational
+# only -- it never changes a verdict, and anything unavailable becomes None/N/A.
+#
+# Memory is reported as BOTH installed (DMI/SPD) and usable (OS) with a DET002
+# usability verdict, because a DIMM can be populated yet not trained/enabled:
+# Linux shows 6 populated DIMMs via dmidecode while /proc/meminfo sees only part
+# of it; Windows shows the same natively as "192 GB installed (128 GB usable)".
+
+_MEM_TOLERANCE_FLOOR = 2 * 1024 ** 3     # 2 GiB
+_MEM_TOLERANCE_FRAC  = 0.03              # 3% of installed
+
+
+def _mem_usability_verdict(installed, usable, dimm_count, smallest_dimm):
+    """DET002: classify installed-vs-usable memory. Returns (result, reason)."""
+    if not installed or not usable:
+        return "UNKNOWN", ("memory inventory unavailable on the DUT - cannot "
+                           "verify DIMM usability (not a pass)")
+    gap = max(0, installed - usable)
+    threshold = max(int(installed * _MEM_TOLERANCE_FRAC), _MEM_TOLERANCE_FLOOR)
+    if smallest_dimm:
+        threshold = max(threshold, smallest_dimm // 2)
+    gib = lambda b: f"{b / 1024 ** 3:.1f}"
+    if gap > threshold:
+        return "Fail", (
+            f"installed {gib(installed)} GiB across {dimm_count or '?'} DIMM(s) but only "
+            f"{gib(usable)} GiB usable - {gib(gap)} GiB missing (> {gib(threshold)} GiB "
+            f"tolerance): one or more populated DIMMs were not trained/enabled "
+            f"(defective DIMM, slot, or seating)"
+        )
+    return "Pass", (
+        f"installed {gib(installed)} GiB across {dimm_count or '?'} DIMM(s), "
+        f"{gib(usable)} GiB usable - {gib(gap)} GiB reserved, within "
+        f"{gib(threshold)} GiB tolerance"
+    )
+
+
+def _parse_linux_sysinfo(raw: str) -> dict:
+    """Parse the KEY=VALUE block emitted by the Linux inventory one-liner."""
+    info = {}
+    for line in (raw or "").splitlines():
+        if "=" in line:
+            k, _, v = line.partition("=")
+            info[k.strip()] = v.strip()
+    return info
+
+
+def collect_system_info(host: str, port: int, ssh_user: str, dut_os: str = "linux",
+                        timeout: int = 20, dry_run: bool = False) -> dict:
+    """Collect the DUT's system configuration inventory over SSH (FWK037).
+
+    Returns a dict with hostname/os/product/baseboard/bios/cpu/memory keys;
+    every field is best-effort and may be None. Never raises.
+    """
+    empty = {
+        "hostname": None, "os": None, "kernel": None, "product": None,
+        "baseboard": None, "serial": None, "bios_version": None,
+        "cpu_model": None, "cpu_sockets": None, "cpu_cores_per_socket": None,
+        "cpu_logical": None,
+        "memory": {"installed_bytes": None, "usable_bytes": None,
+                   "dimm_populated_count": None, "gap_bytes": None,
+                   "result": "UNKNOWN", "reason": "not collected"},
+    }
+    if dry_run:
+        out = dict(empty)
+        out["hostname"] = "DRY-RUN"
+        return out
+    if not (host and ssh_user):
+        return empty
+
+    try:
+        if dut_os == "windows":
+            return _collect_system_info_windows(host, port, ssh_user, timeout, empty)
+        return _collect_system_info_linux(host, port, ssh_user, timeout, empty)
+    except Exception as exc:                      # never break a test over this
+        log.warning("collect_system_info failed: %s", exc)
+        return empty
+
+
+def _collect_system_info_linux(host, port, ssh_user, timeout, empty) -> dict:
+    # One SSH round-trip: emit KEY=VALUE lines. dmidecode needs root (NOPASSWD
+    # sudo is configured by setup_dut.sh); if it is unavailable those keys are
+    # simply absent and degrade to None/UNKNOWN.
+    cmd = (
+        "echo HOST=$(hostname 2>/dev/null); "
+        "echo KERNEL=$(uname -r 2>/dev/null); "
+        ". /etc/os-release 2>/dev/null && echo OS=\"$PRETTY_NAME\"; "
+        "echo PRODUCT=$(sudo -n dmidecode -s system-product-name 2>/dev/null | head -n1); "
+        "echo BOARD=$(sudo -n dmidecode -s baseboard-product-name 2>/dev/null | head -n1); "
+        "echo SERIAL=$(sudo -n dmidecode -s system-serial-number 2>/dev/null | head -n1); "
+        "echo BIOS=$(sudo -n dmidecode -s bios-version 2>/dev/null | head -n1); "
+        "echo CPU=$(LANG=C lscpu 2>/dev/null | awk -F': +' '/^Model name/{print $2; exit}'); "
+        "echo SOCKETS=$(LANG=C lscpu 2>/dev/null | awk -F': +' '/^Socket\\(s\\)/{print $2; exit}'); "
+        "echo CORES=$(LANG=C lscpu 2>/dev/null | awk -F': +' '/^Core\\(s\\) per socket/{print $2; exit}'); "
+        "echo LOGICAL=$(LANG=C lscpu 2>/dev/null | awk -F': +' '/^CPU\\(s\\)/{print $2; exit}'); "
+        "echo USABLE=$(awk '/^MemTotal:/{printf \"%.0f\", $2*1024; exit}' /proc/meminfo 2>/dev/null); "
+        "echo DIMMS=$(sudo -n dmidecode -t memory 2>/dev/null | awk '/^[ \\t]*Size:/{"
+        "l=$0; sub(/^[ \\t]*Size:[ \\t]*/,\"\",l); "
+        "if (l ~ /No Module Installed|Not Installed|Unknown/) next; if (l+0>0) c++} END{printf \"%d\", c+0}'); "
+        "echo INSTALLED=$(sudo -n dmidecode -t memory 2>/dev/null | awk '/^[ \\t]*Size:/{"
+        "l=$0; sub(/^[ \\t]*Size:[ \\t]*/,\"\",l); "
+        "if (l ~ /No Module Installed|Not Installed|Unknown/) next; n=l+0; if(n<=0) next; "
+        "if (l ~ /[Tt]B/) b=n*1024*1024*1024*1024; else if (l ~ /[Gg]B/) b=n*1024*1024*1024; "
+        "else if (l ~ /[Mm]B/) b=n*1024*1024; else if (l ~ /[Kk]B/) b=n*1024; else b=n; t+=b} "
+        "END{if (t>0) printf \"%.0f\", t}'); "
+        "echo SMALLEST=$(sudo -n dmidecode -t memory 2>/dev/null | awk '/^[ \\t]*Size:/{"
+        "l=$0; sub(/^[ \\t]*Size:[ \\t]*/,\"\",l); "
+        "if (l ~ /No Module Installed|Not Installed|Unknown/) next; n=l+0; if(n<=0) next; "
+        "if (l ~ /[Tt]B/) b=n*1024*1024*1024*1024; else if (l ~ /[Gg]B/) b=n*1024*1024*1024; "
+        "else if (l ~ /[Mm]B/) b=n*1024*1024; else if (l ~ /[Kk]B/) b=n*1024; else b=n; "
+        "if (m==0 || b<m) m=b} END{if (m>0) printf \"%.0f\", m}')"
+    )
+    raw = _ssh_probe_output(host, port, ssh_user, cmd, timeout)
+    if not raw:
+        return empty
+    d = _parse_linux_sysinfo(raw)
+    to_int = lambda k: int(d[k]) if d.get(k, "").isdigit() else None
+
+    installed = to_int("INSTALLED")
+    usable    = to_int("USABLE")
+    dimms     = to_int("DIMMS")
+    smallest  = to_int("SMALLEST")
+    result, reason = _mem_usability_verdict(installed, usable, dimms, smallest)
+
+    return {
+        "hostname":  d.get("HOST") or None,
+        "os":        d.get("OS") or None,
+        "kernel":    d.get("KERNEL") or None,
+        "product":   d.get("PRODUCT") or None,
+        "baseboard": d.get("BOARD") or None,
+        "serial":    d.get("SERIAL") or None,
+        "bios_version": d.get("BIOS") or None,
+        "cpu_model": d.get("CPU") or None,
+        "cpu_sockets": to_int("SOCKETS"),
+        "cpu_cores_per_socket": to_int("CORES"),
+        "cpu_logical": to_int("LOGICAL"),
+        "memory": {
+            "installed_bytes": installed,
+            "usable_bytes": usable,
+            "dimm_populated_count": dimms,
+            "gap_bytes": (max(0, installed - usable) if installed and usable else None),
+            "result": result,
+            "reason": reason,
+        },
+    }
+
+
+def _collect_system_info_windows(host, port, ssh_user, timeout, empty) -> dict:
+    # PowerShell one-liner emitting the same KEY=VALUE contract. installed =
+    # sum(Win32_PhysicalMemory.Capacity); usable = TotalPhysicalMemory -- the
+    # pair Windows itself displays as "X installed (Y usable)".
+    ps = (
+        "$os=Get-CimInstance Win32_OperatingSystem;"
+        "$cs=Get-CimInstance Win32_ComputerSystem;"
+        "$b=Get-CimInstance Win32_BIOS;"
+        "$bb=Get-CimInstance Win32_BaseBoard;"
+        "$p=Get-CimInstance Win32_ComputerSystemProduct;"
+        "$c=@(Get-CimInstance Win32_Processor);"
+        "$d=@(Get-CimInstance Win32_PhysicalMemory|Where-Object{$_.Capacity -gt 0});"
+        "Write-Output ('HOST='+$env:COMPUTERNAME);"
+        "Write-Output ('OS='+$os.Caption);"
+        "Write-Output ('KERNEL='+$os.Version);"
+        "Write-Output ('PRODUCT='+$p.Name);"
+        "Write-Output ('BOARD='+$bb.Product);"
+        "Write-Output ('SERIAL='+$b.SerialNumber);"
+        "Write-Output ('BIOS='+$b.SMBIOSBIOSVersion);"
+        "Write-Output ('CPU='+$c[0].Name);"
+        "Write-Output ('SOCKETS='+$c.Count);"
+        "Write-Output ('CORES='+(($c|Measure-Object NumberOfCores -Sum).Sum));"
+        "Write-Output ('LOGICAL='+(($c|Measure-Object NumberOfLogicalProcessors -Sum).Sum));"
+        "Write-Output ('USABLE='+$cs.TotalPhysicalMemory);"
+        "Write-Output ('DIMMS='+$d.Count);"
+        "Write-Output ('INSTALLED='+(($d|Measure-Object Capacity -Sum).Sum));"
+        "Write-Output ('SMALLEST='+(($d|Measure-Object Capacity -Minimum).Minimum))"
+    )
+    raw = _ssh_probe_output(host, port, ssh_user, f'powershell -NoProfile -Command "{ps}"', timeout)
+    if not raw:
+        return empty
+    d = _parse_linux_sysinfo(raw)          # same KEY=VALUE contract
+    to_int = lambda k: int(d[k]) if d.get(k, "").isdigit() else None
+
+    installed = to_int("INSTALLED")
+    usable    = to_int("USABLE")
+    dimms     = to_int("DIMMS")
+    smallest  = to_int("SMALLEST")
+    result, reason = _mem_usability_verdict(installed, usable, dimms, smallest)
+
+    return {
+        "hostname":  d.get("HOST") or None,
+        "os":        d.get("OS") or None,
+        "kernel":    d.get("KERNEL") or None,
+        "product":   d.get("PRODUCT") or None,
+        "baseboard": d.get("BOARD") or None,
+        "serial":    d.get("SERIAL") or None,
+        "bios_version": d.get("BIOS") or None,
+        "cpu_model": d.get("CPU") or None,
+        "cpu_sockets": to_int("SOCKETS"),
+        "cpu_cores_per_socket": None,
+        "cpu_logical": to_int("LOGICAL"),
+        "memory": {
+            "installed_bytes": installed,
+            "usable_bytes": usable,
+            "dimm_populated_count": dimms,
+            "gap_bytes": (max(0, installed - usable) if installed and usable else None),
+            "result": result,
+            "reason": reason,
+        },
+    }
+
+
+def log_system_info(info: dict) -> None:
+    """Log the FWK037 inventory as a readable block."""
+    if not info:
+        return
+    gib = lambda b: f"{b / 1024 ** 3:.1f} GiB" if b else "N/A"
+    m = info.get("memory") or {}
+    log.info("System configuration (FWK037):")
+    log.info("  Host / OS  : %s / %s", info.get("hostname") or "N/A", info.get("os") or "N/A")
+    log.info("  Product    : %s (board: %s)", info.get("product") or "N/A",
+             info.get("baseboard") or "N/A")
+    log.info("  BIOS       : %s", info.get("bios_version") or "N/A")
+    log.info("  CPU        : %s (sockets=%s logical=%s)", info.get("cpu_model") or "N/A",
+             info.get("cpu_sockets") or "N/A", info.get("cpu_logical") or "N/A")
+    log.info("  Memory     : installed %s across %s DIMM(s), usable %s  [%s]",
+             gib(m.get("installed_bytes")), m.get("dimm_populated_count") or "N/A",
+             gib(m.get("usable_bytes")), m.get("result") or "N/A")
+    if m.get("result") == "Fail":
+        log.warning("  Memory     : %s", m.get("reason"))

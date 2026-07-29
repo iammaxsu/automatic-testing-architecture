@@ -102,7 +102,7 @@ $ErrorActionPreference = 'Stop'
 
 # -- Version & shared library --------------------------------------------------
 
-$_script_ver                = '00.00.06'
+$_script_ver                = '00.00.07'
 $_requires_function_ps1_api = '00.00.01'
 
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -192,6 +192,27 @@ function Invoke-MemoryCheck {
         result_tag     = Get-DevDetectResultTag -CurrentScalar $currentScalar -GoldenScalar $goldenScalar
         content_text   = $currentText
         golden_scalar  = $goldenScalar
+        current_scalar = $currentScalar
+    }
+}
+
+# DET002/BUG0039: an INTRINSIC check -- its verdict comes from the check itself,
+# not from a golden comparison, so a populated-but-untrained DIMM FAILs on the
+# very first run (a golden captured while already faulty would hide it forever).
+# Windows shows the same discrepancy natively as "192 GB installed (128 GB
+# usable)"; installed = sum(Win32_PhysicalMemory.Capacity), usable =
+# Win32_ComputerSystem.TotalPhysicalMemory.
+function Invoke-MemoryUsabilityCheck {
+    $m = Get-MemoryUsability
+    $currentScalar = ('installed={0}GiB usable={1}GiB dimms={2}' -f `
+        (Format-GiB $m.InstalledBytes), (Format-GiB $m.UsableBytes), $m.DimmCount)
+    $text = ("Usability: {0} - {1}" -f $m.Result, $m.Reason)
+    Write-Host ("Memory     : {0} - {1}" -f $m.Result, $m.Reason)
+    [pscustomobject]@{
+        name           = 'memory_usable'
+        result_tag     = $m.Result          # Pass | Fail | UNKNOWN
+        content_text   = $text
+        golden_scalar  = $null
         current_scalar = $currentScalar
     }
 }
@@ -398,19 +419,27 @@ function Invoke-StorageCheck {
 $_date2 = Get-Date2
 $_count = Get-NextCount
 
+# FWK037: show the system configuration this run was produced on.
+Write-Host ""
+Write-Host (Get-SystemInfoText)
+Write-Host ""
+
 $_results  = @()
 $_results += Invoke-CpuCheck
 $_results += Invoke-MemoryCheck
+$_results += Invoke-MemoryUsabilityCheck
 $_results += Invoke-UsbCheck
 $_results += Invoke-NicCheck
 $_results += Invoke-StorageCheck
 
 # DET013: precedence mirrors dev_detect.sh -- Fail beats INIT beats Pass.
+# UNKNOWN (DET002: usability could not be determined) rolls up like INIT so it
+# is never reported as a silent Pass.
 # (Error is reserved for a check that threw; CIM/exception failures above
 # already propagate via $ErrorActionPreference = 'Stop' rather than landing
 # here as a result_tag, so it is not assigned below.)
 if     (@($_results | Where-Object { $_.result_tag -eq 'Fail' }).Count -gt 0) { $_overall_tag = 'Fail' }
-elseif (@($_results | Where-Object { $_.result_tag -eq 'INIT' }).Count -gt 0) { $_overall_tag = 'INIT' }
+elseif (@($_results | Where-Object { $_.result_tag -in @('INIT','UNKNOWN') }).Count -gt 0) { $_overall_tag = 'INIT' }
 else                                                                          { $_overall_tag = 'Pass' }
 
 $_exit_code = switch ($_overall_tag) {
@@ -447,8 +476,9 @@ $_sidecar_path = Join-Path $_log_path ('{0}_{1}_{2}.json' -f $_count, $_date2, $
     timestamp      = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
     log_path       = $_per_run_path
     mode           = $(if ($SnapshotOnly) { 'snapshot' } else { 'standalone' })
+    system_info    = (Get-SystemInfo)   # FWK037: configuration this run ran on
     components     = $_components
-} | ConvertTo-Json -Depth 5 | Set-Content -Path $_sidecar_path -Encoding UTF8
+} | ConvertTo-Json -Depth 6 | Set-Content -Path $_sidecar_path -Encoding UTF8
 
 Write-Host ("Overall    : {0}" -f $_overall_tag)
 Write-Host ("Per-run log: {0}" -f $_per_run_path)

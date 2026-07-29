@@ -425,6 +425,17 @@ def _render(result: dict) -> str:
             f'higher --boot-timeout / more --calibrate cycles, or investigate why some '
             f'boots are slow.'
         )
+    # FWK037/DET002: a populated-but-unusable DIMM is a hardware fault worth
+    # shouting about — it is easy to miss that "192 GB installed" is only
+    # "128 GB usable".
+    _si  = result.get("system_info") or {}
+    _mem = _si.get("memory") or {}
+    if _mem.get("result") == "Fail":
+        warnings.append(
+            f'Memory fault: {_mem.get("reason")}. The test results below are still '
+            f'valid for what they measured, but this DUT is not running with all of '
+            f'its installed memory.'
+        )
     # NO_BOOT that never even pinged: likely a failed power-on, not a slow boot.
     no_power = [c for c in cycles if c.get("no_boot_kind") == "no_power_on"]
     if no_power:
@@ -506,6 +517,38 @@ def _render(result: dict) -> str:
 <div class="cards">
   {method_cards}
 </div>"""
+
+    # System configuration inventory (FWK037) — what hardware produced these
+    # results. Informational: CPUs/DIMMs get swapped between runs, so a report
+    # that cannot say which configuration it measured is hard to compare later.
+    sysinfo_section = ""
+    if _si:
+        def _sv(v):
+            return "N/A" if v in (None, "") else str(v)
+
+        def _gib(b):
+            return f"{b / 1024 ** 3:.1f} GiB" if isinstance(b, (int, float)) and b else "N/A"
+
+        _mem_col = _verdict_colour("PASS") if _mem.get("result") == "Pass" else (
+            _verdict_colour("NO_BOOT") if _mem.get("result") == "Fail" else "#888")
+        _cpu_topo = (f'sockets {_sv(_si.get("cpu_sockets"))} · '
+                     f'logical {_sv(_si.get("cpu_logical"))}')
+        _mem_detail = (f'{_gib(_mem.get("installed_bytes"))} installed across '
+                       f'{_sv(_mem.get("dimm_populated_count"))} DIMM(s) · '
+                       f'{_gib(_mem.get("usable_bytes"))} usable')
+        _mem_reason = _mem.get("reason") or ""
+        sysinfo_section = f"""
+<div class="section-title">System configuration (what this run was measured on)</div>
+<table>
+  <tbody>
+    <tr><th style="width:20%">Host / OS</th><td>{_sv(_si.get("hostname"))} &nbsp;·&nbsp; {_sv(_si.get("os"))} ({_sv(_si.get("kernel"))})</td></tr>
+    <tr><th>Product / board</th><td>{_sv(_si.get("product"))} &nbsp;·&nbsp; {_sv(_si.get("baseboard"))} &nbsp;·&nbsp; S/N {_sv(_si.get("serial"))}</td></tr>
+    <tr><th>CPU</th><td>{_sv(_si.get("cpu_model"))} &nbsp;·&nbsp; {_cpu_topo}</td></tr>
+    <tr><th>Memory</th><td>{_mem_detail}
+        &nbsp; <span class="b" style="color:{_mem_col};font-weight:600">[{_sv(_mem.get("result"))}]</span>
+        <div style="color:#888;font-size:.8rem;margin-top:2px">{_mem_reason}</div></td></tr>
+  </tbody>
+</table>"""
 
     # Calibration section — auto-measured boot time → boot timeout (BUG0036).
     # Rendered for any test that ran a calibrate phase (power_cycle and reboot),
@@ -719,6 +762,7 @@ def _render(result: dict) -> str:
 
 {shutdown_stats_section}
 {method_breakdown_section}
+{sysinfo_section}
 {calibrate_section}
 
 <!-- Failure table -->

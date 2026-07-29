@@ -236,6 +236,23 @@ def _collect_firmware(rec: dict, args: argparse.Namespace) -> None:
     rec["bmc_method"]   = fw["bmc_method"]
 
 
+def _collect_system_info_once(args: argparse.Namespace, result: dict) -> None:
+    """FWK037: capture the DUT's configuration inventory once per run.
+
+    Called when the DUT is first confirmed alive (it must be up and answering
+    SSH to be inventoried). Cheap and best-effort: a failure leaves the previous
+    value in place and never affects the test.
+    """
+    if result is None or result.get("system_info"):
+        return
+    info = function.collect_system_info(
+        args.host, args.port, args.ssh_user, args.dut_os, dry_run=args.dry_run,
+    )
+    if info:
+        result["system_info"] = info
+        function.log_system_info(info)
+
+
 # ── one cycle ─────────────────────────────────────────────────────────────────
 
 def run_one_cycle(
@@ -328,6 +345,8 @@ def run_one_cycle(
             _redetect_os_if_needed(rec, args, shutdown_coord, result, f"Cycle {n}")
         if args.ssh_user or args.bmc_host:
             _collect_firmware(rec, args)
+        if args.ssh_user:
+            _collect_system_info_once(args, result)     # FWK037
         function.notify_dut(
             args.ssh_user, args.host, args.port,
             f"Power cycle test in progress - cycle {n}/{_total}. Do not use.",

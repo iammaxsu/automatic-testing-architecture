@@ -123,7 +123,7 @@ find_and_source "function.sh"
 
 # ---- API version check ----
 : "${_requires_config_api:=00.00.01}"
-: "${_requires_function_api:=00.00.03}"
+: "${_requires_function_api:=00.00.05}"
 check_api_versions "net_test.sh" "${_requires_config_api}" "${_requires_function_api}"
 
 # ---------- Parse CLI ----------
@@ -222,6 +222,9 @@ if [[ ! -f "${_netlog}" ]]; then
     echo "Mode: parallel pairs"
     echo "API: ${_function_api_version}   FeatureFlag: ${FEATURE_USE_NEW_NET_TOOLING:-0}"
     echo "===================================================="
+    # FWK037: record the configuration this run was measured on.
+    collect_system_info
+    echo ""
   } > "${_netlog}"
 fi
 
