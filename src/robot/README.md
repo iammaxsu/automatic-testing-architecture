@@ -55,10 +55,12 @@ it never appears on a command line or in a log.
 
 ## 3. Run the functional suite (`src/robot/ipmi/`)
 
-All read-only — safe to run against a DUT that is in use. No power control.
+The read-only areas are safe on a DUT that is in use. `power.robot` (power
+control) is **gated** — its tests SKIP unless you enable them (see below), so
+the default run never disrupts the DUT.
 
 ```bash
-# whole suite (all 8 areas, 16 tests)
+# read-only areas + gated power (power SKIPS unless enabled) = 18 tests
 robot -v BMC_HOST:10.0.0.124 -d logs/ipmi src/robot/ipmi/
 
 # one area, by file
@@ -68,7 +70,7 @@ robot -v BMC_HOST:10.0.0.124 -d logs/ipmi src/robot/ipmi/lan.robot
 robot -v BMC_HOST:10.0.0.124 --include fru -d logs/ipmi src/robot/ipmi/
 ```
 
-Areas / tags: `device-id`, `sensor`, `sel`, `chassis`, `fru`, `sdr`, `lan`, `user`.
+Areas / tags: `device-id`, `sensor`, `sel`, `chassis`, `fru`, `sdr`, `lan`, `user`, `power` (gated).
 
 ### Common overrides (`-v NAME:value`)
 
@@ -82,6 +84,29 @@ Defaults live in [`ipmi/bmc.resource`](ipmi/bmc.resource); override per run with
 | `SENSOR_TEMP` | `CPU_Temp` | temperature sensor name to check |
 | `SENSOR_VOLT` | `5V_DUAL` | voltage rail name to check |
 | `EXPECTED_USER` | `admin` | account that must exist in `user list` |
+
+### Power-control tests (gated, destructive)
+
+`src/robot/ipmi/power.robot` powers the DUT **off / cycles** it (modelled on
+`power_cycle.py`): perform the action, verify recovery, measure the time. It is
+gated off by default — every test SKIPS unless you pass
+`-v POWER_TESTS_ENABLED:True` — so it never runs during a normal read-only
+sweep. Run it deliberately, against a DUT that can tolerate a reboot:
+
+```bash
+robot -v BMC_HOST:10.0.0.124 -v POWER_TESTS_ENABLED:True \
+      -d logs/power src/robot/ipmi/power.robot
+```
+
+Optional overrides:
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `POWER_TESTS_ENABLED` | `False` | must be `True` for any power test to run |
+| `POWER_CYCLES` | `1` | how many times to power-cycle |
+| `DUT_HOST` | *(empty)* | if set, also wait for the DUT OS to answer ping after power-on (real boot, not just BMC power state) |
+| `POWER_ON_TIMEOUT` | `120` | seconds to wait for chassis power to return |
+| `DUT_BOOT_TIMEOUT` | `300` | seconds to wait for DUT OS liveness |
 
 ## 4. Run the sensor soak (long-duration)
 
@@ -103,6 +128,11 @@ Robot writes to the `-d` directory:
 - `report.html` — pass/fail overview (**open this first**)
 - `log.html` — step-by-step detail, keyword arguments, messages
 - `output.xml` — machine-readable (canonical; the HTML is rendered from it)
+
+The report header shows the **BMC identity** captured at suite setup — host,
+firmware revision, IPMI version, manufacturer and product — so you can always
+tell which BMC/firmware a run tested. The bash soak records the same firmware
+revision in its `result.json` (`bmc_firmware`).
 
 ---
 

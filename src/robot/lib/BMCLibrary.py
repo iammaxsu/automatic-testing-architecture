@@ -30,6 +30,9 @@
 #             SEL entry-list parsing. All read-only (safe on a live DUT).
 #   00.00.03  Phase 1 areas: FRU inventory, SDR repository info, LAN
 #             configuration, user list. All read-only.
+#   00.00.04  record_bmc_identity (firmware/version -> report metadata for
+#             traceability); gated chassis power-control keywords
+#             (set/get/wait) + host liveness, for the power-cycle suite.
 
 import csv
 import os
@@ -54,7 +57,7 @@ class BMCLibrary:
     """Keywords for IPMI sensor / SEL testing against one BMC."""
 
     ROBOT_LIBRARY_SCOPE = "SUITE"
-    ROBOT_LIBRARY_VERSION = "00.00.03"
+    ROBOT_LIBRARY_VERSION = "00.00.04"
 
     def __init__(self, host=None, user=None, interface="lanplus",
                  timeout=60, retries=3, retry_delay=5):
@@ -521,3 +524,102 @@ class BMCLibrary:
             if len(cols) >= 2 and cols[0].isdigit() and cols[1] == name:
                 return
         raise AssertionError("user %r not found in `user list %s`" % (name, channel))
+
+    # -- BMC identity (report traceability) --
+
+    def record_bmc_identity(self):
+        """Read ``mc info`` and record the BMC identity as suite metadata.
+
+        Without this, report.html does not say which BMC/firmware was under
+        test. Sets top-level suite metadata (BMC Host / Firmware / IPMI
+        Version / Manufacturer / Product) and returns the identity dict.
+        Safe to call outside a running Robot suite (metadata is skipped).
+        """
+        info = self.get_bmc_info()
+        identity = {
+            "BMC Host": self._host or "?",
+            "BMC Firmware": info.get("Firmware Revision", "?"),
+            "IPMI Version": info.get("IPMI Version", "?"),
+            "Manufacturer ID": info.get("Manufacturer ID", "?"),
+            "Product ID": info.get("Product ID", "?"),
+        }
+        try:
+            from robot.libraries.BuiltIn import BuiltIn, RobotNotRunningError
+            try:
+                builtin = BuiltIn()
+                for key, value in identity.items():
+                    builtin.set_suite_metadata(key, str(value), top=True)
+            except RobotNotRunningError:
+                pass
+        except ImportError:
+            pass
+        logger.info("BMC identity: %s" % identity)
+        return identity
+
+    # -- chassis power CONTROL (destructive; gated by the power suite) --
+    # Modelled on power_cycle.py / reboot.py: perform the action, then verify
+    # recovery (power state, optionally DUT liveness) and measure the time.
+    # These power the DUT off / cycle it; the power.robot suite gates every
+    # call behind POWER_TESTS_ENABLED so a read-only run never triggers them.
+
+    _POWER_ACTIONS = ("on", "off", "cycle", "reset", "soft")
+
+    def set_chassis_power(self, action):
+        """Run ``ipmitool chassis power <action>`` (on/off/cycle/reset/soft)."""
+        action = str(action).lower()
+        if action not in self._POWER_ACTIONS:
+            raise ValueError("power action must be one of %s, got %r"
+                             % (", ".join(self._POWER_ACTIONS), action))
+        out = self.run_ipmitool("chassis", "power", action).strip()
+        logger.info("chassis power %s -> %s" % (action, out))
+        return out
+
+    def get_chassis_power_state(self):
+        """Return 'on' or 'off' from ``chassis status`` (System Power)."""
+        return self.get_chassis_status().get("System Power", "unknown")
+
+    def wait_for_chassis_power(self, expected, timeout=120, interval=5):
+        """Poll chassis power until it equals ``expected``; return elapsed seconds.
+
+        Raises AssertionError on timeout. A brief read failure mid-transition
+        is tolerated rather than aborting the wait.
+        """
+        expected = str(expected).lower()
+        timeout = float(timeout)
+        interval = float(interval)
+        t0 = time.monotonic()
+        deadline = t0 + timeout
+        last = None
+        while time.monotonic() < deadline:
+            try:
+                last = self.get_chassis_power_state()
+            except Exception as exc:  # noqa: BLE001 - BMC may blip mid-transition
+                last = "unreachable (%s)" % exc
+            if last == expected:
+                elapsed = round(time.monotonic() - t0, 1)
+                logger.info("chassis power reached %r in %.1fs" % (expected, elapsed))
+                return elapsed
+            time.sleep(interval)
+        raise AssertionError("chassis power did not reach %r within %ss (last=%r)"
+                             % (expected, timeout, last))
+
+    def wait_until_host_alive(self, host, timeout=180, interval=5):
+        """Poll ICMP ping until ``host`` responds; return elapsed seconds.
+
+        Optional DUT-liveness check after power-on (mirrors power_cycle.py's
+        boot-time measurement). Raises AssertionError on timeout.
+        """
+        timeout = float(timeout)
+        interval = float(interval)
+        t0 = time.monotonic()
+        deadline = t0 + timeout
+        while time.monotonic() < deadline:
+            rc = subprocess.run(["ping", "-c", "1", "-W", "1", str(host)],
+                                capture_output=True).returncode
+            if rc == 0:
+                elapsed = round(time.monotonic() - t0, 1)
+                logger.info("host %s alive in %.1fs" % (host, elapsed))
+                return elapsed
+            time.sleep(interval)
+        raise AssertionError("host %s did not respond to ping within %ss"
+                             % (host, timeout))

@@ -144,6 +144,7 @@ EXIT_CODE=1
 SLEEP_PID=""
 START_EPOCH="$(date +%s)"
 START_ISO="$(date +%Y-%m-%dT%H:%M:%S%z)"
+BMC_FIRMWARE="unknown"          # BMC firmware revision, read once at startup
 
 declare -A prev_state=()                  # sensor -> comparable state string
 declare -A curr_state=() curr_value=() curr_unit=() curr_status=()
@@ -327,6 +328,7 @@ write_result() {  # $1 = running|final, $2 = verdict
     printf '  "script_version": "%s",\n' "${VERSION}"
     printf '  "session": "%s",\n' "${SESSION_TS}"
     printf '  "bmc_host": %s,\n' "$(json_str "${BMC_HOST}")"
+    printf '  "bmc_firmware": %s,\n' "$(json_str "${BMC_FIRMWARE}")"
     printf '  "ipmi_interface": %s,\n' "$(json_str "${IPMI_IFACE}")"
     printf '  "started": "%s",\n' "${START_ISO}"
     printf '  "updated": "%s",\n' "${now_iso}"
@@ -398,6 +400,12 @@ else
   log_event INFO "planned duration: until stopped (SIGINT/SIGTERM)$( (( MAX_CYCLES > 0 )) && echo " or ${MAX_CYCLES} cycles" )"
 fi
 log_event INFO "artefacts: ${SESSION_DIR}/"
+
+# Record the BMC firmware version once, so the result.json says which
+# firmware this soak ran against (traceability).
+BMC_FIRMWARE="$(ipmi_call mc info 2>/dev/null | awk -F: '/[Ff]irmware Revision/{gsub(/^[ \t]+/, "", $2); print $2; exit}')"
+: "${BMC_FIRMWARE:=unknown}"
+log_event INFO "BMC firmware revision: ${BMC_FIRMWARE}"
 
 while :; do
   (( CYCLE += 1 ))

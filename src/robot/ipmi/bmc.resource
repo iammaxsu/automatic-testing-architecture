@@ -29,3 +29,18 @@ ${VOLT_MAX}           5.5
 ${LAN_CHANNEL}        1
 ${USER_CHANNEL}       1
 ${EXPECTED_USER}      admin
+# Power-control suite (power.robot) - DESTRUCTIVE, gated off by default.
+${POWER_TESTS_ENABLED}    ${FALSE}
+${POWER_CYCLES}           1
+${POWER_OFF_TIMEOUT}      60
+${POWER_ON_TIMEOUT}       120
+${DUT_HOST}               ${EMPTY}
+${DUT_BOOT_TIMEOUT}       300
+
+*** Keywords ***
+Require Power Tests Enabled
+    [Documentation]    Skip the calling test unless power tests are explicitly
+    ...                enabled. Guards the destructive power-control suite so a
+    ...                normal read-only run can never power-cycle the DUT.
+    Skip If    '${POWER_TESTS_ENABLED}'.lower() not in ('true', '1', 'yes', 'on')
+    ...    Power-control tests are gated (they power-cycle the DUT). Enable with -v POWER_TESTS_ENABLED:True
