@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-07-29 07:48 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-07-31 08:54 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -151,7 +151,7 @@ pie showData title Requirements by status
 
 ## Bugs
 
-**Total:** 39
+**Total:** 40
 
 ### By status
 
@@ -159,7 +159,7 @@ pie showData title Requirements by status
 | --- | --- |
 | open | 14 |
 | in-progress | 1 |
-| resolved | 12 |
+| resolved | 13 |
 | closed | 10 |
 | invalid | 2 |
 
@@ -167,7 +167,7 @@ pie showData title Requirements by status
 pie showData title Bugs by status
     "open" : 14
     "in-progress" : 1
-    "resolved" : 12
+    "resolved" : 13
     "closed" : 10
     "invalid" : 2
 ```
@@ -177,8 +177,8 @@ pie showData title Bugs by status
 | OS | Count |
 | --- | --- |
 | Ubuntu 26.04 LTS | 20 |
-| Ubuntu 24.04 LTS | 17 |
-| Windows 11 | 7 |
+| Ubuntu 24.04 LTS | 18 |
+| Windows 11 | 8 |
 | Windows 11 (zh-TW) | 2 |
 | Windows 11 (English / en-US) | 1 |
 | Windows 11 (Traditional Chinese / zh-TW) | 1 |
@@ -227,6 +227,7 @@ pie showData title Bugs by status
 | FWK031 | [BUG0034](bugs/closed/BUG0034-reboot-os-probe-before-init-dut.md) | resolved |
 | FWK031 | [BUG0036](bugs/open/BUG0036-reboot-slow-boot-misjudged-dead.md) | in-progress |
 | FWK032 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
+| FWK032 | [BUG0040](bugs/closed/BUG0040-notify-dut-negative-sleep-traceback.md) | resolved |
 | FWK034 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
 | FWK035 | [BUG0033](bugs/closed/BUG0033-ssh-changed-host-key-blocks-all-cycles.md) | resolved |
 | FWK035 | [BUG0034](bugs/closed/BUG0034-reboot-os-probe-before-init-dut.md) | resolved |
@@ -264,6 +265,7 @@ pie showData title Bugs by status
 | PWR012 | [BUG0033](bugs/closed/BUG0033-ssh-changed-host-key-blocks-all-cycles.md) | resolved |
 | PWR012 | [BUG0034](bugs/closed/BUG0034-reboot-os-probe-before-init-dut.md) | resolved |
 | PWR012 | [BUG0035](bugs/closed/BUG0035-result-json-write-crash-loses-run.md) | resolved |
+| PWR012 | [BUG0040](bugs/closed/BUG0040-notify-dut-negative-sleep-traceback.md) | resolved |
 | PWR012 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
 | PWR012 | [BUG0036](bugs/open/BUG0036-reboot-slow-boot-misjudged-dead.md) | in-progress |
 | PWR013 | [BUG0036](bugs/open/BUG0036-reboot-slow-boot-misjudged-dead.md) | in-progress |

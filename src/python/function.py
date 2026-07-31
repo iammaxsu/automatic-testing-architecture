@@ -450,6 +450,21 @@ def notify_dut(
         deadline = time.monotonic() + max_wait
         attempt = 0
 
+        def _sleep_until_next_attempt() -> bool:
+            """Wait before the next poll. Returns False when the budget is spent.
+
+            The loop condition is evaluated BEFORE the SSH probe, and that probe
+            blocks for up to ssh_timeout+2 s. On the last attempt it can overrun
+            the deadline, leaving a NEGATIVE remaining time -- time.sleep() then
+            raises ValueError and kills this thread with a traceback (BUG0040).
+            Clamping here keeps the notification best-effort and silent (FWK032).
+            """
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(retry_interval, remaining))
+            return True
+
         if dut_os == "linux":
             while time.monotonic() < deadline:
                 rc, _ = _ssh("true")
@@ -461,7 +476,8 @@ def notify_dut(
                 attempt += 1
                 log.info("notify_dut: SSH not ready yet (attempt %d/%d), retry in %.0fs",
                          attempt, int(max_wait / retry_interval), retry_interval)
-                time.sleep(min(retry_interval, deadline - time.monotonic()))
+                if not _sleep_until_next_attempt():
+                    break
 
             log.warning("notify_dut: SSH not ready within %ds — wall notification skipped", max_wait)
             return
@@ -476,11 +492,27 @@ def notify_dut(
             attempt += 1
             log.info("notify_dut: no Active session yet (attempt %d/%d), retry in %.0fs",
                      attempt, int(max_wait / retry_interval), retry_interval)
-            time.sleep(min(retry_interval, deadline - time.monotonic()))
+            if not _sleep_until_next_attempt():
+                break
 
         log.warning("notify_dut: no Active session within %ds — notification skipped", max_wait)
 
-    t = threading.Thread(target=_worker, daemon=True, name="notify-dut")
+    def _safe_worker():
+        """FWK032: the in-test notification is best-effort and must never be
+        able to affect the test. An unhandled exception in a thread does not
+        abort the run, but it does dump a traceback into the operator's console
+        mid-test (BUG0040), which reads like a test failure. Swallow anything
+        that escapes and record it as a warning instead.
+        """
+        try:
+            _worker()
+        except Exception as exc:
+            logging.getLogger("function").warning(
+                "notify_dut: notification failed (%s: %s) — ignored, test unaffected",
+                type(exc).__name__, exc,
+            )
+
+    t = threading.Thread(target=_safe_worker, daemon=True, name="notify-dut")
     t.start()
     return t
 
