@@ -277,7 +277,11 @@ def run_one_cycle(
     checker,                        # LivenessChecker | None
     shutdown_coord: ShutdownCoordinator = None,
     total: int = 0,                 # total cycles in this phase (for log label)
-    is_warmup: bool = False,
+    # Which phase this cycle belongs to, and therefore which banner it prints:
+    # "main" | "warmup" | "calibrate". This used to be an is_warmup bool that
+    # calibrate also had to pass True to, so a calibrate cycle printed BOTH its
+    # caller's "[CAL c/5]" and this function's "[WARMUP c/5]" (BUG0044).
+    phase: str = "main",
     leave_on: bool = False,         # skip shutdown on this cycle (--leave-on on last cycle)
     result: dict = None,            # run result, for in-cycle OS re-detection
 ) -> dict:
@@ -300,8 +304,10 @@ def run_one_cycle(
     }
 
     _total = total or args.cycles
-    if is_warmup:
+    if phase == "warmup":
         log.info("[WARMUP %d/%d] ──────────────────────────────────────", n, _total)
+    elif phase == "calibrate":
+        log.info("[CAL %d/%d] ──────────────────────────────────────", n, _total)
     else:
         log.info("─── Cycle %d / %d ───────────────────────────────", n, _total)
 
@@ -512,13 +518,14 @@ def _run_calibrate_phase(
     for c in range(1, n_cal + 1):
         if _stop_requested:
             break
-        log.info("[CAL %d/%d] ──────────────────────────────────────", c, n_cal)
         rec = run_one_cycle(c, cal_args, relay, checker, shutdown_coord,
-                            total=n_cal, is_warmup=True, result=result)
+                            total=n_cal, phase="calibrate", result=result)
         boot_t = rec.get("boot_time_sec")
+        # A non-PASS cycle has no boot time: what it "measured" is the timeout
+        # it gave up at, which is not a boot time and must not be shown as one.
         log.info("[CAL %d/%d] verdict: %s  boot: %s s",
                  c, n_cal, rec["verdict"],
-                 f"{boot_t:.1f}" if boot_t and boot_t < args.boot_ceiling else "—")
+                 f"{boot_t:.1f}" if boot_t is not None and rec["verdict"] == PASS else "—")
         result["calibrate"]["cycles"].append({
             "n":            c,
             "verdict":      rec["verdict"],
@@ -860,7 +867,7 @@ def main() -> int:
         log.info("=== Warmup: %d cycle(s) before counted test ===", args.warmup)
         for w in range(1, args.warmup + 1):
             rec = run_one_cycle(w, args, relay, checker, shutdown_coord,
-                                total=args.warmup, is_warmup=True, result=result)
+                                total=args.warmup, phase="warmup", result=result)
             log.info("[WARMUP %d/%d] verdict: %s (not counted)", w, args.warmup, rec["verdict"])
             if args.debug and rec["verdict"] != PASS:
                 log.error("--debug: warmup cycle %d failed (%s) — stopping immediately, "

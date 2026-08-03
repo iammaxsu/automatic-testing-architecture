@@ -566,8 +566,14 @@ def _render(result: dict) -> str:
         cal_set_s = f"{cal_set}s" if cal_set is not None else "not set"
         sf_s      = f"×{sf}" if sf is not None else "-"
         def _cal_boot_str(c):
+            # A failed calibrate cycle has no boot time. Its boot_time_sec is the
+            # ceiling it gave up waiting at, so rendering it as "360.0s" presents
+            # a timeout as a measurement -- and contradicts the log, which prints
+            # "—" for the same cycle (BUG0045). Anything but PASS shows no number.
             bt = c.get("boot_time_sec")
-            return f"{bt:.1f}s" if bt is not None else "—"
+            if bt is None or c.get("verdict") != "PASS":
+                return "—"
+            return f"{bt:.1f}s"
         cal_rows  = "".join(
             f'<tr><td>{c.get("n")}</td>'
             f'<td style="color:{_verdict_colour(c.get("verdict","-"))};font-weight:600">'
