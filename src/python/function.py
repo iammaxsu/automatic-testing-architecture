@@ -15,6 +15,15 @@ from typing import Optional
 
 import config
 
+# Module-level logger, matching every other module in the framework
+# (power_cycle.py, reboot.py, liveness.py, ...). This file used to bind
+# `log = logging.getLogger("function")` separately inside each function that
+# needed it, so a function that forgot raised NameError the first time it hit a
+# log line -- which is exactly what killed a real 10-cycle run at cycle 1
+# (BUG0043). The per-function bindings that remain are harmless: they rebind
+# the same logger object.
+log = logging.getLogger("function")
+
 # Anchored to the script directory, not the process working directory, for the
 # same reason as config.LOG_DIR (LOG001/BUG0042): a bare "counter.log" follows
 # whatever directory the operator launched from.
