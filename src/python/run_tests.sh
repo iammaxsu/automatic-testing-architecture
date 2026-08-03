@@ -35,7 +35,9 @@ Phase selection:
   --reboot-cycles N        software reboot iterations (default: 0 = skip)
 
 Common options:
-  --out DIR                output root directory (default: logs)
+  --out DIR                output root directory
+                           (default: logs/ beside these scripts, not the
+                           directory you happen to run them from)
   --port N                 SSH/liveness TCP port (default: from config.py)
   --dut-os OS              auto|windows|linux     (default: auto)
   --boot-timeout N         max seconds to wait for DUT boot (default: 120)
@@ -71,7 +73,7 @@ OPT_HOST=""
 OPT_SSH_USER=""
 OPT_POWER_CYCLES=0
 OPT_REBOOT_CYCLES=0
-OPT_OUT="logs"
+OPT_OUT="$SCRIPT_DIR/logs"
 OPT_PORT=""
 OPT_DUT_OS=""
 OPT_BOOT_TIMEOUT=""

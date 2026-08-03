@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-08-03 02:16 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-08-03 02:34 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -18,15 +18,15 @@ _Generated 2026-08-03 02:16 · regenerate with `python scripts/stats.py > STATUS
 
 | Status | Count |
 | --- | --- |
-| proposed | 107 |
+| proposed | 106 |
 | implementing | 11 |
-| implemented | 31 |
+| implemented | 32 |
 
 ```mermaid
 pie showData title Requirements by status
-    "proposed" : 107
+    "proposed" : 106
     "implementing" : 11
-    "implemented" : 31
+    "implemented" : 32
 ```
 
 ### By section
@@ -39,7 +39,7 @@ pie showData title Requirements by status
 | DSK | 10 | 0 | 8 |
 | FUN | 7 | 0 | 6 |
 | FWK | 37 | 0 | 30 |
-| LOG | 26 | 0 | 24 |
+| LOG | 26 | 0 | 23 |
 | NET | 18 | 0 | 18 |
 | PWR | 16 | 0 | 1 |
 | SET | 7 | 0 | 4 |
@@ -107,7 +107,6 @@ pie showData title Requirements by status
 | [FWK032](requirements/FWK032.md) | proposed | In-Test DUT User Notification |
 | [FWK033](requirements/FWK033.md) | proposed | Privilege Precondition Check |
 | [FWK036](requirements/FWK036.md) | proposed | Cross-Language Feature Parity |
-| [LOG001](requirements/LOG001.md) | proposed | Logs Directory Creation |
 | [LOG002](requirements/LOG002.md) | proposed | All Test Output in logs/ |
 | [LOG003](requirements/LOG003.md) | proposed | Log Filename Includes Test Name |
 | [LOG004](requirements/LOG004.md) | proposed | Log Filename Includes Loop Number |
@@ -151,7 +150,7 @@ pie showData title Requirements by status
 
 ## Bugs
 
-**Total:** 41
+**Total:** 42
 
 ### By status
 
@@ -159,7 +158,7 @@ pie showData title Requirements by status
 | --- | --- |
 | open | 14 |
 | in-progress | 1 |
-| resolved | 14 |
+| resolved | 15 |
 | closed | 10 |
 | invalid | 2 |
 
@@ -167,7 +166,7 @@ pie showData title Requirements by status
 pie showData title Bugs by status
     "open" : 14
     "in-progress" : 1
-    "resolved" : 14
+    "resolved" : 15
     "closed" : 10
     "invalid" : 2
 ```
@@ -176,8 +175,8 @@ pie showData title Bugs by status
 
 | OS | Count |
 | --- | --- |
-| Ubuntu 26.04 LTS | 20 |
-| Ubuntu 24.04 LTS | 19 |
+| Ubuntu 26.04 LTS | 21 |
+| Ubuntu 24.04 LTS | 20 |
 | Windows 11 | 9 |
 | Windows 11 (zh-TW) | 2 |
 | Windows 11 (English / en-US) | 1 |
@@ -233,6 +232,7 @@ pie showData title Bugs by status
 | FWK035 | [BUG0033](bugs/closed/BUG0033-ssh-changed-host-key-blocks-all-cycles.md) | resolved |
 | FWK035 | [BUG0034](bugs/closed/BUG0034-reboot-os-probe-before-init-dut.md) | resolved |
 | FWK037 | [BUG0039](bugs/closed/BUG0039-dimm-populated-but-not-usable-undetected.md) | resolved |
+| LOG001 | [BUG0042](bugs/closed/BUG0042-python-logs-follow-cwd.md) | resolved |
 | LOG008 | [BUG0004](bugs/open/BUG0004-fio-log-filenames-missing-timestamp-and-result.md) | open |
 | LOG012 | [BUG0024](bugs/closed/BUG0024-extract-bw-fails-on-slow-disks-no-data-0-0-mib-s-f.md) | closed |
 | LOG012 | [BUG0004](bugs/open/BUG0004-fio-log-filenames-missing-timestamp-and-result.md) | open |
@@ -250,6 +250,8 @@ pie showData title Bugs by status
 | LOG023 | [BUG0035](bugs/closed/BUG0035-result-json-write-crash-loses-run.md) | resolved |
 | LOG023 | [BUG0041](bugs/closed/BUG0041-explicit-cycles-ignored-on-resume.md) | resolved |
 | LOG025 | [BUG0041](bugs/closed/BUG0041-explicit-cycles-ignored-on-resume.md) | resolved |
+| LOG025 | [BUG0042](bugs/closed/BUG0042-python-logs-follow-cwd.md) | resolved |
+| LOG026 | [BUG0042](bugs/closed/BUG0042-python-logs-follow-cwd.md) | resolved |
 | NET006 | [BUG0029](bugs/closed/BUG0029-net-test-iperf3-firewall-rule-needs-elevation.md) | resolved |
 | NET006 | [BUG0037](bugs/closed/BUG0037-net-test-local-unbound-var-kills-pair.md) | resolved |
 | NET008 | [BUG0029](bugs/closed/BUG0029-net-test-iperf3-firewall-rule-needs-elevation.md) | resolved |
@@ -291,7 +293,6 @@ _(may indicate untested code paths — worth a review)_
 | [FWK002](requirements/FWK002.md) | implemented | Cross-Language Naming Conventions |
 | [FWK029](requirements/FWK029.md) | implemented | Emergency Stop Safety Mechanism |
 | [FWK030](requirements/FWK030.md) | implemented | Two-Phase Consecutive-Failure Stop Policy |
-| [LOG026](requirements/LOG026.md) | implemented | Bounded Auto-Resume and Explicit Session Announcement |
 | [PWR001](requirements/PWR001.md) | implemented | AT and ATX PSU Type Selection |
 | [PWR002](requirements/PWR002.md) | implemented | GPIO Relay Abstraction |
 | [PWR003](requirements/PWR003.md) | implemented | Network-Based DUT Liveness Detection |

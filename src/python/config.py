@@ -35,6 +35,10 @@
 #                 as soon as the DUT changes state, capped by their timeouts.
 # ---------------------------------------------------------------------------
 
+# Underscore-prefixed so `from config import *` and the "every name here is a
+# setting" reading of this file both stay true.
+import os as _os
+
 # ---------- PSU type ----------
 # CLI: --type
 POWER_TYPE = "ATX"          # "ATX" (momentary power-button press) or "AT" (hard on/off)
@@ -242,8 +246,22 @@ BMC_USER = ""   # CLI: --bmc-user   Redfish basic-auth user (ignored if BMC_HOST
 BMC_PASS = ""   # CLI: --bmc-pass   Redfish basic-auth password
 
 # ---------- Output ----------
-LOG_DIR    = "./logs"       # CLI: --out      Where to write result.json and .log
-REPORT_DIR = "./logs"       # CLI: --report   Where to write _report.html (may differ from LOG_DIR)
+# Anchored to the directory holding these scripts, NOT the process working
+# directory (LOG001/BUG0042). `./logs` would follow whatever directory the
+# operator happened to be standing in, so `cd /tmp && python3 .../reboot.py`
+# would quietly write to /tmp/logs -- a second, invisible log tree, and a
+# `rm -rf logs/` in the deploy directory that clears the wrong one. The bash
+# and PowerShell halves of the framework already anchor to the script
+# (function.sh `_tool_path`, *.ps1 `$_script_root`); this keeps Python
+# consistent with them.
+#
+# An explicit --out/--report is still honoured verbatim, and a relative one
+# is still resolved against the working directory: the operator typed it, so
+# it means what they typed.
+_TOOL_PATH = _os.path.dirname(_os.path.abspath(__file__))
+
+LOG_DIR    = _os.path.join(_TOOL_PATH, "logs")   # CLI: --out     result.json and .log
+REPORT_DIR = _os.path.join(_TOOL_PATH, "logs")   # CLI: --report  _report.html (may differ from LOG_DIR)
 
 # ---------- Session resume (LOG026) ----------
 # Optional age bound on auto-resume, in hours.

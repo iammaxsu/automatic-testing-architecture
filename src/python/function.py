@@ -15,7 +15,10 @@ from typing import Optional
 
 import config
 
-_COUNTER_FILE = "counter.log"
+# Anchored to the script directory, not the process working directory, for the
+# same reason as config.LOG_DIR (LOG001/BUG0042): a bare "counter.log" follows
+# whatever directory the operator launched from.
+_COUNTER_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "counter.log")
 
 
 # ---------- SSH connection options (FWK035) ----------
