@@ -1,16 +1,16 @@
 # Project Status
 
-_Generated 2026-08-03 00:55 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-08-03 01:56 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
-**Total:** 148
+**Total:** 149
 
 ### By priority
 
 | Priority | Count |
 | --- | --- |
-| Must | 124 |
+| Must | 125 |
 | Should | 22 |
 | — | 2 |
 
@@ -20,13 +20,13 @@ _Generated 2026-08-03 00:55 · regenerate with `python scripts/stats.py > STATUS
 | --- | --- |
 | proposed | 107 |
 | implementing | 11 |
-| implemented | 30 |
+| implemented | 31 |
 
 ```mermaid
 pie showData title Requirements by status
     "proposed" : 107
     "implementing" : 11
-    "implemented" : 30
+    "implemented" : 31
 ```
 
 ### By section
@@ -39,7 +39,7 @@ pie showData title Requirements by status
 | DSK | 10 | 0 | 8 |
 | FUN | 7 | 0 | 6 |
 | FWK | 37 | 0 | 30 |
-| LOG | 25 | 0 | 24 |
+| LOG | 26 | 0 | 24 |
 | NET | 18 | 0 | 18 |
 | PWR | 16 | 0 | 1 |
 | SET | 7 | 0 | 4 |
@@ -291,6 +291,7 @@ _(may indicate untested code paths — worth a review)_
 | [FWK002](requirements/FWK002.md) | implemented | Cross-Language Naming Conventions |
 | [FWK029](requirements/FWK029.md) | implemented | Emergency Stop Safety Mechanism |
 | [FWK030](requirements/FWK030.md) | implemented | Two-Phase Consecutive-Failure Stop Policy |
+| [LOG026](requirements/LOG026.md) | implemented | Bounded Auto-Resume and Explicit Session Announcement |
 | [PWR001](requirements/PWR001.md) | implemented | AT and ATX PSU Type Selection |
 | [PWR002](requirements/PWR002.md) | implemented | GPIO Relay Abstraction |
 | [PWR003](requirements/PWR003.md) | implemented | Network-Based DUT Liveness Detection |

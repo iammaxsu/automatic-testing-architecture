@@ -30,6 +30,8 @@
 #   --ssh-user USERNAME       SSH login for reboot command (required)
 #   --ssh-cmd COMMAND         reboot command to run over SSH (default: "sudo reboot")
 #   --new-session             force a new session instead of resuming an incomplete one (LOG023)
+#   --resume                  resume an incomplete session regardless of its age (LOG026)
+#   --resume-max-age HOURS    auto-resume window; 0 disables auto-resume (LOG026)
 #   --debug                   stop immediately on the first non-PASS cycle, leaving DUT
 #                             state as-is for inspection (overrides --early-fail-threshold /
 #                             --max-consecutive-fails)
@@ -179,6 +181,14 @@ def parse_args() -> argparse.Namespace:
                         "(default: %(default)s)")
     p.add_argument("--new-session",   action="store_true", dest="new_session",
                    help="Force a new session even if an incomplete one exists (LOG023)")
+    p.add_argument("--resume", action="store_true", dest="force_resume",
+                   help="Resume an incomplete session regardless of its age, "
+                        "overriding --resume-max-age (LOG026)")
+    p.add_argument("--resume-max-age", type=float, default=config.RESUME_MAX_AGE_HOURS,
+                   dest="resume_max_age", metavar="HOURS",
+                   help=f"Auto-resume an incomplete session only if it was updated within "
+                        f"this many hours (default: {config.RESUME_MAX_AGE_HOURS}); "
+                        f"0 disables auto-resume, negative resumes at any age (LOG026)")
     p.add_argument("--debug", action="store_true", dest="debug",
                    help="Stop immediately on the FIRST non-PASS cycle, leaving the "
                         "DUT state as-is for inspection. Overrides "
@@ -598,10 +608,14 @@ def main() -> int:
     cycles_explicit = args.cycles is not None
     if args.cycles is None:
         args.cycles = config.CYCLES
+    if args.new_session and args.force_resume:
+        log.error("--new-session and --resume are mutually exclusive; pick one.")
+        return 1
     try:
-        session_dir, session_id, m, start_n, session, resuming = function.resolve_session(
+        session_dir, session_id, m, start_n, session, resuming, skipped = function.resolve_session(
             args.out, "reboot", dut_id, target, args.cycles, args.new_session,
-            cycles_explicit=cycles_explicit)
+            cycles_explicit=cycles_explicit,
+            max_age_hours=args.resume_max_age, force_resume=args.force_resume)
     except function.SessionTargetMismatch as exc:
         log.error(
             "Refusing to resume session %s: target mismatch "
@@ -631,7 +645,9 @@ def main() -> int:
     signal.signal(signal.SIGINT, _sigint_handler)
 
     log.info("Reboot Test")
-    log.info("  Session : %s%s", session_id, "  (RESUMING)" if resuming else "")
+    function.log_session_banner(log, resuming, session_id, session_dir, start_n, m,
+                                skipped=skipped, forced_resume=args.force_resume,
+                                new_session=args.new_session)
     log.info("  Host    : %s",   args.host or "(liveness disabled)")
     log.info("  Cycles  : m=%d, starting at n=%d", m, start_n)
     log.info("  Inter-cycle delay: %s", (

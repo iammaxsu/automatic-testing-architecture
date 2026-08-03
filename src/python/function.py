@@ -665,9 +665,32 @@ class SessionCycleMismatch(RuntimeError):
         )
 
 
+def session_age_hours(session_dir, meta: dict):
+    """Hours since a session was last written, or None if undeterminable.
+
+    Prefers the LOG023 `updated_at` field; falls back to `started_at`, then to
+    meta.json's mtime so a session written by an older build (no timestamps)
+    still gets an age rather than being treated as ageless and always resumable.
+    """
+    for key in ("updated_at", "started_at"):
+        raw = (meta or {}).get(key)
+        if raw:
+            try:
+                stamp = datetime.strptime(raw, "%Y-%m-%dT%H:%M:%S")
+            except (ValueError, TypeError):
+                continue
+            return max(0.0, (datetime.now() - stamp).total_seconds() / 3600.0)
+    try:
+        mtime = os.path.getmtime(str(Path(session_dir) / "meta.json"))
+    except OSError:
+        return None
+    return max(0.0, (time.time() - mtime) / 3600.0)
+
+
 def resolve_session(base_dir: str, test: str, dut_id: str, target: dict,
                      requested_m: int, new_session: bool,
-                     cycles_explicit: bool = False):
+                     cycles_explicit: bool = False,
+                     max_age_hours=None, force_resume: bool = False):
     """Resolve this run's session directory under <base_dir>/<dut_id>/ (LOG025).
 
     Sessions live at <base_dir>/<dut_id>/<test>_<session_id>/, keyed by DUT
@@ -676,21 +699,47 @@ def resolve_session(base_dir: str, test: str, dut_id: str, target: dict,
     (BUG0035 follow-up). Each session directory holds its own meta.json
     (the LOG023 session-state record) plus that session's log/result/report.
 
+    Auto-resume is bounded by age (LOG026): an incomplete session older than
+    `max_age_hours` is treated as abandoned and skipped, so a run interrupted
+    days ago cannot silently swallow today's cycles. `force_resume` (--resume)
+    overrides the age bound; `new_session` (--new-session) beats both.
+
     Returns (session_dir: Path, session_id: str, m: int, start_n: int,
-             meta: dict, resuming: bool). Raises SessionTargetMismatch if a
-    resumable session directory exists but was recorded for a different
+             meta: dict, resuming: bool, skipped: list). `skipped` describes
+    incomplete sessions passed over for age, so the caller can say so out loud
+    instead of leaving the operator to wonder. Raises SessionTargetMismatch if
+    a resumable session directory exists but was recorded for a different
     target identity.
     """
     dut_dir = Path(base_dir) / dut_id
     dut_dir.mkdir(parents=True, exist_ok=True)
 
+    if max_age_hours is None:
+        max_age_hours = getattr(config, "RESUME_MAX_AGE_HOURS", 24)
+
     candidate = None
+    skipped   = []
     if not new_session:
         for child in sorted(dut_dir.glob(f"{test}_*"), reverse=True):
             meta = read_json(str(child / "meta.json"))
-            if meta and meta.get("status") == "running" and meta.get("n", 0) < meta.get("m", 0):
-                candidate = (child, meta)
-                break
+            if not (meta and meta.get("status") == "running"
+                    and meta.get("n", 0) < meta.get("m", 0)):
+                continue
+            age = session_age_hours(child, meta)
+            stale = (not force_resume and max_age_hours >= 0
+                     and (max_age_hours == 0
+                          or (age is not None and age > max_age_hours)))
+            if stale:
+                skipped.append({
+                    "session_id": meta.get("session_id", child.name),
+                    "age_hours":  age,
+                    "n":          meta.get("n", 0),
+                    "m":          meta.get("m", 0),
+                    "path":       str(child),
+                })
+                continue
+            candidate = (child, meta)
+            break
 
     if candidate is not None:
         session_dir, meta = candidate
@@ -725,7 +774,43 @@ def resolve_session(base_dir: str, test: str, dut_id: str, target: dict,
         write_json(str(session_dir / "meta.json"), meta)
         resuming = False
 
-    return session_dir, session_id, m, start_n, meta, resuming
+    return session_dir, session_id, m, start_n, meta, resuming, skipped
+
+
+def log_session_banner(log, resuming: bool, session_id: str, session_dir,
+                       start_n: int, m: int, skipped=None,
+                       forced_resume: bool = False, new_session: bool = False) -> None:
+    """Announce NEW vs RESUMING before the run starts (LOG026).
+
+    Whether this run continues an earlier one is the single most consequential
+    fact about it -- it decides how many cycles actually execute and which
+    result.json grows -- so it is stated as a banner, not as one field among
+    twenty. Operators should never have to delete the output directory just to
+    be sure they are getting a clean run.
+    """
+    bar = "=" * 64
+    log.info(bar)
+    if resuming:
+        log.info("  RESUMING an existing session — cycles %d-%d of %d", start_n, m, m)
+        log.info("  Session   : %s", session_id)
+        log.info("  Directory : %s", session_dir)
+        log.info("  Already done: %d cycle(s); this run appends to the SAME "
+                 "result.json and report.", start_n - 1)
+        if forced_resume:
+            log.info("  (--resume given: the session age limit was bypassed.)")
+        log.info("  To start a clean run instead, re-run with --new-session.")
+    else:
+        log.info("  NEW session — cycles 1-%d", m)
+        log.info("  Session   : %s", session_id)
+        log.info("  Directory : %s", session_dir)
+        if new_session:
+            log.info("  (--new-session given: any incomplete session was left untouched.)")
+    for s in (skipped or []):
+        log.warning("  Skipped incomplete session %s (%d/%d cycles, last updated "
+                    "%.1f h ago — older than the resume limit); it was NOT resumed.",
+                    s["session_id"], s["n"], s["m"], s["age_hours"])
+        log.warning("    To continue it instead, re-run with --resume.")
+    log.info(bar)
 
 
 # Backwards-compatible alias (result.json is written via the same atomic path)
