@@ -699,10 +699,11 @@ def resolve_session(base_dir: str, test: str, dut_id: str, target: dict,
     (BUG0035 follow-up). Each session directory holds its own meta.json
     (the LOG023 session-state record) plus that session's log/result/report.
 
-    Auto-resume is bounded by age (LOG026): an incomplete session older than
-    `max_age_hours` is treated as abandoned and skipped, so a run interrupted
-    days ago cannot silently swallow today's cycles. `force_resume` (--resume)
-    overrides the age bound; `new_session` (--new-session) beats both.
+    Auto-resume may optionally be bounded by age (LOG026): an incomplete session
+    older than `max_age_hours` is treated as abandoned and skipped. This is OFF
+    by default (config.RESUME_MAX_AGE_HOURS = -1) because an endurance run
+    legitimately spans weekends and holidays. `force_resume` (--resume) ignores
+    the bound; `new_session` (--new-session) beats both.
 
     Returns (session_dir: Path, session_id: str, m: int, start_n: int,
              meta: dict, resuming: bool, skipped: list). `skipped` describes
@@ -715,7 +716,7 @@ def resolve_session(base_dir: str, test: str, dut_id: str, target: dict,
     dut_dir.mkdir(parents=True, exist_ok=True)
 
     if max_age_hours is None:
-        max_age_hours = getattr(config, "RESUME_MAX_AGE_HOURS", 24)
+        max_age_hours = getattr(config, "RESUME_MAX_AGE_HOURS", -1)
 
     candidate = None
     skipped   = []

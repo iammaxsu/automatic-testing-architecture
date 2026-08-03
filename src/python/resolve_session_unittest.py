@@ -15,6 +15,7 @@ import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import config
 import function
 
 TEST   = "power_cycle"
@@ -62,9 +63,22 @@ class ResolveSessionTest(unittest.TestCase):
         self.assertEqual(start_n, 7)         # n=6 done -> continue at 7
         self.assertEqual(skipped, [])
 
+    def test_old_session_resumes_by_default(self):
+        """Default is NO expiry: an endurance run legitimately pauses over a
+        weekend or a four-day public holiday, and must continue afterwards."""
+        self.seed(age_hours=4 * 24)                 # long weekend
+        _, sid, _, start_n, _, resuming, skipped = self.resolve()
+        self.assertTrue(resuming)
+        self.assertEqual(sid, OLD_ID)
+        self.assertEqual(start_n, 7)
+        self.assertEqual(skipped, [])
+
+    def test_default_config_has_no_expiry(self):
+        self.assertLess(config.RESUME_MAX_AGE_HOURS, 0)
+
     def test_stale_session_is_skipped_for_a_new_one(self):
         self.seed(age_hours=50)
-        _, sid, _, start_n, _, resuming, skipped = self.resolve()
+        _, sid, _, start_n, _, resuming, skipped = self.resolve(max_age_hours=24)
         self.assertFalse(resuming)
         self.assertNotEqual(sid, OLD_ID)
         self.assertEqual(start_n, 1)
@@ -76,14 +90,15 @@ class ResolveSessionTest(unittest.TestCase):
     def test_skipped_session_is_left_on_disk(self):
         """FWK028: a stale session stays canonical and stays resumable."""
         self.seed(age_hours=50)
-        self.resolve()
+        self.resolve(max_age_hours=24)
         meta = json.loads((self.base / DUT_ID / f"{TEST}_{OLD_ID}" / "meta.json").read_text())
         self.assertEqual(meta["status"], "running")
         self.assertEqual(meta["n"], 6)
 
     def test_force_resume_overrides_age(self):
         self.seed(age_hours=50)
-        _, sid, _, start_n, _, resuming, _ = self.resolve(force_resume=True)
+        _, sid, _, start_n, _, resuming, _ = self.resolve(max_age_hours=24,
+                                                          force_resume=True)
         self.assertTrue(resuming)
         self.assertEqual(sid, OLD_ID)
         self.assertEqual(start_n, 7)

@@ -46,8 +46,8 @@ Common options:
   --dry-run                simulate without touching GPIO or SSH
   --new-session            force new sessions; do not resume incomplete ones
   --resume                 resume incomplete sessions regardless of age
-  --resume-max-age HOURS   auto-resume only sessions updated within HOURS
-                           (default: 24; 0 disables auto-resume)
+  --resume-max-age HOURS   optional auto-resume age bound, in hours
+                           (default: no expiry; 0 disables auto-resume)
 
 GPIO / power control (both phases):
   --type ATX|AT            PSU type (default: from config.py)

@@ -246,10 +246,14 @@ LOG_DIR    = "./logs"       # CLI: --out      Where to write result.json and .lo
 REPORT_DIR = "./logs"       # CLI: --report   Where to write _report.html (may differ from LOG_DIR)
 
 # ---------- Session resume (LOG026) ----------
-# An incomplete session is only auto-resumed while it is plausibly the run the
-# operator just interrupted. Past this many hours it is treated as abandoned and
-# a NEW session starts instead -- otherwise a session aborted last week silently
-# absorbs today's cycles, and the only reliable way to get a clean run is to
-# delete the output directory by hand. 0 disables auto-resume entirely; a
-# negative value restores the old "resume at any age" behaviour.
-RESUME_MAX_AGE_HOURS = 24   # CLI: --resume-max-age
+# Optional age bound on auto-resume, in hours.
+#
+# DISABLED BY DEFAULT (-1 = resume at any age). An endurance run legitimately
+# spans weekends and public holidays -- a 4-day break mid-test is normal bench
+# practice, not evidence that the session was abandoned -- so no wall-clock gap
+# is treated as too long. What protects the operator instead is the LOG026
+# startup banner, which states NEW vs RESUMING before the first cycle.
+#
+# Set a positive number of hours to opt into expiry; 0 disables auto-resume
+# entirely (every run starts a new session).
+RESUME_MAX_AGE_HOURS = -1   # CLI: --resume-max-age

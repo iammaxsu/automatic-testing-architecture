@@ -31,7 +31,7 @@
 #   --ssh-cmd COMMAND         reboot command to run over SSH (default: "sudo reboot")
 #   --new-session             force a new session instead of resuming an incomplete one (LOG023)
 #   --resume                  resume an incomplete session regardless of its age (LOG026)
-#   --resume-max-age HOURS    auto-resume window; 0 disables auto-resume (LOG026)
+#   --resume-max-age HOURS    optional auto-resume age bound; default -1 = no expiry (LOG026)
 #   --debug                   stop immediately on the first non-PASS cycle, leaving DUT
 #                             state as-is for inspection (overrides --early-fail-threshold /
 #                             --max-consecutive-fails)
@@ -186,9 +186,11 @@ def parse_args() -> argparse.Namespace:
                         "overriding --resume-max-age (LOG026)")
     p.add_argument("--resume-max-age", type=float, default=config.RESUME_MAX_AGE_HOURS,
                    dest="resume_max_age", metavar="HOURS",
-                   help=f"Auto-resume an incomplete session only if it was updated within "
-                        f"this many hours (default: {config.RESUME_MAX_AGE_HOURS}); "
-                        f"0 disables auto-resume, negative resumes at any age (LOG026)")
+                   help=f"Optional age bound on auto-resume: resume an incomplete session "
+                        f"only if it was updated within this many hours. Default "
+                        f"{config.RESUME_MAX_AGE_HOURS} = no expiry, so a run paused over a "
+                        f"weekend or long holiday still resumes. 0 disables auto-resume "
+                        f"entirely (LOG026)")
     p.add_argument("--debug", action="store_true", dest="debug",
                    help="Stop immediately on the FIRST non-PASS cycle, leaving the "
                         "DUT state as-is for inspection. Overrides "
