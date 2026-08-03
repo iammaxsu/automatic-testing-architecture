@@ -390,6 +390,30 @@ def init_dut(
 
 # ---------- DUT notification ----------
 
+def win_msg_cmd(target: str, message: str) -> str:
+    """Build a Windows `msg.exe` command line for a remote cmd.exe (BUG0025).
+
+    The message MUST be quoted. msg.exe parses its arguments positionally and
+    treats any token beginning with '/' as a switch, so an unquoted
+    "... cycle 1/10. Do not use." can be mis-split or partly swallowed. Quoting
+    makes the whole text one argument regardless of its content.
+
+    No /time is passed on purpose: with no time limit msg.exe leaves the popup
+    on screen until it is acknowledged, which is what an "in progress — do not
+    use" reminder needs. Passing /time would make it self-dismiss mid-test.
+    """
+    # Embedded double quotes would terminate the argument early; the message is
+    # framework-generated prose, so folding them to single quotes is lossless
+    # enough and cannot produce a malformed command line.
+    return 'msg {} "{}"'.format(target, message.replace('"', "'"))
+
+
+def _first_line(text: str, joiner: str = " ", limit: int = 120) -> str:
+    """Collapse command output to one short line for a single log record."""
+    flat = joiner.join(line.strip() for line in (text or "").splitlines() if line.strip())
+    return flat[:limit]
+
+
 def notify_dut(
     ssh_user: str,
     host: str,
@@ -445,10 +469,10 @@ def notify_dut(
                     text=True,
                     errors="replace",
                 )
-                return r.returncode, r.stdout
+                return r.returncode, r.stdout, r.stderr
             except Exception as exc:
                 log.debug("notify_dut SSH error: %s", exc)
-                return -1, ""
+                return -1, "", str(exc)
 
         deadline = time.monotonic() + max_wait
         attempt = 0
@@ -470,7 +494,7 @@ def notify_dut(
 
         if dut_os == "linux":
             while time.monotonic() < deadline:
-                rc, _ = _ssh("true")
+                rc, _, _ = _ssh("true")
                 log.debug("notify_dut: ssh readiness rc=%d", rc)
                 if rc == 0:
                     _ssh(f"wall {message!r}")
@@ -485,20 +509,46 @@ def notify_dut(
             log.warning("notify_dut: SSH not ready within %ds — wall notification skipped", max_wait)
             return
 
+        # Windows: attempt delivery directly. Do NOT gate on `query session`
+        # (BUG0025) -- enumerating sessions is an administrative operation, so
+        # over SSH as an ordinary test user it commonly fails outright ("Error 5
+        # getting session names"). The old code required rc == 0 AND "Active" in
+        # its output before it would even try msg.exe, so the notification was
+        # suppressed by a *precondition check* that is stricter than the thing it
+        # guards: the operator's manual `ssh <dut> "msg * hello"` worked precisely
+        # because it skipped this gate. msg.exe reports its own failures, so ask
+        # it and believe its exit code instead of predicting the answer.
         while time.monotonic() < deadline:
-            rc, out = _ssh("query session")
-            log.debug("notify_dut: query session rc=%d out=%r", rc, out)
-            if rc == 0 and "Active" in out:
-                _ssh(f"msg * {message}")
-                log.info("notify_dut: msg sent on attempt %d", attempt + 1)
-                return
             attempt += 1
-            log.info("notify_dut: no Active session yet (attempt %d/%d), retry in %.0fs",
-                     attempt, int(max_wait / retry_interval), retry_interval)
+            rc, out, err = _ssh(win_msg_cmd("*", message))
+            if rc == 0:
+                log.info("notify_dut: msg delivered to all sessions on attempt %d", attempt)
+                return
+            # `msg *` iterates every session including disconnected/service ones
+            # and can fail as a whole; addressing the interactive desktop by name
+            # is the narrower request and often succeeds where the wildcard did not.
+            rc2, out2, err2 = _ssh(win_msg_cmd("console", message))
+            if rc2 == 0:
+                log.info("notify_dut: msg delivered to the console session on attempt %d",
+                         attempt)
+                return
+            log.info("notify_dut: msg not delivered (attempt %d/%d): "
+                     "'msg *' rc=%d %s | 'msg console' rc=%d %s; retry in %.0fs",
+                     attempt, max(1, int(max_wait / retry_interval)),
+                     rc, _first_line(err or out), rc2, _first_line(err2 or out2),
+                     retry_interval)
             if not _sleep_until_next_attempt():
                 break
 
-        log.warning("notify_dut: no Active session within %ds — notification skipped", max_wait)
+        # One diagnostic snapshot, so a failure says WHY rather than just "skipped".
+        # This is also where a missing msg.exe shows up: Windows Home editions do
+        # not ship it, and there is no substitute -- the test is unaffected either
+        # way, the operator just does not get the desktop reminder.
+        rc3, out3, err3 = _ssh("query session")
+        log.warning("notify_dut: could not deliver the desktop notification within "
+                    "%ds — test unaffected. 'query session' rc=%d: %s",
+                    max_wait, rc3,
+                    _first_line(out3 or err3, joiner=" | ", limit=300) or "(no output)")
 
     def _safe_worker():
         """FWK032: the in-test notification is best-effort and must never be
