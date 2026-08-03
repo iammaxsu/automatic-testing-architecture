@@ -646,8 +646,28 @@ class SessionTargetMismatch(RuntimeError):
         )
 
 
+class SessionCycleMismatch(RuntimeError):
+    """Raised when an EXPLICIT --cycles differs from the resumable session's.
+
+    Resuming reuses the original session's cycle target (LOG023/FWK013), which
+    silently discards a different, explicitly-requested count -- an operator who
+    asks for 300 cycles and gets a resumed 100-cycle run has no idea until the
+    report says 100/100 (BUG0041). Refuse instead, and let them choose.
+    """
+
+    def __init__(self, session_id, session_m, requested_m):
+        self.session_id  = session_id
+        self.session_m   = session_m
+        self.requested_m = requested_m
+        super().__init__(
+            f"resumable session {session_id} has m={session_m}, "
+            f"but --cycles {requested_m} was requested"
+        )
+
+
 def resolve_session(base_dir: str, test: str, dut_id: str, target: dict,
-                     requested_m: int, new_session: bool):
+                     requested_m: int, new_session: bool,
+                     cycles_explicit: bool = False):
     """Resolve this run's session directory under <base_dir>/<dut_id>/ (LOG025).
 
     Sessions live at <base_dir>/<dut_id>/<test>_<session_id>/, keyed by DUT
@@ -676,6 +696,11 @@ def resolve_session(base_dir: str, test: str, dut_id: str, target: dict,
         session_dir, meta = candidate
         if meta.get("target") != target:
             raise SessionTargetMismatch(meta.get("session_id"), meta.get("target"), target)
+        # An explicitly-requested cycle count that differs from the session's is
+        # a different intent, not a resume -- refuse rather than silently run the
+        # old target (BUG0041).
+        if cycles_explicit and meta.get("m") != requested_m:
+            raise SessionCycleMismatch(meta.get("session_id"), meta.get("m"), requested_m)
         session_id = meta["session_id"]
         m          = meta["m"]
         start_n    = meta["n"] + 1

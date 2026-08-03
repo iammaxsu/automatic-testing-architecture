@@ -90,8 +90,11 @@ def parse_args() -> argparse.Namespace:
                         "can change (DHCP) but you want one continuous history.")
     p.add_argument("--port",     default=config.DUT_PORT, type=int,
                    help="TCP port to probe (default: %(default)s)")
-    p.add_argument("--cycles",   default=config.CYCLES, type=int,
-                   help="Number of boot cycles (default: %(default)s)")
+    # default=None is a sentinel so we can tell "operator asked for N" from
+    # "operator said nothing" — an explicit --cycles that disagrees with a
+    # resumable session must not be silently discarded (BUG0041).
+    p.add_argument("--cycles",   default=None, type=int,
+                   help=f"Number of boot cycles (default: {config.CYCLES})")
     p.add_argument("--on",       default=config.ON_TIME_SEC, type=int,
                    dest="on_time", help="DUT on-time in seconds (default: %(default)s)")
     p.add_argument("--off",      default=config.OFF_TIME_SEC, type=int,
@@ -647,9 +650,13 @@ def main() -> int:
         "ssh_user": args.ssh_user or None,
         "type":     args.type,
     }
+    cycles_explicit = args.cycles is not None
+    if args.cycles is None:
+        args.cycles = config.CYCLES
     try:
         session_dir, session_id, m, start_n, session, resuming = function.resolve_session(
-            args.out, "power_cycle", dut_id, target, args.cycles, args.new_session)
+            args.out, "power_cycle", dut_id, target, args.cycles, args.new_session,
+            cycles_explicit=cycles_explicit)
     except function.SessionTargetMismatch as exc:
         log.error(
             "Refusing to resume session %s: target mismatch "
@@ -657,6 +664,22 @@ def main() -> int:
             "Re-run with --host/--ssh-user/--type matching the original session, "
             "or pass --new-session to start a fresh one.",
             exc.session_id, exc.expected, exc.got,
+        )
+        return 1
+    except function.SessionCycleMismatch as exc:
+        log.error(
+            "Refusing to resume session %s: it was started with --cycles %s, but "
+            "you asked for %s. Resuming would silently run %s cycles, not %s.",
+            exc.session_id, exc.session_m, exc.requested_m,
+            exc.session_m, exc.requested_m,
+        )
+        log.error(
+            "  To start a NEW %s-cycle run:      add --new-session",
+            exc.requested_m,
+        )
+        log.error(
+            "  To finish the existing run:       re-run with --cycles %s",
+            exc.session_m,
         )
         return 1
     session_path = session_dir / "meta.json"

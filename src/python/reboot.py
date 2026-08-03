@@ -113,8 +113,9 @@ def parse_args() -> argparse.Namespace:
                         "can change (DHCP) but you want one continuous history.")
     p.add_argument("--port",          default=config.DUT_PORT, type=int,
                    help="TCP port to probe (default: %(default)s)")
-    p.add_argument("--cycles",        default=config.CYCLES, type=int,
-                   help="Number of reboot cycles (default: %(default)s)")
+    # default=None is a sentinel: see power_cycle.py / BUG0041.
+    p.add_argument("--cycles",        default=None, type=int,
+                   help=f"Number of reboot cycles (default: {config.CYCLES})")
     p.add_argument("--off",           default="auto", type=_parse_off_time,
                    dest="off_time",
                    help="Inter-cycle delay after each cycle's verdict is recorded. "
@@ -594,9 +595,13 @@ def main() -> int:
         "port":     args.port,
         "ssh_user": args.ssh_user or None,
     }
+    cycles_explicit = args.cycles is not None
+    if args.cycles is None:
+        args.cycles = config.CYCLES
     try:
         session_dir, session_id, m, start_n, session, resuming = function.resolve_session(
-            args.out, "reboot", dut_id, target, args.cycles, args.new_session)
+            args.out, "reboot", dut_id, target, args.cycles, args.new_session,
+            cycles_explicit=cycles_explicit)
     except function.SessionTargetMismatch as exc:
         log.error(
             "Refusing to resume session %s: target mismatch "
@@ -605,6 +610,16 @@ def main() -> int:
             "or pass --new-session to start a fresh one.",
             exc.session_id, exc.expected, exc.got,
         )
+        return 1
+    except function.SessionCycleMismatch as exc:
+        log.error(
+            "Refusing to resume session %s: it was started with --cycles %s, but "
+            "you asked for %s. Resuming would silently run %s cycles, not %s.",
+            exc.session_id, exc.session_m, exc.requested_m,
+            exc.session_m, exc.requested_m,
+        )
+        log.error("  To start a NEW %s-cycle run:      add --new-session", exc.requested_m)
+        log.error("  To finish the existing run:       re-run with --cycles %s", exc.session_m)
         return 1
     session_path = session_dir / "meta.json"
 

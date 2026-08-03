@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-07-31 08:54 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-08-03 00:55 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -151,7 +151,7 @@ pie showData title Requirements by status
 
 ## Bugs
 
-**Total:** 40
+**Total:** 41
 
 ### By status
 
@@ -159,7 +159,7 @@ pie showData title Requirements by status
 | --- | --- |
 | open | 14 |
 | in-progress | 1 |
-| resolved | 13 |
+| resolved | 14 |
 | closed | 10 |
 | invalid | 2 |
 
@@ -167,7 +167,7 @@ pie showData title Requirements by status
 pie showData title Bugs by status
     "open" : 14
     "in-progress" : 1
-    "resolved" : 13
+    "resolved" : 14
     "closed" : 10
     "invalid" : 2
 ```
@@ -177,8 +177,8 @@ pie showData title Bugs by status
 | OS | Count |
 | --- | --- |
 | Ubuntu 26.04 LTS | 20 |
-| Ubuntu 24.04 LTS | 18 |
-| Windows 11 | 8 |
+| Ubuntu 24.04 LTS | 19 |
+| Windows 11 | 9 |
 | Windows 11 (zh-TW) | 2 |
 | Windows 11 (English / en-US) | 1 |
 | Windows 11 (Traditional Chinese / zh-TW) | 1 |
@@ -217,6 +217,7 @@ pie showData title Bugs by status
 | FUN005 | [BUG0013](bugs/open/BUG0013-log-entries-do-not-include-log-level-prefix.md) | open |
 | FWK011 | [BUG0037](bugs/closed/BUG0037-net-test-local-unbound-var-kills-pair.md) | resolved |
 | FWK013 | [BUG0038](bugs/closed/BUG0038-dev-detect-reruns-every-boot.md) | resolved |
+| FWK013 | [BUG0041](bugs/closed/BUG0041-explicit-cycles-ignored-on-resume.md) | resolved |
 | FWK025 | [BUG0014](bugs/closed/BUG0014-root-requirement-of-detection-scripts-not-formalis.md) | closed |
 | FWK026 | [BUG0002](bugs/closed/BUG0002-cannot-open-dev-detect-sh-html-report.md) | closed |
 | FWK026 | [BUG0014](bugs/closed/BUG0014-root-requirement-of-detection-scripts-not-formalis.md) | closed |
@@ -247,6 +248,8 @@ pie showData title Bugs by status
 | LOG021 | [BUG0002](bugs/closed/BUG0002-cannot-open-dev-detect-sh-html-report.md) | closed |
 | LOG022 | [BUG0019](bugs/closed/BUG0019-result-json-metadata-corruption-session-id-unknown.md) | closed |
 | LOG023 | [BUG0035](bugs/closed/BUG0035-result-json-write-crash-loses-run.md) | resolved |
+| LOG023 | [BUG0041](bugs/closed/BUG0041-explicit-cycles-ignored-on-resume.md) | resolved |
+| LOG025 | [BUG0041](bugs/closed/BUG0041-explicit-cycles-ignored-on-resume.md) | resolved |
 | NET006 | [BUG0029](bugs/closed/BUG0029-net-test-iperf3-firewall-rule-needs-elevation.md) | resolved |
 | NET006 | [BUG0037](bugs/closed/BUG0037-net-test-local-unbound-var-kills-pair.md) | resolved |
 | NET008 | [BUG0029](bugs/closed/BUG0029-net-test-iperf3-firewall-rule-needs-elevation.md) | resolved |
@@ -266,6 +269,7 @@ pie showData title Bugs by status
 | PWR012 | [BUG0034](bugs/closed/BUG0034-reboot-os-probe-before-init-dut.md) | resolved |
 | PWR012 | [BUG0035](bugs/closed/BUG0035-result-json-write-crash-loses-run.md) | resolved |
 | PWR012 | [BUG0040](bugs/closed/BUG0040-notify-dut-negative-sleep-traceback.md) | resolved |
+| PWR012 | [BUG0041](bugs/closed/BUG0041-explicit-cycles-ignored-on-resume.md) | resolved |
 | PWR012 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
 | PWR012 | [BUG0036](bugs/open/BUG0036-reboot-slow-boot-misjudged-dead.md) | in-progress |
 | PWR013 | [BUG0036](bugs/open/BUG0036-reboot-slow-boot-misjudged-dead.md) | in-progress |
@@ -287,7 +291,6 @@ _(may indicate untested code paths — worth a review)_
 | [FWK002](requirements/FWK002.md) | implemented | Cross-Language Naming Conventions |
 | [FWK029](requirements/FWK029.md) | implemented | Emergency Stop Safety Mechanism |
 | [FWK030](requirements/FWK030.md) | implemented | Two-Phase Consecutive-Failure Stop Policy |
-| [LOG025](requirements/LOG025.md) | implemented | DUT-First Session Directory Layout |
 | [PWR001](requirements/PWR001.md) | implemented | AT and ATX PSU Type Selection |
 | [PWR002](requirements/PWR002.md) | implemented | GPIO Relay Abstraction |
 | [PWR003](requirements/PWR003.md) | implemented | Network-Based DUT Liveness Detection |
