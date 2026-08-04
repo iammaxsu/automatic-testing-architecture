@@ -1,16 +1,16 @@
 # Project Status
 
-_Generated 2026-07-29 09:23 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-08-04 08:28 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
-**Total:** 136
+**Total:** 137
 
 ### By priority
 
 | Priority | Count |
 | --- | --- |
-| Must | 118 |
+| Must | 119 |
 | Should | 16 |
 | — | 2 |
 
@@ -19,13 +19,13 @@ _Generated 2026-07-29 09:23 · regenerate with `python scripts/stats.py > STATUS
 | Status | Count |
 | --- | --- |
 | proposed | 107 |
-| implementing | 3 |
+| implementing | 4 |
 | implemented | 26 |
 
 ```mermaid
 pie showData title Requirements by status
     "proposed" : 107
-    "implementing" : 3
+    "implementing" : 4
     "implemented" : 26
 ```
 
@@ -39,7 +39,7 @@ pie showData title Requirements by status
 | DSK | 10 | 0 | 8 |
 | FUN | 7 | 0 | 6 |
 | FWK | 34 | 0 | 28 |
-| LOG | 25 | 0 | 24 |
+| LOG | 26 | 0 | 25 |
 | NET | 13 | 0 | 13 |
 | PWR | 14 | 0 | 1 |
 | SET | 6 | 0 | 4 |
@@ -126,6 +126,7 @@ pie showData title Requirements by status
 | [LOG021](requirements/LOG021.md) | proposed | Output File Ownership |
 | [LOG022](requirements/LOG022.md) | proposed | ISO 8601 Timestamp Consistency |
 | [LOG023](requirements/LOG023.md) | proposed | Test Session Identity and Resume |
+| [LOG026](requirements/LOG026.md) | implementing | Session State Location and Target-Count Authority |
 | [NET001](requirements/NET001.md) | proposed | Enumerate enp and eno Interfaces |
 | [NET002](requirements/NET002.md) | proposed | Namespace-Based Loopback Testing |
 | [NET003](requirements/NET003.md) | proposed | Clean Namespace State Before Testing |

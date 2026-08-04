@@ -36,6 +36,10 @@ ${POWER_OFF_TIMEOUT}      60
 ${POWER_ON_TIMEOUT}       120
 ${DUT_HOST}               ${EMPTY}
 ${DUT_BOOT_TIMEOUT}       300
+# Session / resume (LOG023, LOG026). State lives at
+# <LOG_ROOT>/<dut>/<test>_session.json - delete the logs tree for a full reset.
+${LOG_ROOT}               logs
+${NEW_SESSION}            ${FALSE}
 
 *** Keywords ***
 Require Power Tests Enabled

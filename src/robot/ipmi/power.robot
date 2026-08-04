@@ -38,14 +38,31 @@ Power Off Then On Restores Power
 Power Cycle Restores Power
     [Documentation]    Power-cycle the DUT ${POWER_CYCLES} time(s); every cycle
     ...                must return to power on (and DUT liveness if DUT_HOST set).
-    ${count}=    Convert To Integer    ${POWER_CYCLES}
-    FOR    ${i}    IN RANGE    ${count}
-        ${n}=    Evaluate    ${i} + 1
-        Log    power cycle ${n}/${count}    console=True
+    ...
+    ...                RESUMABLE (LOG023/LOG026): progress is recorded in
+    ...                ${LOG_ROOT}/<dut>/power_cycle_ipmi_session.json after every
+    ...                cycle, so an interrupted run continues where it stopped.
+    ...                Asking for a different POWER_CYCLES starts a NEW session
+    ...                (you always get the count you asked for), and deleting the
+    ...                logs tree resets everything. Force a fresh start with
+    ...                -v NEW_SESSION:True.
+    ${session}=    Start Or Resume Session    power_cycle_ipmi    ${POWER_CYCLES}
+    ...    log_root=${LOG_ROOT}    new_session=${NEW_SESSION}
+    ${target}=    Set Variable    ${session}[target]
+    IF    ${session}[resuming]
+        Log    resuming session ${session}[session_id]: ${session}[completed]/${target} done, ${session}[remaining] to go    console=True
+    ELSE
+        Log    new session ${session}[session_id]: ${target} cycle(s)    console=True
+    END
+    ${end}=    Evaluate    ${target} + 1
+    FOR    ${n}    IN RANGE    ${session}[start_index]    ${end}
+        Log    power cycle ${n}/${target}    console=True
         Set Chassis Power    cycle
         ${secs}=    Wait For Chassis Power    on    timeout=${POWER_ON_TIMEOUT}
         IF    '${DUT_HOST}' != ''
             Wait Until Host Alive    ${DUT_HOST}    ${DUT_BOOT_TIMEOUT}
         END
+        Update Session Progress    ${n}
         Log    cycle ${n} recovered in ${secs}s    console=True
     END
+    Complete Session

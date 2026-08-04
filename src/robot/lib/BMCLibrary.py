@@ -33,8 +33,13 @@
 #   00.00.04  record_bmc_identity (firmware/version -> report metadata for
 #             traceability); gated chassis power-control keywords
 #             (set/get/wait) + host liveness, for the power-cycle suite.
+#   00.00.05  Session identity + resume for endurance runs (LOG023/LOG026):
+#             session state lives under logs/<dut>/, so deleting logs/ is a
+#             full reset; an explicitly different target starts a new session
+#             instead of silently reusing the old cycle count.
 
 import csv
+import json
 import os
 import re
 import subprocess
@@ -57,7 +62,7 @@ class BMCLibrary:
     """Keywords for IPMI sensor / SEL testing against one BMC."""
 
     ROBOT_LIBRARY_SCOPE = "SUITE"
-    ROBOT_LIBRARY_VERSION = "00.00.04"
+    ROBOT_LIBRARY_VERSION = "00.00.05"
 
     def __init__(self, host=None, user=None, interface="lanplus",
                  timeout=60, retries=3, retry_delay=5):
@@ -623,3 +628,133 @@ class BMCLibrary:
             time.sleep(interval)
         raise AssertionError("host %s did not respond to ping within %ss"
                              % (host, timeout))
+
+    # ---------- session identity & resume (LOG023 / LOG025 / LOG026) ----------
+    # State lives at <log_root>/<dut>/<test>_session.json - inside the logs
+    # tree, so deleting logs/ is a complete reset, and per-DUT, so sessions for
+    # different DUTs never collide.
+
+    def _dut_component(self):
+        """Filesystem-safe <dut> path component (LOG025)."""
+        return re.sub(r"[:/\\]", "_", self._host or "unknown")
+
+    def _session_path(self, test, log_root):
+        return Path(log_root) / self._dut_component() / ("%s_session.json" % test)
+
+    @staticmethod
+    def _truthy(value):
+        return str(value).strip().lower() in ("true", "1", "yes", "on")
+
+    @staticmethod
+    def _write_json_atomic(path, data):
+        """Write JSON atomically (tmp + rename), per LOG023."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+        os.replace(tmp, path)
+
+    def start_or_resume_session(self, test, target, log_root="logs",
+                                new_session=False):
+        """Start a new endurance session, or resume an incomplete one.
+
+        Resumes only when an incomplete session exists for this DUT *and* its
+        planned count matches ``target``. A different ``target`` means the
+        operator asked for a different test, so a NEW session starts with that
+        count (never silently reusing the old one). Deleting the logs tree
+        removes the state file and therefore forces a fresh start.
+
+        Returns a dict: session_id, target, completed, start_index, remaining,
+        resuming, session_file.
+        """
+        target = int(target)
+        if target < 1:
+            raise ValueError("target must be >= 1, got %r" % target)
+        path = self._session_path(test, log_root)
+
+        state = None
+        if not self._truthy(new_session):
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    state = json.load(fh)
+            except (OSError, ValueError):
+                state = None
+
+        resuming = False
+        if (state and state.get("status") == "running"
+                and int(state.get("n", 0)) < int(state.get("m", 0))):
+            if int(state.get("m", 0)) == target:
+                resuming = True
+            else:
+                logger.warn(
+                    "requested %d cycle(s) but the incomplete session planned %s; "
+                    "starting a NEW session for %d"
+                    % (target, state.get("m"), target))
+
+        now = datetime.now().replace(microsecond=0).isoformat()
+        if resuming:
+            session_id = state["session_id"]
+            completed = int(state.get("n", 0))
+            state["updated_at"] = now
+            logger.info("resuming session %s: %d/%d cycle(s) already done"
+                        % (session_id, completed, target))
+        else:
+            session_id = time.strftime("%Y%m%dT%H%M%S")
+            completed = 0
+            state = {
+                "session_id": session_id,
+                "test": test,
+                "dut": self._host or "unknown",
+                "m": target,
+                "n": 0,
+                "status": "running",
+                "started_at": now,
+                "updated_at": now,
+            }
+            logger.info("new session %s: %d cycle(s) planned" % (session_id, target))
+        self._write_json_atomic(path, state)
+
+        self._session_state = state
+        self._session_file = str(path)
+        return {
+            "session_id": session_id,
+            "target": target,
+            "completed": completed,
+            "start_index": completed + 1,
+            "remaining": target - completed,
+            "resuming": resuming,
+            "session_file": str(path),
+        }
+
+    def update_session_progress(self, completed):
+        """Record ``completed`` iterations; marks the session complete at n == m."""
+        state = getattr(self, "_session_state", None)
+        if state is None:
+            raise RuntimeError("no active session - call Start Or Resume Session first")
+        state["n"] = int(completed)
+        state["updated_at"] = datetime.now().replace(microsecond=0).isoformat()
+        if state["n"] >= int(state["m"]):
+            state["status"] = "complete"
+        self._write_json_atomic(self._session_file, state)
+        return state["n"]
+
+    def complete_session(self):
+        """Mark the active session complete (used after the final iteration)."""
+        state = getattr(self, "_session_state", None)
+        if state is None:
+            raise RuntimeError("no active session - call Start Or Resume Session first")
+        state["status"] = "complete"
+        state["updated_at"] = datetime.now().replace(microsecond=0).isoformat()
+        self._write_json_atomic(self._session_file, state)
+        return state
+
+    def get_session_state(self, test=None, log_root="logs"):
+        """Return the on-disk session state dict, or None when absent."""
+        if test is None:
+            return getattr(self, "_session_state", None)
+        try:
+            with open(self._session_path(test, log_root), "r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            return None

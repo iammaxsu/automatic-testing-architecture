@@ -113,6 +113,7 @@ Optional overrides:
 |----------|---------|---------|
 | `POWER_TESTS_ENABLED` | `False` | must be `True` for any power test to run |
 | `POWER_CYCLES` | `1` | how many times to power-cycle |
+| `NEW_SESSION` | `False` | `True` forces a fresh session, ignoring saved progress |
 | `DUT_HOST` | *(empty)* | if set, also wait for the DUT OS to answer ping after power-on (real boot, not just BMC power state) |
 | `POWER_ON_TIMEOUT` | `120` | seconds to wait for chassis power to return |
 | `DUT_BOOT_TIMEOUT` | `300` | seconds to wait for DUT OS liveness |
@@ -160,6 +161,28 @@ logs/
 So re-running the same suite never overwrites a prior result, and different
 DUTs land in different top-level folders. The bash soak follows the same
 convention: `logs/<dut>/bmc_sensor_<session>/`.
+
+### Resume for endurance runs (LOG023 / LOG026)
+
+The power-cycle endurance test records progress after every cycle in
+
+```
+logs/<dut>/power_cycle_ipmi_session.json
+```
+
+Three rules, all verified:
+
+1. **Interrupted run resumes.** Re-run the *same* cycle count and it continues
+   where it stopped (e.g. stopped at 100/300 → next run does 101…300).
+2. **The count you ask for is the count you get.** Asking for a *different*
+   count starts a **new** session for that number (with a WARN in the log) —
+   it never silently finishes the old plan.
+3. **Deleting the logs tree is a full reset.** The session file lives inside
+   `logs/`, so `rm -rf logs/` (or just the per-DUT folder) makes the next run
+   behave exactly like a first run.
+
+Force a fresh session without deleting anything: `-v NEW_SESSION:True`.
+Session state is per-DUT, so runs against different BMCs never interfere.
 
 ---
 

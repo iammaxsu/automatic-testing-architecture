@@ -57,7 +57,10 @@ echo "[INFO] DUT      : ${BMC_HOST}"
 echo "[INFO] suite    : ${SUITE}"
 echo "[INFO] output   : ${OUT_DIR}/"
 
-robot -v BMC_HOST:"${BMC_HOST}" -d "${OUT_DIR}" "${EXTRA[@]}" "${SUITE}"
+# LOG_ROOT is passed so resumable suites put their session state under the same
+# logs tree (<log-root>/<dut>/<test>_session.json) - deleting it is a full reset.
+robot -v BMC_HOST:"${BMC_HOST}" -v LOG_ROOT:"${LOG_ROOT}" \
+      -d "${OUT_DIR}" "${EXTRA[@]}" "${SUITE}"
 rc=$?
 
 echo "[INFO] report   : ${OUT_DIR}/report.html"
