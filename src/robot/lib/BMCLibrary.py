@@ -33,6 +33,8 @@
 #   00.00.04  record_bmc_identity (firmware/version -> report metadata for
 #             traceability); gated chassis power-control keywords
 #             (set/get/wait) + host liveness, for the power-cycle suite.
+#   00.00.06  ensure_chassis_power_on: re-issues `chassis power on` when the
+#             BMC swallows a single command (BUG0028).
 #   00.00.05  Session identity + resume for endurance runs (LOG023/LOG026):
 #             session state lives under logs/<dut>/, so deleting logs/ is a
 #             full reset; an explicitly different target starts a new session
@@ -62,7 +64,7 @@ class BMCLibrary:
     """Keywords for IPMI sensor / SEL testing against one BMC."""
 
     ROBOT_LIBRARY_SCOPE = "SUITE"
-    ROBOT_LIBRARY_VERSION = "00.00.05"
+    ROBOT_LIBRARY_VERSION = "00.00.06"
 
     def __init__(self, host=None, user=None, interface="lanplus",
                  timeout=60, retries=3, retry_delay=5):
@@ -607,6 +609,48 @@ class BMCLibrary:
             time.sleep(interval)
         raise AssertionError("chassis power did not reach %r within %ss (last=%r)"
                              % (expected, timeout, last))
+
+    def ensure_chassis_power_on(self, timeout=180, interval=5, reissue_after=30):
+        """Bring the chassis to power on, re-issuing the command if ignored.
+
+        A single ``chassis power on`` is sometimes accepted (rc=0) but has no
+        effect — typically when the BMC is still settling after a power-off —
+        leaving a plain wait to poll 'off' until it times out (BUG0028). This
+        re-issues the command every ``reissue_after`` seconds until the state
+        is on. Returns elapsed seconds; raises AssertionError on timeout.
+        """
+        timeout = float(timeout)
+        interval = float(interval)
+        reissue_after = float(reissue_after)
+        t0 = time.monotonic()
+        deadline = t0 + timeout
+        last_issue = None
+        attempts = 0
+        last = None
+        while time.monotonic() < deadline:
+            try:
+                last = self.get_chassis_power_state()
+            except Exception as exc:  # noqa: BLE001 - BMC blips mid-transition
+                last = "unreachable (%s)" % exc
+            if last == "on":
+                elapsed = round(time.monotonic() - t0, 1)
+                logger.info("chassis power on after %.1fs (%d command(s))"
+                            % (elapsed, attempts))
+                return elapsed
+            if last_issue is None or (time.monotonic() - last_issue) >= reissue_after:
+                attempts += 1
+                if attempts > 1:
+                    logger.warn("still %r after %ds - re-issuing power on (attempt %d)"
+                                % (last, int(time.monotonic() - t0), attempts))
+                try:
+                    self.set_chassis_power("on")
+                except Exception as exc:  # noqa: BLE001 - report, keep trying
+                    logger.warn("power on command failed: %s" % exc)
+                last_issue = time.monotonic()
+            time.sleep(interval)
+        raise AssertionError(
+            "chassis did not power on within %ss after %d command(s) (last=%r)"
+            % (timeout, attempts, last))
 
     def wait_until_host_alive(self, host, timeout=180, interval=5):
         """Poll ICMP ping until ``host`` responds; return elapsed seconds.

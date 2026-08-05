@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-08-04 08:28 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-08-05 09:21 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -149,19 +149,21 @@ pie showData title Requirements by status
 
 ## Bugs
 
-**Total:** 27
+**Total:** 28
 
 ### By status
 
 | Status | Count |
 | --- | --- |
 | open | 15 |
+| resolved | 1 |
 | closed | 10 |
 | invalid | 2 |
 
 ```mermaid
 pie showData title Bugs by status
     "open" : 15
+    "resolved" : 1
     "closed" : 10
     "invalid" : 2
 ```
@@ -171,7 +173,7 @@ pie showData title Bugs by status
 | OS | Count |
 | --- | --- |
 | Ubuntu 26.04 LTS | 14 |
-| Ubuntu 24.04 LTS | 10 |
+| Ubuntu 24.04 LTS | 11 |
 | Windows 11 | 3 |
 
 ### Open bugs (oldest first)
@@ -226,12 +228,14 @@ pie showData title Bugs by status
 | NET011 | [BUG0015](bugs/open/BUG0015-net-test-sh-consumes-the-ssh-lifeline-nic.md) | open |
 | NET012 | [BUG0015](bugs/open/BUG0015-net-test-sh-consumes-the-ssh-lifeline-nic.md) | open |
 | PWR009 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
+| PWR010 | [BUG0028](bugs/closed/BUG0028-power-robot-missing-off-time-and-single-shot-power-on.md) | resolved |
 | PWR011 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
 | PWR011 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
 | PWR011 | [BUG0027](bugs/open/BUG0027-reboot-py-boot-time-sec-measurement-defect.md) | open |
 | PWR012 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
 | PWR012 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
 | PWR012 | [BUG0027](bugs/open/BUG0027-reboot-py-boot-time-sec-measurement-defect.md) | open |
+| PWR014 | [BUG0028](bugs/closed/BUG0028-power-robot-missing-off-time-and-single-shot-power-on.md) | resolved |
 | SLP001 | [BUG0020](bugs/open/BUG0020-sleep-test-not-yet-integrated-or-verified.md) | open |
 | SLP004 | [BUG0020](bugs/open/BUG0020-sleep-test-not-yet-integrated-or-verified.md) | open |
 | SLP005 | [BUG0020](bugs/open/BUG0020-sleep-test-not-yet-integrated-or-verified.md) | open |
@@ -257,7 +261,6 @@ _(may indicate untested code paths — worth a review)_
 | [PWR005](requirements/PWR005.md) | implemented | Structured result.json Output (LOG015 Compliance) |
 | [PWR007](requirements/PWR007.md) | implemented | Safety Controls: Consecutive Fail Abort and Graceful Stop |
 | [PWR008](requirements/PWR008.md) | implemented | Power Cycle Test Warmup and Initial-State Normalization |
-| [PWR010](requirements/PWR010.md) | implemented | Cycle Phase Timing Model and Parameter Defaults |
 | [PWR013](requirements/PWR013.md) | implemented | Reboot Test Initial State Normalisation |
 | [SET005](requirements/SET005.md) | implemented | Windows DUT Pre-test Bootstrap Script |
 | [SET006](requirements/SET006.md) | implemented | Dual-Layer Configuration: config.py as Default Reference |

@@ -33,7 +33,13 @@ ${EXPECTED_USER}      admin
 ${POWER_TESTS_ENABLED}    ${FALSE}
 ${POWER_CYCLES}           1
 ${POWER_OFF_TIMEOUT}      60
-${POWER_ON_TIMEOUT}       120
+${POWER_ON_TIMEOUT}       180
+# Fixed wait after the board is off, before powering on again. PWR010 phase 4
+# (OFF_TIME_SEC, config.py default 60): boards need real off-time or the
+# power-on command is swallowed (BUG0028).
+${POWER_OFF_TIME}         60
+# Upper limit for observing the brief off dip after a `chassis power cycle`.
+${POWER_TRANSITION_TIMEOUT}    30
 ${DUT_HOST}               ${EMPTY}
 ${DUT_BOOT_TIMEOUT}       300
 # Session / resume (LOG023, LOG026). State lives at
