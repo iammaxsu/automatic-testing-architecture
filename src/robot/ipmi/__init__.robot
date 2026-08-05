@@ -9,4 +9,5 @@ Documentation     Phase 1 BMC / IPMI 2.0 functional suites (out-of-band).
 ...               report metadata, so every report states which BMC/firmware
 ...               was under test.
 Resource          bmc.resource
-Suite Setup       Record Bmc Identity
+Suite Setup       Run Keywords    Ipmi Credentials Should Be Configured
+...               AND    Record Bmc Identity

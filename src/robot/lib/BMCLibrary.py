@@ -14,8 +14,14 @@
 # Canonical soak data is written to CSV (FWK028); Robot's log.html /
 # report.html are the derived human-readable views.
 #
-# Security: the IPMI password is read from the IPMI_PASSWORD environment
-# variable and passed to ipmitool via -E, never on a command line.
+# Security: the IPMI password is never placed on a command line. It is passed
+# to ipmitool through the environment (-E), so it stays out of `ps` and logs.
+# It is resolved (SET006 layering, highest first) from:
+#   1. the IPMI_PASSWORD environment variable
+#   2. ../config_local.py   - machine-local, git-ignored (put the password here)
+#   3. ../config.py         - committed defaults (kept empty for credentials)
+# Host, user, interface, timeouts and board-specific expectations fall back to
+# the same config files when a suite does not supply them.
 # IPMITOOL_BIN overrides the binary so the suite can run against a mock.
 #
 # Engine note: after the src/robot/spike evaluation, out-of-band IPMI is
@@ -33,6 +39,9 @@
 #   00.00.04  record_bmc_identity (firmware/version -> report metadata for
 #             traceability); gated chassis power-control keywords
 #             (set/get/wait) + host liveness, for the power-cycle suite.
+#   00.00.07  Layered configuration (SET006): config.py defaults +
+#             git-ignored config_local.py for credentials; the password no
+#             longer has to be exported before every run.
 #   00.00.06  ensure_chassis_power_on: re-issues `chassis power on` when the
 #             BMC swallows a single command (BUG0028).
 #   00.00.05  Session identity + resume for endurance runs (LOG023/LOG026):
@@ -41,6 +50,7 @@
 #             instead of silently reusing the old cycle count.
 
 import csv
+import importlib.util
 import json
 import os
 import re
@@ -48,6 +58,42 @@ import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+# ---------- layered configuration (SET006) ----------
+# config.py / config_local.py live next to the suites, in src/robot/.
+_CONFIG_DIR = Path(__file__).resolve().parent.parent
+
+
+def _load_config(name):
+    """Import <_CONFIG_DIR>/<name>.py by path; None when absent or broken."""
+    path = _CONFIG_DIR / ("%s.py" % name)
+    if not path.is_file():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:  # noqa: BLE001 - a broken config must not block a run
+        return None
+
+
+_CONFIG = _load_config("config")
+_LOCAL_CONFIG = _load_config("config_local")
+
+
+def config_value(key, default=None):
+    """Value for `key`: config_local.py first, then config.py, else `default`.
+
+    Empty strings and None are treated as "not set", so a placeholder in
+    config.py falls through to the caller's default.
+    """
+    for module in (_LOCAL_CONFIG, _CONFIG):
+        if module is not None:
+            value = getattr(module, key, None)
+            if value not in (None, ""):
+                return value
+    return default
 
 try:
     from robot.api import logger
@@ -64,18 +110,52 @@ class BMCLibrary:
     """Keywords for IPMI sensor / SEL testing against one BMC."""
 
     ROBOT_LIBRARY_SCOPE = "SUITE"
-    ROBOT_LIBRARY_VERSION = "00.00.06"
+    ROBOT_LIBRARY_VERSION = "00.00.07"
 
-    def __init__(self, host=None, user=None, interface="lanplus",
-                 timeout=60, retries=3, retry_delay=5):
-        self._host = host or None
-        self._user = user or None
-        self._iface = interface
-        self._timeout = int(timeout)
-        self._retries = int(retries)
-        self._retry_delay = float(retry_delay)
+    def __init__(self, host=None, user=None, interface=None,
+                 timeout=None, retries=None, retry_delay=None):
+        # Anything the suite leaves empty falls back to config_local.py, then
+        # config.py, then the built-in default (SET006).
+        self._host = host or config_value("BMC_HOST")
+        self._user = user or config_value("BMC_USER", "admin")
+        self._iface = interface or config_value("IPMI_INTERFACE", "lanplus")
+        self._timeout = int(timeout or config_value("IPMI_TIMEOUT", 60))
+        self._retries = int(retries or config_value("IPMI_RETRIES", 3))
+        self._retry_delay = float(retry_delay or config_value("IPMI_RETRY_DELAY", 5))
         self._baseline = None        # name -> state string
         self._sel_baseline = None
+
+    # ---------- credentials ----------
+
+    def _resolve_password(self):
+        """Return (password, source) per the SET006 layering; ('', 'none')."""
+        env_value = os.environ.get("IPMI_PASSWORD")
+        if env_value:
+            return env_value, "IPMI_PASSWORD environment variable"
+        if _LOCAL_CONFIG is not None:
+            value = getattr(_LOCAL_CONFIG, "IPMI_PASSWORD", None)
+            if value:
+                return value, "config_local.py"
+        if _CONFIG is not None:
+            value = getattr(_CONFIG, "IPMI_PASSWORD", None)
+            if value:
+                return value, "config.py"
+        return "", "none"
+
+    def ipmi_credentials_should_be_configured(self):
+        """Fail early, with guidance, when no IPMI password is available.
+
+        Logs only where the password came from - never the password itself.
+        """
+        password, source = self._resolve_password()
+        if not password:
+            raise AssertionError(
+                "no IPMI password configured. Either `export IPMI_PASSWORD=...` "
+                "or copy src/robot/config_local.py.example to "
+                "src/robot/config_local.py and set IPMI_PASSWORD there "
+                "(that file is git-ignored).")
+        logger.info("IPMI password source: %s" % source)
+        return source
 
     # ---------- low-level ----------
 
@@ -87,9 +167,17 @@ class BMCLibrary:
         """
         if not self._host or not self._user:
             raise RuntimeError(
-                "BMC host/user not configured - pass -v BMC_HOST:<ip> -v BMC_USER:<user>")
-        if not os.environ.get("IPMI_PASSWORD"):
-            raise RuntimeError("IPMI_PASSWORD environment variable is not set")
+                "BMC host/user not configured - pass -v BMC_HOST:<ip> "
+                "-v BMC_USER:<user>, or set them in src/robot/config_local.py")
+        password, _source = self._resolve_password()
+        if not password:
+            raise RuntimeError(
+                "no IPMI password: export IPMI_PASSWORD, or set IPMI_PASSWORD "
+                "in src/robot/config_local.py "
+                "(copy it from config_local.py.example)")
+        # Hand the password to ipmitool via the environment (-E) so it never
+        # appears on a command line.
+        env = dict(os.environ, IPMI_PASSWORD=password)
         binary = os.environ.get("IPMITOOL_BIN", "ipmitool")
         cmd = [binary, "-I", self._iface, "-H", self._host,
                "-U", self._user, "-E"] + [str(a) for a in args]
@@ -97,7 +185,7 @@ class BMCLibrary:
         for attempt in range(1, self._retries + 1):
             try:
                 proc = subprocess.run(cmd, capture_output=True, text=True,
-                                      timeout=self._timeout)
+                                      timeout=self._timeout, env=env)
                 if proc.returncode == 0 and proc.stdout.strip():
                     if attempt > 1:
                         logger.warn("ipmitool %s needed %d attempts"

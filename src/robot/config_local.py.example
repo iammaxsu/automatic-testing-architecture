@@ -1,0 +1,28 @@
+# config_local.py.example - template for machine-local settings.
+#
+# Copy it once, then edit the copy:
+#
+#     cp src/robot/config_local.py.example src/robot/config_local.py
+#
+# config_local.py is git-ignored: it never leaves this machine, which is why
+# credentials belong here and not in config.py (this repository is public).
+# Values set here override config.py; a Robot CLI -v still overrides both, and
+# an exported IPMI_PASSWORD still wins over this file.
+#
+# Only override what differs for your bench - anything omitted falls back to
+# config.py.
+
+# ---------- credentials ----------
+IPMI_PASSWORD = "adlinkadlink"
+
+# ---------- this bench's BMC ----------
+BMC_HOST = "10.0.0.124"
+BMC_USER = "admin"
+
+# ---------- board-specific expectations (uncomment to override) ----------
+# SENSOR_TEMP = "CPU_Temp"
+# SENSOR_VOLT = "5V_DUAL"
+# LAN_CHANNEL = 1
+
+# ---------- DUT OS address, for power-test liveness checks ----------
+# DUT_HOST = "10.0.0.50"

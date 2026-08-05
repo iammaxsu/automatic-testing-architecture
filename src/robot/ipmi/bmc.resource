@@ -7,20 +7,26 @@ Documentation     Shared configuration for the Phase 1 BMC / IPMI 2.0
 ...               Every suite that imports this resource is read-only and safe
 ...               to run against a live DUT; there is no power control here.
 ...
-...               Board-specific expected values (sensor names, LAN channel,
-...               expected user) live in *** Variables *** below - adjust per DUT.
+...               Settings come from ../config.py, overridden by the git-ignored
+...               ../config_local.py (credentials, bench-specific values), and
+...               finally by `-v NAME:value` on the command line (SET006). The
+...               variables below are the fallbacks used when none of those
+...               supply a value; empty ones are resolved by BMCLibrary from
+...               the config files.
 Library           ../lib/BMCLibrary.py    host=${BMC_HOST}    user=${BMC_USER}
 ...               interface=${IPMI_IFACE}    timeout=${IPMI_TIMEOUT}
 ...               retries=${IPMI_RETRIES}    retry_delay=${IPMI_RETRY_DELAY}
 Library           Collections
 
 *** Variables ***
+# Empty = "not specified here"; BMCLibrary falls back to config_local.py,
+# then config.py. Override any of them per run with -v NAME:value.
 ${BMC_HOST}           ${EMPTY}
-${BMC_USER}           admin
-${IPMI_IFACE}         lanplus
-${IPMI_TIMEOUT}       60
-${IPMI_RETRIES}       3
-${IPMI_RETRY_DELAY}   5
+${BMC_USER}           ${EMPTY}
+${IPMI_IFACE}         ${EMPTY}
+${IPMI_TIMEOUT}       ${EMPTY}
+${IPMI_RETRIES}       ${EMPTY}
+${IPMI_RETRY_DELAY}   ${EMPTY}
 # Board-specific expectations for this DUT. Change per board.
 ${SENSOR_TEMP}        CPU_Temp
 ${SENSOR_VOLT}        5V_DUAL

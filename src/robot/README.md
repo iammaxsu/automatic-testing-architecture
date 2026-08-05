@@ -16,10 +16,11 @@ workstation / vserver) against a DUT's BMC over the network.
 
 ```bash
 cd ~/automatic-testing-architecture
-source .venv/bin/activate                 # see "One-time setup" if this fails
-export IPMI_PASSWORD='<bmc-password>'
 ./src/robot/run.sh -H 10.0.0.124          # read-only IPMI suite
 ```
+
+(After the one-time setup below, that is the whole command — `run.sh` activates
+the venv, and the password comes from `config_local.py`.)
 
 `run.sh` prints the output directory and writes to
 `logs/<dut>/<session>/report.html` — open that. (See "Output layout" below;
@@ -44,16 +45,34 @@ robot --version                                # expect Robot Framework 7.x
 That is all the suites need — `BMCLibrary.py` uses only the Python standard
 library plus the `ipmitool` binary.
 
-## 2. Each session
+Then create your machine-local config, which holds the password and this
+bench's BMC address:
 
 ```bash
-cd ~/automatic-testing-architecture
-source .venv/bin/activate                      # activate the venv
-export IPMI_PASSWORD='<bmc-password>'          # never commit or hard-code this
+cp src/robot/config_local.py.example src/robot/config_local.py
+${EDITOR:-nano} src/robot/config_local.py      # set IPMI_PASSWORD and BMC_HOST
 ```
 
-`IPMI_PASSWORD` is read from the environment and passed to ipmitool via `-E`;
-it never appears on a command line or in a log.
+## 2. Configuration layers (SET006)
+
+| Layer | File / source | Use for |
+|-------|---------------|---------|
+| 1 (highest) | `-v NAME:value` on the command line | one-off overrides |
+| 2 | `IPMI_PASSWORD` environment variable | credentials in CI, or a temporary password |
+| 3 | **`src/robot/config_local.py`** (git-ignored) | this machine's password, BMC host, board specifics |
+| 4 | `src/robot/config.py` (committed) | documented defaults for every knob |
+
+**Credentials never go in `config.py`** — this repository is public. Put them in
+`config_local.py`, which `.gitignore` excludes, or in the environment. Either
+way the password reaches ipmitool through the environment (`-E`), so it never
+appears on a command line, in `ps`, or in a log; the suite records only *which
+layer* supplied it.
+
+With `config_local.py` in place there is nothing to export and nothing to pass:
+
+```bash
+./src/robot/run.sh                             # host + password from config
+```
 
 ## 3. Run the functional suite (`src/robot/ipmi/`)
 

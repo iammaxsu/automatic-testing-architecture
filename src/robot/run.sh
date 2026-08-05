@@ -43,10 +43,35 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -z "${BMC_HOST}" ]] && { echo "[FATAL] -H <bmc-host> is required" >&2; usage >&2; exit 2; }
-
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/../.." && pwd)"
+
+# -H is optional when config_local.py / config.py names a BMC (SET006).
+if [[ -z "${BMC_HOST}" ]]; then
+  BMC_HOST="$(python3 - "${HERE}" <<'PY' 2>/dev/null || true
+import importlib.util, pathlib, sys
+here = pathlib.Path(sys.argv[1])
+def load(name):
+    p = here / (name + ".py")
+    if not p.is_file():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location(name, p)
+        m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+        return m
+    except Exception:
+        return None
+for mod in (load("config_local"), load("config")):
+    value = getattr(mod, "BMC_HOST", "") if mod else ""
+    if value:
+        print(value); break
+PY
+)"
+  [[ -n "${BMC_HOST}" ]] && echo "[INFO] host     : ${BMC_HOST} (from config)"
+fi
+[[ -z "${BMC_HOST}" ]] && {
+  echo "[FATAL] no BMC host: pass -H <bmc-host>, or set BMC_HOST in src/robot/config_local.py" >&2
+  usage >&2; exit 2; }
 
 # Use the project venv when the caller has not activated one. A stale system
 # launcher (e.g. ~/.local/bin/robot whose interpreter lost the package) other-
