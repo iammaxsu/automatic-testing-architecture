@@ -29,7 +29,7 @@ Documentation     Out-of-band BMC sensor functional + soak suite over IPMI.
 Library           lib/BMCLibrary.py    host=${BMC_HOST}    user=${BMC_USER}
 ...               interface=${IPMI_IFACE}    timeout=${IPMI_TIMEOUT}
 ...               retries=${IPMI_RETRIES}    retry_delay=${IPMI_RETRY_DELAY}
-Suite Setup       Establish Sensor Baseline
+Suite Setup       Run Keywords    Record Bmc Identity    AND    Establish Sensor Baseline
 
 *** Variables ***
 ${BMC_HOST}           ${EMPTY}

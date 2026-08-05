@@ -16,12 +16,15 @@ workstation / vserver) against a DUT's BMC over the network.
 
 ```bash
 cd ~/automatic-testing-architecture
-source .venv/bin/activate                 # see "One-time setup" if this fails
-export IPMI_PASSWORD='<bmc-password>'
-robot -v BMC_HOST:10.0.0.124 -d logs/ipmi src/robot/ipmi/
+./src/robot/run.sh -H 10.0.0.124          # read-only IPMI suite
 ```
 
-Then open `logs/ipmi/report.html`.
+(After the one-time setup below, that is the whole command — `run.sh` activates
+the venv, and the password comes from `config_local.py`.)
+
+`run.sh` prints the output directory and writes to
+`logs/<dut>/<session>/report.html` — open that. (See "Output layout" below;
+each run gets its own directory, so nothing is overwritten.)
 
 ---
 
@@ -42,33 +45,60 @@ robot --version                                # expect Robot Framework 7.x
 That is all the suites need — `BMCLibrary.py` uses only the Python standard
 library plus the `ipmitool` binary.
 
-## 2. Each session
+Then create your machine-local config, which holds the password and this
+bench's BMC address:
 
 ```bash
-cd ~/automatic-testing-architecture
-source .venv/bin/activate                      # activate the venv
-export IPMI_PASSWORD='<bmc-password>'          # never commit or hard-code this
+cp src/robot/config_local.py.example src/robot/config_local.py
+${EDITOR:-nano} src/robot/config_local.py      # set IPMI_PASSWORD and BMC_HOST
 ```
 
-`IPMI_PASSWORD` is read from the environment and passed to ipmitool via `-E`;
-it never appears on a command line or in a log.
+## 2. Configuration layers (SET006)
+
+| Layer | File / source | Use for |
+|-------|---------------|---------|
+| 1 (highest) | `-v NAME:value` on the command line | one-off overrides |
+| 2 | `IPMI_PASSWORD` environment variable | credentials in CI, or a temporary password |
+| 3 | **`src/robot/config_local.py`** (git-ignored) | this machine's password, BMC host, board specifics |
+| 4 | `src/robot/config.py` (committed) | documented defaults for every knob |
+
+**Credentials never go in `config.py`** — this repository is public. Put them in
+`config_local.py`, which `.gitignore` excludes, or in the environment. Either
+way the password reaches ipmitool through the environment (`-E`), so it never
+appears on a command line, in `ps`, or in a log; the suite records only *which
+layer* supplied it.
+
+With `config_local.py` in place there is nothing to export and nothing to pass:
+
+```bash
+./src/robot/run.sh                             # host + password from config
+```
 
 ## 3. Run the functional suite (`src/robot/ipmi/`)
 
-All read-only — safe to run against a DUT that is in use. No power control.
+The read-only areas are safe on a DUT that is in use. `power.robot` (power
+control) is **gated** — its tests SKIP unless you enable them (see below), so
+the default run never disrupts the DUT.
+
+Use `run.sh` — it builds a per-DUT, per-session output directory (see
+"Output layout") so runs never overwrite each other:
 
 ```bash
-# whole suite (all 8 areas, 16 tests)
-robot -v BMC_HOST:10.0.0.124 -d logs/ipmi src/robot/ipmi/
+# read-only areas + gated power (power SKIPS unless enabled) = 18 tests
+./src/robot/run.sh -H 10.0.0.124
 
 # one area, by file
-robot -v BMC_HOST:10.0.0.124 -d logs/ipmi src/robot/ipmi/lan.robot
+./src/robot/run.sh -H 10.0.0.124 -s src/robot/ipmi/lan.robot
 
-# one area, by tag (across the suite)
-robot -v BMC_HOST:10.0.0.124 --include fru -d logs/ipmi src/robot/ipmi/
+# one area, by tag (pass-through robot args go after --)
+./src/robot/run.sh -H 10.0.0.124 -- --include fru
 ```
 
-Areas / tags: `device-id`, `sensor`, `sel`, `chassis`, `fru`, `sdr`, `lan`, `user`.
+Raw `robot` still works if you prefer — just pass your own `-d` so you do not
+overwrite a previous run, e.g.
+`robot -v BMC_HOST:10.0.0.124 -d logs/10.0.0.124/manual src/robot/ipmi/`.
+
+Areas / tags: `device-id`, `sensor`, `sel`, `chassis`, `fru`, `sdr`, `lan`, `user`, `power` (gated).
 
 ### Common overrides (`-v NAME:value`)
 
@@ -82,6 +112,30 @@ Defaults live in [`ipmi/bmc.resource`](ipmi/bmc.resource); override per run with
 | `SENSOR_TEMP` | `CPU_Temp` | temperature sensor name to check |
 | `SENSOR_VOLT` | `5V_DUAL` | voltage rail name to check |
 | `EXPECTED_USER` | `admin` | account that must exist in `user list` |
+
+### Power-control tests (gated, destructive)
+
+`src/robot/ipmi/power.robot` powers the DUT **off / cycles** it (modelled on
+`power_cycle.py`): perform the action, verify recovery, measure the time. It is
+gated off by default — every test SKIPS unless you pass
+`-v POWER_TESTS_ENABLED:True` — so it never runs during a normal read-only
+sweep. Run it deliberately, against a DUT that can tolerate a reboot:
+
+```bash
+./src/robot/run.sh -H 10.0.0.124 -s src/robot/ipmi/power.robot -- \
+    -v POWER_TESTS_ENABLED:True -v DUT_HOST:<dut-os-ip> -v POWER_CYCLES:1
+```
+
+Optional overrides:
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `POWER_TESTS_ENABLED` | `False` | must be `True` for any power test to run |
+| `POWER_CYCLES` | `1` | how many times to power-cycle |
+| `NEW_SESSION` | `False` | `True` forces a fresh session, ignoring saved progress |
+| `DUT_HOST` | *(empty)* | if set, also wait for the DUT OS to answer ping after power-on (real boot, not just BMC power state) |
+| `POWER_ON_TIMEOUT` | `120` | seconds to wait for chassis power to return |
+| `DUT_BOOT_TIMEOUT` | `300` | seconds to wait for DUT OS liveness |
 
 ## 4. Run the sensor soak (long-duration)
 
@@ -103,6 +157,51 @@ Robot writes to the `-d` directory:
 - `report.html` — pass/fail overview (**open this first**)
 - `log.html` — step-by-step detail, keyword arguments, messages
 - `output.xml` — machine-readable (canonical; the HTML is rendered from it)
+
+The report header shows the **BMC identity** captured at suite setup — host,
+firmware revision, IPMI version, manufacturer and product — so you can always
+tell which BMC/firmware a run tested. The bash soak records the same firmware
+revision in its `result.json` (`bmc_firmware`).
+
+### Output layout (LOG025)
+
+`run.sh` writes each run to its own directory, keyed by DUT and session:
+
+```
+logs/
+└── 10.0.0.124/                 # <dut>  (BMC host/IP; ':' and '/' -> '_')
+    ├── 20260729T142530/        # <session_id>  (ISO 8601 basic start time)
+    │   ├── report.html
+    │   ├── log.html
+    │   └── output.xml
+    └── 20260729T161004/        # a later run — the earlier one is untouched
+```
+
+So re-running the same suite never overwrites a prior result, and different
+DUTs land in different top-level folders. The bash soak follows the same
+convention: `logs/<dut>/bmc_sensor_<session>/`.
+
+### Resume for endurance runs (LOG023 / LOG026)
+
+The power-cycle endurance test records progress after every cycle in
+
+```
+logs/<dut>/power_cycle_ipmi_session.json
+```
+
+Three rules, all verified:
+
+1. **Interrupted run resumes.** Re-run the *same* cycle count and it continues
+   where it stopped (e.g. stopped at 100/300 → next run does 101…300).
+2. **The count you ask for is the count you get.** Asking for a *different*
+   count starts a **new** session for that number (with a WARN in the log) —
+   it never silently finishes the old plan.
+3. **Deleting the logs tree is a full reset.** The session file lives inside
+   `logs/`, so `rm -rf logs/` (or just the per-DUT folder) makes the next run
+   behave exactly like a first run.
+
+Force a fresh session without deleting anything: `-v NEW_SESSION:True`.
+Session state is per-DUT, so runs against different BMCs never interfere.
 
 ---
 

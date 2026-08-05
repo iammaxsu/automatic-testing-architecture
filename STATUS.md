@@ -1,17 +1,17 @@
 # Project Status
 
-_Generated 2026-06-08 02:06 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-08-05 09:21 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
-**Total:** 135
+**Total:** 137
 
 ### By priority
 
 | Priority | Count |
 | --- | --- |
-| Must | 118 |
-| Should | 15 |
+| Must | 119 |
+| Should | 16 |
 | — | 2 |
 
 ### By status
@@ -19,14 +19,14 @@ _Generated 2026-06-08 02:06 · regenerate with `python scripts/stats.py > STATUS
 | Status | Count |
 | --- | --- |
 | proposed | 107 |
-| implementing | 3 |
-| implemented | 25 |
+| implementing | 4 |
+| implemented | 26 |
 
 ```mermaid
 pie showData title Requirements by status
     "proposed" : 107
-    "implementing" : 3
-    "implemented" : 25
+    "implementing" : 4
+    "implemented" : 26
 ```
 
 ### By section
@@ -39,7 +39,7 @@ pie showData title Requirements by status
 | DSK | 10 | 0 | 8 |
 | FUN | 7 | 0 | 6 |
 | FWK | 34 | 0 | 28 |
-| LOG | 24 | 0 | 24 |
+| LOG | 26 | 0 | 25 |
 | NET | 13 | 0 | 13 |
 | PWR | 14 | 0 | 1 |
 | SET | 6 | 0 | 4 |
@@ -126,6 +126,7 @@ pie showData title Requirements by status
 | [LOG021](requirements/LOG021.md) | proposed | Output File Ownership |
 | [LOG022](requirements/LOG022.md) | proposed | ISO 8601 Timestamp Consistency |
 | [LOG023](requirements/LOG023.md) | proposed | Test Session Identity and Resume |
+| [LOG026](requirements/LOG026.md) | implementing | Session State Location and Target-Count Authority |
 | [NET001](requirements/NET001.md) | proposed | Enumerate enp and eno Interfaces |
 | [NET002](requirements/NET002.md) | proposed | Namespace-Based Loopback Testing |
 | [NET003](requirements/NET003.md) | proposed | Clean Namespace State Before Testing |
@@ -148,19 +149,21 @@ pie showData title Requirements by status
 
 ## Bugs
 
-**Total:** 27
+**Total:** 28
 
 ### By status
 
 | Status | Count |
 | --- | --- |
 | open | 15 |
+| resolved | 1 |
 | closed | 10 |
 | invalid | 2 |
 
 ```mermaid
 pie showData title Bugs by status
     "open" : 15
+    "resolved" : 1
     "closed" : 10
     "invalid" : 2
 ```
@@ -170,7 +173,7 @@ pie showData title Bugs by status
 | OS | Count |
 | --- | --- |
 | Ubuntu 26.04 LTS | 14 |
-| Ubuntu 24.04 LTS | 10 |
+| Ubuntu 24.04 LTS | 11 |
 | Windows 11 | 3 |
 
 ### Open bugs (oldest first)
@@ -225,12 +228,14 @@ pie showData title Bugs by status
 | NET011 | [BUG0015](bugs/open/BUG0015-net-test-sh-consumes-the-ssh-lifeline-nic.md) | open |
 | NET012 | [BUG0015](bugs/open/BUG0015-net-test-sh-consumes-the-ssh-lifeline-nic.md) | open |
 | PWR009 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
+| PWR010 | [BUG0028](bugs/closed/BUG0028-power-robot-missing-off-time-and-single-shot-power-on.md) | resolved |
 | PWR011 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
 | PWR011 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
 | PWR011 | [BUG0027](bugs/open/BUG0027-reboot-py-boot-time-sec-measurement-defect.md) | open |
 | PWR012 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
 | PWR012 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
 | PWR012 | [BUG0027](bugs/open/BUG0027-reboot-py-boot-time-sec-measurement-defect.md) | open |
+| PWR014 | [BUG0028](bugs/closed/BUG0028-power-robot-missing-off-time-and-single-shot-power-on.md) | resolved |
 | SLP001 | [BUG0020](bugs/open/BUG0020-sleep-test-not-yet-integrated-or-verified.md) | open |
 | SLP004 | [BUG0020](bugs/open/BUG0020-sleep-test-not-yet-integrated-or-verified.md) | open |
 | SLP005 | [BUG0020](bugs/open/BUG0020-sleep-test-not-yet-integrated-or-verified.md) | open |
@@ -256,7 +261,6 @@ _(may indicate untested code paths — worth a review)_
 | [PWR005](requirements/PWR005.md) | implemented | Structured result.json Output (LOG015 Compliance) |
 | [PWR007](requirements/PWR007.md) | implemented | Safety Controls: Consecutive Fail Abort and Graceful Stop |
 | [PWR008](requirements/PWR008.md) | implemented | Power Cycle Test Warmup and Initial-State Normalization |
-| [PWR010](requirements/PWR010.md) | implemented | Cycle Phase Timing Model and Parameter Defaults |
 | [PWR013](requirements/PWR013.md) | implemented | Reboot Test Initial State Normalisation |
 | [SET005](requirements/SET005.md) | implemented | Windows DUT Pre-test Bootstrap Script |
 | [SET006](requirements/SET006.md) | implemented | Dual-Layer Configuration: config.py as Default Reference |

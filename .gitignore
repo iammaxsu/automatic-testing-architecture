@@ -10,6 +10,9 @@ logs/
 *.result.json
 counter.log
 
+# Machine-local config (holds credentials — never commit)
+config_local.py
+
 # Editor / OS
 .DS_Store
 *.swp

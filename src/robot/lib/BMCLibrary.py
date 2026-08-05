@@ -14,8 +14,14 @@
 # Canonical soak data is written to CSV (FWK028); Robot's log.html /
 # report.html are the derived human-readable views.
 #
-# Security: the IPMI password is read from the IPMI_PASSWORD environment
-# variable and passed to ipmitool via -E, never on a command line.
+# Security: the IPMI password is never placed on a command line. It is passed
+# to ipmitool through the environment (-E), so it stays out of `ps` and logs.
+# It is resolved (SET006 layering, highest first) from:
+#   1. the IPMI_PASSWORD environment variable
+#   2. ../config_local.py   - machine-local, git-ignored (put the password here)
+#   3. ../config.py         - committed defaults (kept empty for credentials)
+# Host, user, interface, timeouts and board-specific expectations fall back to
+# the same config files when a suite does not supply them.
 # IPMITOOL_BIN overrides the binary so the suite can run against a mock.
 #
 # Engine note: after the src/robot/spike evaluation, out-of-band IPMI is
@@ -30,14 +36,64 @@
 #             SEL entry-list parsing. All read-only (safe on a live DUT).
 #   00.00.03  Phase 1 areas: FRU inventory, SDR repository info, LAN
 #             configuration, user list. All read-only.
+#   00.00.04  record_bmc_identity (firmware/version -> report metadata for
+#             traceability); gated chassis power-control keywords
+#             (set/get/wait) + host liveness, for the power-cycle suite.
+#   00.00.07  Layered configuration (SET006): config.py defaults +
+#             git-ignored config_local.py for credentials; the password no
+#             longer has to be exported before every run.
+#   00.00.06  ensure_chassis_power_on: re-issues `chassis power on` when the
+#             BMC swallows a single command (BUG0028).
+#   00.00.05  Session identity + resume for endurance runs (LOG023/LOG026):
+#             session state lives under logs/<dut>/, so deleting logs/ is a
+#             full reset; an explicitly different target starts a new session
+#             instead of silently reusing the old cycle count.
 
 import csv
+import importlib.util
+import json
 import os
 import re
 import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+# ---------- layered configuration (SET006) ----------
+# config.py / config_local.py live next to the suites, in src/robot/.
+_CONFIG_DIR = Path(__file__).resolve().parent.parent
+
+
+def _load_config(name):
+    """Import <_CONFIG_DIR>/<name>.py by path; None when absent or broken."""
+    path = _CONFIG_DIR / ("%s.py" % name)
+    if not path.is_file():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:  # noqa: BLE001 - a broken config must not block a run
+        return None
+
+
+_CONFIG = _load_config("config")
+_LOCAL_CONFIG = _load_config("config_local")
+
+
+def config_value(key, default=None):
+    """Value for `key`: config_local.py first, then config.py, else `default`.
+
+    Empty strings and None are treated as "not set", so a placeholder in
+    config.py falls through to the caller's default.
+    """
+    for module in (_LOCAL_CONFIG, _CONFIG):
+        if module is not None:
+            value = getattr(module, key, None)
+            if value not in (None, ""):
+                return value
+    return default
 
 try:
     from robot.api import logger
@@ -54,18 +110,52 @@ class BMCLibrary:
     """Keywords for IPMI sensor / SEL testing against one BMC."""
 
     ROBOT_LIBRARY_SCOPE = "SUITE"
-    ROBOT_LIBRARY_VERSION = "00.00.03"
+    ROBOT_LIBRARY_VERSION = "00.00.07"
 
-    def __init__(self, host=None, user=None, interface="lanplus",
-                 timeout=60, retries=3, retry_delay=5):
-        self._host = host or None
-        self._user = user or None
-        self._iface = interface
-        self._timeout = int(timeout)
-        self._retries = int(retries)
-        self._retry_delay = float(retry_delay)
+    def __init__(self, host=None, user=None, interface=None,
+                 timeout=None, retries=None, retry_delay=None):
+        # Anything the suite leaves empty falls back to config_local.py, then
+        # config.py, then the built-in default (SET006).
+        self._host = host or config_value("BMC_HOST")
+        self._user = user or config_value("BMC_USER", "admin")
+        self._iface = interface or config_value("IPMI_INTERFACE", "lanplus")
+        self._timeout = int(timeout or config_value("IPMI_TIMEOUT", 60))
+        self._retries = int(retries or config_value("IPMI_RETRIES", 3))
+        self._retry_delay = float(retry_delay or config_value("IPMI_RETRY_DELAY", 5))
         self._baseline = None        # name -> state string
         self._sel_baseline = None
+
+    # ---------- credentials ----------
+
+    def _resolve_password(self):
+        """Return (password, source) per the SET006 layering; ('', 'none')."""
+        env_value = os.environ.get("IPMI_PASSWORD")
+        if env_value:
+            return env_value, "IPMI_PASSWORD environment variable"
+        if _LOCAL_CONFIG is not None:
+            value = getattr(_LOCAL_CONFIG, "IPMI_PASSWORD", None)
+            if value:
+                return value, "config_local.py"
+        if _CONFIG is not None:
+            value = getattr(_CONFIG, "IPMI_PASSWORD", None)
+            if value:
+                return value, "config.py"
+        return "", "none"
+
+    def ipmi_credentials_should_be_configured(self):
+        """Fail early, with guidance, when no IPMI password is available.
+
+        Logs only where the password came from - never the password itself.
+        """
+        password, source = self._resolve_password()
+        if not password:
+            raise AssertionError(
+                "no IPMI password configured. Either `export IPMI_PASSWORD=...` "
+                "or copy src/robot/config_local.py.example to "
+                "src/robot/config_local.py and set IPMI_PASSWORD there "
+                "(that file is git-ignored).")
+        logger.info("IPMI password source: %s" % source)
+        return source
 
     # ---------- low-level ----------
 
@@ -77,9 +167,17 @@ class BMCLibrary:
         """
         if not self._host or not self._user:
             raise RuntimeError(
-                "BMC host/user not configured - pass -v BMC_HOST:<ip> -v BMC_USER:<user>")
-        if not os.environ.get("IPMI_PASSWORD"):
-            raise RuntimeError("IPMI_PASSWORD environment variable is not set")
+                "BMC host/user not configured - pass -v BMC_HOST:<ip> "
+                "-v BMC_USER:<user>, or set them in src/robot/config_local.py")
+        password, _source = self._resolve_password()
+        if not password:
+            raise RuntimeError(
+                "no IPMI password: export IPMI_PASSWORD, or set IPMI_PASSWORD "
+                "in src/robot/config_local.py "
+                "(copy it from config_local.py.example)")
+        # Hand the password to ipmitool via the environment (-E) so it never
+        # appears on a command line.
+        env = dict(os.environ, IPMI_PASSWORD=password)
         binary = os.environ.get("IPMITOOL_BIN", "ipmitool")
         cmd = [binary, "-I", self._iface, "-H", self._host,
                "-U", self._user, "-E"] + [str(a) for a in args]
@@ -87,7 +185,7 @@ class BMCLibrary:
         for attempt in range(1, self._retries + 1):
             try:
                 proc = subprocess.run(cmd, capture_output=True, text=True,
-                                      timeout=self._timeout)
+                                      timeout=self._timeout, env=env)
                 if proc.returncode == 0 and proc.stdout.strip():
                     if attempt > 1:
                         logger.warn("ipmitool %s needed %d attempts"
@@ -521,3 +619,274 @@ class BMCLibrary:
             if len(cols) >= 2 and cols[0].isdigit() and cols[1] == name:
                 return
         raise AssertionError("user %r not found in `user list %s`" % (name, channel))
+
+    # -- BMC identity (report traceability) --
+
+    def record_bmc_identity(self):
+        """Read ``mc info`` and record the BMC identity as suite metadata.
+
+        Without this, report.html does not say which BMC/firmware was under
+        test. Sets top-level suite metadata (BMC Host / Firmware / IPMI
+        Version / Manufacturer / Product) and returns the identity dict.
+        Safe to call outside a running Robot suite (metadata is skipped).
+        """
+        info = self.get_bmc_info()
+        identity = {
+            "BMC Host": self._host or "?",
+            "BMC Firmware": info.get("Firmware Revision", "?"),
+            "IPMI Version": info.get("IPMI Version", "?"),
+            "Manufacturer ID": info.get("Manufacturer ID", "?"),
+            "Product ID": info.get("Product ID", "?"),
+        }
+        try:
+            from robot.libraries.BuiltIn import BuiltIn, RobotNotRunningError
+            try:
+                builtin = BuiltIn()
+                for key, value in identity.items():
+                    builtin.set_suite_metadata(key, str(value), top=True)
+            except RobotNotRunningError:
+                pass
+        except ImportError:
+            pass
+        logger.info("BMC identity: %s" % identity)
+        return identity
+
+    # -- chassis power CONTROL (destructive; gated by the power suite) --
+    # Modelled on power_cycle.py / reboot.py: perform the action, then verify
+    # recovery (power state, optionally DUT liveness) and measure the time.
+    # These power the DUT off / cycle it; the power.robot suite gates every
+    # call behind POWER_TESTS_ENABLED so a read-only run never triggers them.
+
+    _POWER_ACTIONS = ("on", "off", "cycle", "reset", "soft")
+
+    def set_chassis_power(self, action):
+        """Run ``ipmitool chassis power <action>`` (on/off/cycle/reset/soft)."""
+        action = str(action).lower()
+        if action not in self._POWER_ACTIONS:
+            raise ValueError("power action must be one of %s, got %r"
+                             % (", ".join(self._POWER_ACTIONS), action))
+        out = self.run_ipmitool("chassis", "power", action).strip()
+        logger.info("chassis power %s -> %s" % (action, out))
+        return out
+
+    def get_chassis_power_state(self):
+        """Return 'on' or 'off' from ``chassis status`` (System Power)."""
+        return self.get_chassis_status().get("System Power", "unknown")
+
+    def wait_for_chassis_power(self, expected, timeout=120, interval=5):
+        """Poll chassis power until it equals ``expected``; return elapsed seconds.
+
+        Raises AssertionError on timeout. A brief read failure mid-transition
+        is tolerated rather than aborting the wait.
+        """
+        expected = str(expected).lower()
+        timeout = float(timeout)
+        interval = float(interval)
+        t0 = time.monotonic()
+        deadline = t0 + timeout
+        last = None
+        while time.monotonic() < deadline:
+            try:
+                last = self.get_chassis_power_state()
+            except Exception as exc:  # noqa: BLE001 - BMC may blip mid-transition
+                last = "unreachable (%s)" % exc
+            if last == expected:
+                elapsed = round(time.monotonic() - t0, 1)
+                logger.info("chassis power reached %r in %.1fs" % (expected, elapsed))
+                return elapsed
+            time.sleep(interval)
+        raise AssertionError("chassis power did not reach %r within %ss (last=%r)"
+                             % (expected, timeout, last))
+
+    def ensure_chassis_power_on(self, timeout=180, interval=5, reissue_after=30):
+        """Bring the chassis to power on, re-issuing the command if ignored.
+
+        A single ``chassis power on`` is sometimes accepted (rc=0) but has no
+        effect — typically when the BMC is still settling after a power-off —
+        leaving a plain wait to poll 'off' until it times out (BUG0028). This
+        re-issues the command every ``reissue_after`` seconds until the state
+        is on. Returns elapsed seconds; raises AssertionError on timeout.
+        """
+        timeout = float(timeout)
+        interval = float(interval)
+        reissue_after = float(reissue_after)
+        t0 = time.monotonic()
+        deadline = t0 + timeout
+        last_issue = None
+        attempts = 0
+        last = None
+        while time.monotonic() < deadline:
+            try:
+                last = self.get_chassis_power_state()
+            except Exception as exc:  # noqa: BLE001 - BMC blips mid-transition
+                last = "unreachable (%s)" % exc
+            if last == "on":
+                elapsed = round(time.monotonic() - t0, 1)
+                logger.info("chassis power on after %.1fs (%d command(s))"
+                            % (elapsed, attempts))
+                return elapsed
+            if last_issue is None or (time.monotonic() - last_issue) >= reissue_after:
+                attempts += 1
+                if attempts > 1:
+                    logger.warn("still %r after %ds - re-issuing power on (attempt %d)"
+                                % (last, int(time.monotonic() - t0), attempts))
+                try:
+                    self.set_chassis_power("on")
+                except Exception as exc:  # noqa: BLE001 - report, keep trying
+                    logger.warn("power on command failed: %s" % exc)
+                last_issue = time.monotonic()
+            time.sleep(interval)
+        raise AssertionError(
+            "chassis did not power on within %ss after %d command(s) (last=%r)"
+            % (timeout, attempts, last))
+
+    def wait_until_host_alive(self, host, timeout=180, interval=5):
+        """Poll ICMP ping until ``host`` responds; return elapsed seconds.
+
+        Optional DUT-liveness check after power-on (mirrors power_cycle.py's
+        boot-time measurement). Raises AssertionError on timeout.
+        """
+        timeout = float(timeout)
+        interval = float(interval)
+        t0 = time.monotonic()
+        deadline = t0 + timeout
+        while time.monotonic() < deadline:
+            rc = subprocess.run(["ping", "-c", "1", "-W", "1", str(host)],
+                                capture_output=True).returncode
+            if rc == 0:
+                elapsed = round(time.monotonic() - t0, 1)
+                logger.info("host %s alive in %.1fs" % (host, elapsed))
+                return elapsed
+            time.sleep(interval)
+        raise AssertionError("host %s did not respond to ping within %ss"
+                             % (host, timeout))
+
+    # ---------- session identity & resume (LOG023 / LOG025 / LOG026) ----------
+    # State lives at <log_root>/<dut>/<test>_session.json - inside the logs
+    # tree, so deleting logs/ is a complete reset, and per-DUT, so sessions for
+    # different DUTs never collide.
+
+    def _dut_component(self):
+        """Filesystem-safe <dut> path component (LOG025)."""
+        return re.sub(r"[:/\\]", "_", self._host or "unknown")
+
+    def _session_path(self, test, log_root):
+        return Path(log_root) / self._dut_component() / ("%s_session.json" % test)
+
+    @staticmethod
+    def _truthy(value):
+        return str(value).strip().lower() in ("true", "1", "yes", "on")
+
+    @staticmethod
+    def _write_json_atomic(path, data):
+        """Write JSON atomically (tmp + rename), per LOG023."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+        os.replace(tmp, path)
+
+    def start_or_resume_session(self, test, target, log_root="logs",
+                                new_session=False):
+        """Start a new endurance session, or resume an incomplete one.
+
+        Resumes only when an incomplete session exists for this DUT *and* its
+        planned count matches ``target``. A different ``target`` means the
+        operator asked for a different test, so a NEW session starts with that
+        count (never silently reusing the old one). Deleting the logs tree
+        removes the state file and therefore forces a fresh start.
+
+        Returns a dict: session_id, target, completed, start_index, remaining,
+        resuming, session_file.
+        """
+        target = int(target)
+        if target < 1:
+            raise ValueError("target must be >= 1, got %r" % target)
+        path = self._session_path(test, log_root)
+
+        state = None
+        if not self._truthy(new_session):
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    state = json.load(fh)
+            except (OSError, ValueError):
+                state = None
+
+        resuming = False
+        if (state and state.get("status") == "running"
+                and int(state.get("n", 0)) < int(state.get("m", 0))):
+            if int(state.get("m", 0)) == target:
+                resuming = True
+            else:
+                logger.warn(
+                    "requested %d cycle(s) but the incomplete session planned %s; "
+                    "starting a NEW session for %d"
+                    % (target, state.get("m"), target))
+
+        now = datetime.now().replace(microsecond=0).isoformat()
+        if resuming:
+            session_id = state["session_id"]
+            completed = int(state.get("n", 0))
+            state["updated_at"] = now
+            logger.info("resuming session %s: %d/%d cycle(s) already done"
+                        % (session_id, completed, target))
+        else:
+            session_id = time.strftime("%Y%m%dT%H%M%S")
+            completed = 0
+            state = {
+                "session_id": session_id,
+                "test": test,
+                "dut": self._host or "unknown",
+                "m": target,
+                "n": 0,
+                "status": "running",
+                "started_at": now,
+                "updated_at": now,
+            }
+            logger.info("new session %s: %d cycle(s) planned" % (session_id, target))
+        self._write_json_atomic(path, state)
+
+        self._session_state = state
+        self._session_file = str(path)
+        return {
+            "session_id": session_id,
+            "target": target,
+            "completed": completed,
+            "start_index": completed + 1,
+            "remaining": target - completed,
+            "resuming": resuming,
+            "session_file": str(path),
+        }
+
+    def update_session_progress(self, completed):
+        """Record ``completed`` iterations; marks the session complete at n == m."""
+        state = getattr(self, "_session_state", None)
+        if state is None:
+            raise RuntimeError("no active session - call Start Or Resume Session first")
+        state["n"] = int(completed)
+        state["updated_at"] = datetime.now().replace(microsecond=0).isoformat()
+        if state["n"] >= int(state["m"]):
+            state["status"] = "complete"
+        self._write_json_atomic(self._session_file, state)
+        return state["n"]
+
+    def complete_session(self):
+        """Mark the active session complete (used after the final iteration)."""
+        state = getattr(self, "_session_state", None)
+        if state is None:
+            raise RuntimeError("no active session - call Start Or Resume Session first")
+        state["status"] = "complete"
+        state["updated_at"] = datetime.now().replace(microsecond=0).isoformat()
+        self._write_json_atomic(self._session_file, state)
+        return state
+
+    def get_session_state(self, test=None, log_root="logs"):
+        """Return the on-disk session state dict, or None when absent."""
+        if test is None:
+            return getattr(self, "_session_state", None)
+        try:
+            with open(self._session_path(test, log_root), "r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            return None
