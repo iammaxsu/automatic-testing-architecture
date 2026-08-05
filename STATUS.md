@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-08-05 03:23 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-08-05 03:51 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -150,7 +150,7 @@ pie showData title Requirements by status
 
 ## Bugs
 
-**Total:** 48
+**Total:** 49
 
 ### By status
 
@@ -158,7 +158,7 @@ pie showData title Requirements by status
 | --- | --- |
 | open | 13 |
 | in-progress | 1 |
-| resolved | 22 |
+| resolved | 23 |
 | closed | 10 |
 | invalid | 2 |
 
@@ -166,7 +166,7 @@ pie showData title Requirements by status
 pie showData title Bugs by status
     "open" : 13
     "in-progress" : 1
-    "resolved" : 22
+    "resolved" : 23
     "closed" : 10
     "invalid" : 2
 ```
@@ -175,7 +175,7 @@ pie showData title Bugs by status
 
 | OS | Count |
 | --- | --- |
-| Ubuntu 24.04 LTS | 23 |
+| Ubuntu 24.04 LTS | 24 |
 | Ubuntu 26.04 LTS | 21 |
 | Windows 11 | 13 |
 | Windows 11 (zh-TW) | 2 |
@@ -234,6 +234,7 @@ pie showData title Bugs by status
 | FWK032 | [BUG0025](bugs/closed/BUG0025-power-cycle-msg-notification-not-shown.md) | resolved |
 | FWK032 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
 | FWK032 | [BUG0040](bugs/closed/BUG0040-notify-dut-negative-sleep-traceback.md) | resolved |
+| FWK032 | [BUG0049](bugs/closed/BUG0049-wall-broadcast-clobbers-progress-display.md) | resolved |
 | FWK034 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
 | FWK035 | [BUG0033](bugs/closed/BUG0033-ssh-changed-host-key-blocks-all-cycles.md) | resolved |
 | FWK035 | [BUG0034](bugs/closed/BUG0034-reboot-os-probe-before-init-dut.md) | resolved |
@@ -245,6 +246,7 @@ pie showData title Bugs by status
 | LOG012 | [BUG0024](bugs/closed/BUG0024-extract-bw-fails-on-slow-disks-no-data-0-0-mib-s-f.md) | closed |
 | LOG012 | [BUG0004](bugs/open/BUG0004-fio-log-filenames-missing-timestamp-and-result.md) | open |
 | LOG013 | [BUG0044](bugs/closed/BUG0044-calibrate-cycles-print-warmup-banner.md) | resolved |
+| LOG013 | [BUG0049](bugs/closed/BUG0049-wall-broadcast-clobbers-progress-display.md) | resolved |
 | LOG014 | [BUG0013](bugs/open/BUG0013-log-entries-do-not-include-log-level-prefix.md) | open |
 | LOG015 | [BUG0001](bugs/closed/BUG0001-no-total-test-time.md) | closed |
 | LOG015 | [BUG0009](bugs/closed/BUG0009-result-json-not-yet-implemented.md) | closed |
@@ -274,6 +276,7 @@ pie showData title Bugs by status
 | NET012 | [BUG0015](bugs/open/BUG0015-net-test-sh-consumes-the-ssh-lifeline-nic.md) | open |
 | NET016 | [BUG0037](bugs/closed/BUG0037-net-test-local-unbound-var-kills-pair.md) | resolved |
 | NET017 | [BUG0048](bugs/closed/BUG0048-net-err-trap-false-positives.md) | resolved |
+| NET017 | [BUG0049](bugs/closed/BUG0049-wall-broadcast-clobbers-progress-display.md) | resolved |
 | NET019 | [BUG0047](bugs/closed/BUG0047-net019-unmatched-mac-entry-silent.md) | resolved |
 | PWR004 | [BUG0046](bugs/open/BUG0046-calibrate-no-boot-power-down-race.md) | open |
 | PWR009 | [BUG0025](bugs/closed/BUG0025-power-cycle-msg-notification-not-shown.md) | resolved |

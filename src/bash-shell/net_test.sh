@@ -466,13 +466,18 @@ _iperf3_progress() {
   local total="$2"
   local elapsed=0
   while (( elapsed < total )); do
-    printf "\r  [%-40s] %3ds / %3ds  %s" \
+    # \033[K erases from the cursor to end of line. Without it a shorter label
+    # leaves the tail of the previous, longer one on screen -- which is how a
+    # redraw produced the fragment "np12s2 @10M" hanging off the end of the bar
+    # (BUG0049). Padding to a fixed width cannot fix it: the terminal may be
+    # narrower than the pad, and then the pad itself wraps.
+    printf "\r  [%-40s] %3ds / %3ds  %s\033[K" \
       "$(printf '#%.0s' $(seq 1 $(( elapsed * 40 / total + 1 ))))" \
       "${elapsed}" "${total}" "${label}" >&2
     sleep 1
     (( elapsed++ )) || true
   done
-  printf "\r  %-78s\r" "" >&2   # clear the progress line
+  printf "\r\033[K" >&2   # clear the progress line, whatever its width
 }
 
 # Record a pair worker's abnormal termination instead of letting it vanish.

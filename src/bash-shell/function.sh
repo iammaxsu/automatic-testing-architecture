@@ -1574,6 +1574,34 @@ _adlink_eta() {
   else printf '%ds' "$remain"; fi
 }
 
+# Broadcast to every logged-in terminal EXCEPT the one running the test.
+#
+# `wall` writes to all TTYs including our own, and the message is ~10 lines. The
+# operator's console is already showing a `\r`-redrawn progress bar, so the
+# broadcast scrolls it away and the bar keeps redrawing on a line that is no
+# longer where it was: the run looks frozen until a keypress scrolls the
+# terminal and reveals it (BUG0049). The message exists to warn OTHER users not
+# to power the machine off; the person running the test does not need telling.
+#
+# The invoking terminal is captured once at source time — by the time this runs
+# it may be called from a background subshell whose stdin/stdout are redirected,
+# where tty(1) would answer "not a tty" and the exclusion would silently stop
+# working.
+_ADLINK_SELF_TTY="$(tty 2>/dev/null || true)"
+export _ADLINK_SELF_TTY
+
+_adlink_broadcast() {
+  local msg="$1" t
+  local self="${_ADLINK_SELF_TTY:-}"
+  # `who` is the same source wall(1) uses. Missing/awkward output just means
+  # nobody is told — the status file and MOTD hook still carry the warning.
+  while read -r t; do
+    [[ -z "${t}" || ! -w "${t}" ]] && continue
+    [[ -n "${self}" && "${t}" == "${self}" ]] && continue
+    printf '%s\n' "${msg}" > "${t}" 2>/dev/null || true
+  done < <(who 2>/dev/null | awk '{print "/dev/"$2}' | sort -u)
+}
+
 _adlink_find_display() {
   # Find active X display and XAUTHORITY for notification
   local display="" xauth="" pid
@@ -1611,7 +1639,7 @@ test_progress_set() {
   fi
 
   # 3) Broadcast to active terminals
-  echo "${msg}" | wall 2>/dev/null || true
+  _adlink_broadcast "${msg}"
 
   # 4) X-Window: try notify-send first, then zenity persistent window
   local dpy_info dpy xauth pct title body
@@ -1659,7 +1687,7 @@ test_progress_clear() {
   [[ -n "${_prev_pid}" ]] && kill "${_prev_pid}" 2>/dev/null || true
 
   sudo rm -f "${_ADLINK_STATUS_FILE}" "${_ADLINK_MOTD_SCRIPT}" "${_ADLINK_XWIN_PID_FILE}" 2>/dev/null || true
-  echo "${msg}" | wall 2>/dev/null || true
+  _adlink_broadcast "${msg}"
 
   # X-Window completion notification
   local dpy_info dpy xauth _xenv
