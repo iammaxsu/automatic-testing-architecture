@@ -1,16 +1,16 @@
 # Project Status
 
-_Generated 2026-08-05 03:51 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-08-05 04:02 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
-**Total:** 149
+**Total:** 150
 
 ### By priority
 
 | Priority | Count |
 | --- | --- |
-| Must | 125 |
+| Must | 126 |
 | Should | 22 |
 | — | 2 |
 
@@ -19,13 +19,13 @@ _Generated 2026-08-05 03:51 · regenerate with `python scripts/stats.py > STATUS
 | Status | Count |
 | --- | --- |
 | proposed | 106 |
-| implementing | 11 |
+| implementing | 12 |
 | implemented | 32 |
 
 ```mermaid
 pie showData title Requirements by status
     "proposed" : 106
-    "implementing" : 11
+    "implementing" : 12
     "implemented" : 32
 ```
 
@@ -38,7 +38,7 @@ pie showData title Requirements by status
 | DOC | 4 | 0 | 4 |
 | DSK | 10 | 0 | 8 |
 | FUN | 7 | 0 | 6 |
-| FWK | 37 | 0 | 30 |
+| FWK | 38 | 0 | 31 |
 | LOG | 26 | 0 | 23 |
 | NET | 18 | 0 | 18 |
 | PWR | 16 | 0 | 1 |
@@ -107,6 +107,7 @@ pie showData title Requirements by status
 | [FWK032](requirements/FWK032.md) | proposed | In-Test DUT User Notification |
 | [FWK033](requirements/FWK033.md) | proposed | Privilege Precondition Check |
 | [FWK036](requirements/FWK036.md) | proposed | Cross-Language Feature Parity |
+| [FWK038](requirements/FWK038.md) | implementing | In-Test Presence and Liveness Indication |
 | [LOG002](requirements/LOG002.md) | proposed | All Test Output in logs/ |
 | [LOG003](requirements/LOG003.md) | proposed | Log Filename Includes Test Name |
 | [LOG004](requirements/LOG004.md) | proposed | Log Filename Includes Loop Number |
@@ -150,7 +151,7 @@ pie showData title Requirements by status
 
 ## Bugs
 
-**Total:** 49
+**Total:** 50
 
 ### By status
 
@@ -158,7 +159,7 @@ pie showData title Requirements by status
 | --- | --- |
 | open | 13 |
 | in-progress | 1 |
-| resolved | 23 |
+| resolved | 24 |
 | closed | 10 |
 | invalid | 2 |
 
@@ -166,7 +167,7 @@ pie showData title Requirements by status
 pie showData title Bugs by status
     "open" : 13
     "in-progress" : 1
-    "resolved" : 23
+    "resolved" : 24
     "closed" : 10
     "invalid" : 2
 ```
@@ -175,7 +176,7 @@ pie showData title Bugs by status
 
 | OS | Count |
 | --- | --- |
-| Ubuntu 24.04 LTS | 24 |
+| Ubuntu 24.04 LTS | 25 |
 | Ubuntu 26.04 LTS | 21 |
 | Windows 11 | 13 |
 | Windows 11 (zh-TW) | 2 |
@@ -240,6 +241,7 @@ pie showData title Bugs by status
 | FWK035 | [BUG0034](bugs/closed/BUG0034-reboot-os-probe-before-init-dut.md) | resolved |
 | FWK037 | [BUG0039](bugs/closed/BUG0039-dimm-populated-but-not-usable-undetected.md) | resolved |
 | FWK037 | [BUG0043](bugs/closed/BUG0043-function-py-unbound-module-logger.md) | resolved |
+| FWK038 | [BUG0050](bugs/closed/BUG0050-progress-bar-stops-before-step-does.md) | resolved |
 | LOG001 | [BUG0023](bugs/closed/BUG0023-log-dir-console-output.md) | resolved |
 | LOG001 | [BUG0042](bugs/closed/BUG0042-python-logs-follow-cwd.md) | resolved |
 | LOG008 | [BUG0004](bugs/open/BUG0004-fio-log-filenames-missing-timestamp-and-result.md) | open |
@@ -277,6 +279,7 @@ pie showData title Bugs by status
 | NET016 | [BUG0037](bugs/closed/BUG0037-net-test-local-unbound-var-kills-pair.md) | resolved |
 | NET017 | [BUG0048](bugs/closed/BUG0048-net-err-trap-false-positives.md) | resolved |
 | NET017 | [BUG0049](bugs/closed/BUG0049-wall-broadcast-clobbers-progress-display.md) | resolved |
+| NET017 | [BUG0050](bugs/closed/BUG0050-progress-bar-stops-before-step-does.md) | resolved |
 | NET019 | [BUG0047](bugs/closed/BUG0047-net019-unmatched-mac-entry-silent.md) | resolved |
 | PWR004 | [BUG0046](bugs/open/BUG0046-calibrate-no-boot-power-down-race.md) | open |
 | PWR009 | [BUG0025](bugs/closed/BUG0025-power-cycle-msg-notification-not-shown.md) | resolved |

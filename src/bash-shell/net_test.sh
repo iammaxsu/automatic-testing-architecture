@@ -432,7 +432,7 @@ _iperf_run_dir() {
         --bind "${ip_cli}" --client "${ip_srv}" --port "${_pair_port}" \
         --bitrate "${_netspd}M" --time "${_iperf_time}" --interval 3 --omit "${_iperf_omit}" ${extra} \
         --logfile "${logfile}" || true
-    wait "${_pp}" 2>/dev/null || true
+    _progress_stop "${_pp}"
     mbps="$(_extract_mbps_num "${logfile}")"
     [[ -n "${mbps}" && "${mbps}" != "0" ]] && return 0
     if (( attempt < 3 )); then
@@ -455,29 +455,63 @@ _iperf_run_dir() {
   return 0
 }
 
-# Show a progress line on the terminal while an iperf3 test runs.
-# Runs in the background alongside the iperf3 client; caller must wait for it.
+# Show a live progress line on the terminal while an iperf3 test runs.
+#
+# FWK038: this is the operator's liveness indicator, not decoration. It must keep
+# moving for as long as the step it covers is running, so a healthy-but-slow DUT
+# is never mistaken for a hung one.
+#
+# It therefore does NOT stop at `total`. A nominal 60 s transfer can run far
+# longer than 60 s -- an iperf3 client that cannot reach the server blocks on the
+# TCP connect timeout, roughly two minutes, with --time never coming into play.
+# The bar used to end at 60 s and clear itself, leaving the console frozen for
+# the remaining ~67 s of every failed attempt, three attempts per direction
+# (BUG0050). Past `total` it keeps ticking and says so.
+#
+# The caller stops it with _progress_stop; the hard ceiling is only a backstop so
+# an orphaned bar (worker killed mid-step) cannot spin forever.
+#
 # Usage: _iperf3_progress <label> <duration_sec> &
 #        progress_pid=$!
 #        ... run iperf3 ...
-#        wait ${progress_pid} 2>/dev/null || true
+#        _progress_stop "${progress_pid}"
 _iperf3_progress() {
   local label="$1"
   local total="$2"
   local elapsed=0
-  while (( elapsed < total )); do
+  local hard_stop=$(( total * 5 + 600 ))
+  local bar
+  while (( elapsed < hard_stop )); do
     # \033[K erases from the cursor to end of line. Without it a shorter label
     # leaves the tail of the previous, longer one on screen -- which is how a
     # redraw produced the fragment "np12s2 @10M" hanging off the end of the bar
     # (BUG0049). Padding to a fixed width cannot fix it: the terminal may be
     # narrower than the pad, and then the pad itself wraps.
-    printf "\r  [%-40s] %3ds / %3ds  %s\033[K" \
-      "$(printf '#%.0s' $(seq 1 $(( elapsed * 40 / total + 1 ))))" \
-      "${elapsed}" "${total}" "${label}" >&2
+    if (( elapsed < total )); then
+      bar="$(printf '#%.0s' $(seq 1 $(( elapsed * 40 / total + 1 ))))"
+      printf "\r  [%-40s] %3ds / %3ds  %s\033[K" \
+        "${bar}" "${elapsed}" "${total}" "${label}" >&2
+    else
+      # Overrun: the step is still running past its nominal duration. Keep the
+      # display alive and name the reason, so "slow" never reads as "hung".
+      printf "\r  [%-40s] %3ds / %3ds  %s  (still running)\033[K" \
+        "$(printf '#%.0s' $(seq 1 40))" "${elapsed}" "${total}" "${label}" >&2
+    fi
     sleep 1
     (( elapsed++ )) || true
   done
   printf "\r\033[K" >&2   # clear the progress line, whatever its width
+}
+
+# Stop a progress bar started by _iperf3_progress and leave the line clean.
+# The bar no longer self-terminates (FWK038/BUG0050), so `wait` on it would block
+# until the hard-stop backstop -- it must be killed once its step is done.
+_progress_stop() {
+  local pid="${1:-}"
+  [[ -n "${pid}" ]] || return 0
+  kill "${pid}" 2>/dev/null || true
+  wait "${pid}" 2>/dev/null || true
+  printf "\r\033[K" >&2
 }
 
 # Record a pair worker's abnormal termination instead of letting it vanish.
@@ -728,7 +762,7 @@ _run_pair() {
       _prog_pid=$!
       wait "${_bi_pid_f}" 2>/dev/null || true
       wait "${_bi_pid_r}" 2>/dev/null || true
-      wait "${_prog_pid}" 2>/dev/null || true
+      _progress_stop "${_prog_pid}"
       _kill_iperf3_pid "${_bi_srv_f}"
       _kill_iperf3_pid "${_bi_srv_r}"
       _bidir_fwd="$(_extract_mbps_num "${bi_fwd}")"

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# test_broadcast_tty.sh — progress display vs. wall broadcast (BUG0049)
+# test_broadcast_tty.sh — FWK038 presence and liveness indication
+#                        (BUG0049, BUG0050)
 #
 # `wall` writes ~10 lines to every TTY including the one running the test, which
 # scrolled away the `\r`-redrawn progress bar and made a running test look
@@ -23,7 +24,7 @@ bad() { echo "  FAIL  $1"; echo "        --- got ---"; echo "${2}"; FAIL=$((FAIL
 TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP}"' EXIT
 
-echo "Progress display vs. broadcast"
+echo "FWK038 presence and liveness"
 
 # ---------- _adlink_broadcast ----------
 # Drive the real function with two stand-in "terminals" (plain writable files)
@@ -109,6 +110,63 @@ if [[ "${without}" == *"enp12s2 @10M"* && "${with}" == *$'\033[K' ]]; then
   ok "a shorter label is followed by an erase sequence"
 else
   bad "a shorter label is followed by an erase sequence" "$(cat -v <<<"${with}")"
+fi
+
+# ---------- FWK038 liveness: the indicator outlives its nominal duration ----------
+# A 3 s nominal step driven for 6 s. Before BUG0050 the bar stopped at 3 s and
+# the console went silent for the remaining 3 s -- the window an operator reads
+# as a hang.
+cat > "${TMP}/live.sh" <<EOF
+set -uo pipefail
+$(sed -n '/^_iperf3_progress()/,/^}/p;/^_progress_stop()/,/^}/p' "${NET_TEST}")
+_iperf3_progress "P0 TCP Fwd enp12s0->enp12s2 @10M" 3 2>"${TMP}/frames.txt" &
+pp=\$!
+sleep 6
+_progress_stop "\$pp"
+ps -p "\$pp" >/dev/null 2>&1 && echo ALIVE || echo TERMINATED
+EOF
+live_out="$(bash "${TMP}/live.sh" 2>/dev/null)"
+frames="$(tr '\r' '\n' < "${TMP}/frames.txt")"
+
+if grep -q "still running" <<<"${frames}"; then
+  ok "the indicator keeps moving past its nominal duration"
+else
+  bad "the indicator keeps moving past its nominal duration" "${frames}"
+fi
+
+# The elapsed figure must keep climbing past the nominal total, not freeze at it.
+if grep -qE "^ +\[#+\] +5s / +3s .*still running" <<<"${frames}"; then
+  ok "elapsed keeps climbing past the nominal total"
+else
+  bad "elapsed keeps climbing past the nominal total" "${frames}"
+fi
+
+# It must not claim the step finished while it is still running.
+if ! grep -qiE "done|complete|finished" <<<"${frames}"; then
+  ok "the indicator never claims completion while running"
+else
+  bad "the indicator never claims completion while running" "${frames}"
+fi
+
+if [[ "${live_out}" == *TERMINATED* ]]; then
+  ok "_progress_stop terminates the indicator"
+else
+  bad "_progress_stop terminates the indicator" "${live_out}"
+fi
+
+# An orphaned indicator must not spin forever.
+if grep -q 'local hard_stop=\$(( total \* 5 + 600 ))' "${NET_TEST}"; then
+  ok "a backstop bounds an orphaned indicator"
+else
+  bad "a backstop bounds an orphaned indicator" "(backstop missing)"
+fi
+
+# Callers must stop it, not wait on it -- waiting would block until the backstop.
+if ! grep -qE 'wait "\$\{_(pp|prog_pid)\}"' "${NET_TEST}"; then
+  ok "no caller waits on the indicator instead of stopping it"
+else
+  bad "no caller waits on the indicator instead of stopping it" \
+      "$(grep -nE 'wait "\$\{_(pp|prog_pid)\}"' "${NET_TEST}")"
 fi
 
 echo
