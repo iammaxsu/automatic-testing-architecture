@@ -392,6 +392,72 @@ __mac_split() {
   done
 }
 
+# Report NET019 list entries that match no NIC on this machine (BUG0047).
+#
+# The per-NIC "not in _net_include_macs" lines say what was REJECTED; they never
+# say that a whitelist entry matched nothing. With two NICs whose MACs differ
+# only in the last two octets, a one-character typo is invisible: the operator
+# sees three rejections and has to diff every MAC by eye. Worse, if enough NICs
+# still match, the run proceeds and silently tests a different pair than asked
+# for. Name the unmatched entry, and point at the nearest MAC actually present.
+#
+# Usage: __mac_report_unmatched <label> <normalized-entry>...
+__mac_report_unmatched() {
+  local _label="$1"; shift
+  (( $# > 0 )) || return 0
+  local -a _sys_if=() _sys_mac=() _a _b
+  local _p _ifn _m _e _i _o _diff _best_diff _best_if _best_mac
+
+  for _p in /sys/class/net/*; do
+    _ifn="${_p##*/}"
+    [[ "${_ifn}" == "lo" ]] && continue
+    _m="$(__nic_mac "${_ifn}")"
+    [[ -n "${_m}" ]] || continue
+    _sys_if+=("${_ifn}"); _sys_mac+=("${_m}")
+  done
+  (( ${#_sys_mac[@]} > 0 )) || return 0
+
+  # A NIC already claimed by another entry in the same list is never the one the
+  # operator meant by THIS entry, so it must not be offered as the suggestion.
+  # Without this, two NICs from one card (…b4:48 and …b5:cf) are both one octet
+  # away from a typo'd …b4:cf, and the tie would be broken arbitrarily — pointing
+  # at the NIC that already works instead of the one that is missing.
+  local -a _claimed=()
+  for _i in "${!_sys_mac[@]}"; do
+    if __mac_in_list "${_sys_mac[_i]}" "$@"; then _claimed[_i]=1; else _claimed[_i]=0; fi
+  done
+
+  local _ties
+  for _e in "$@"; do
+    __mac_in_list "${_e}" "${_sys_mac[@]}" && continue
+    _best_diff=99; _ties=""
+    IFS=':' read -ra _a <<<"${_e}"
+    for _i in "${!_sys_mac[@]}"; do
+      (( _claimed[_i] )) && continue
+      IFS=':' read -ra _b <<<"${_sys_mac[_i]}"
+      _diff=0
+      for _o in 0 1 2 3 4 5; do
+        [[ "${_a[_o]:-}" == "${_b[_o]:-}" ]] || (( _diff++ ))
+      done
+      if (( _diff < _best_diff )); then
+        _best_diff=${_diff}; _ties="${_sys_if[_i]} (${_sys_mac[_i]})"
+      elif (( _diff == _best_diff )); then
+        # Still ambiguous after dropping claimed NICs — show every candidate
+        # rather than guessing which one the operator meant.
+        _ties="${_ties}, ${_sys_if[_i]} (${_sys_mac[_i]})"
+      fi
+    done
+    echo "[WARN] ${_label} entry '${_e}' matches no NIC on this machine." >&2
+    # Only suggest when it is close enough to be a plausible typo; the nearest of
+    # six unrelated MACs is noise, not a hint.
+    if (( _best_diff <= 2 )) && [[ -n "${_ties}" ]]; then
+      echo "       Closest unclaimed NIC: ${_ties} — differs in ${_best_diff} octet(s). Typo?" >&2
+    else
+      echo "       No similar MAC present — check 'ip -o link show'." >&2
+    fi
+  done
+}
+
 # Is a normalized MAC present in a list of normalized MACs?
 # Usage: __mac_in_list <needle> <mac>...
 __mac_in_list() {
@@ -520,6 +586,11 @@ netns_add() {
     _ethArray=("${_filtered2[@]+"${_filtered2[@]}"}")
     n=${#_ethArray[@]}
     echo "[DEBUG] After MAC filter (NET019): ${_ethArray[*]:-<none>}"
+    # Warn unconditionally, not only when the run is about to abort: a typo that
+    # still leaves >= 2 matching NICs would otherwise test the wrong pair without
+    # a word (BUG0047).
+    (( _have_inc )) && __mac_report_unmatched "_net_include_macs (whitelist)" "${_inc_macs[@]}"
+    (( _have_exc )) && __mac_report_unmatched "_net_exclude_macs (blacklist)" "${_exc_macs[@]}"
   fi
 
   if (( n < 2 )); then

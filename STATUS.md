@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-08-03 05:34 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-08-05 01:56 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -150,7 +150,7 @@ pie showData title Requirements by status
 
 ## Bugs
 
-**Total:** 46
+**Total:** 47
 
 ### By status
 
@@ -158,7 +158,7 @@ pie showData title Requirements by status
 | --- | --- |
 | open | 14 |
 | in-progress | 1 |
-| resolved | 19 |
+| resolved | 20 |
 | closed | 10 |
 | invalid | 2 |
 
@@ -166,7 +166,7 @@ pie showData title Requirements by status
 pie showData title Bugs by status
     "open" : 14
     "in-progress" : 1
-    "resolved" : 19
+    "resolved" : 20
     "closed" : 10
     "invalid" : 2
 ```
@@ -175,8 +175,8 @@ pie showData title Bugs by status
 
 | OS | Count |
 | --- | --- |
+| Ubuntu 24.04 LTS | 21 |
 | Ubuntu 26.04 LTS | 21 |
-| Ubuntu 24.04 LTS | 20 |
 | Windows 11 | 13 |
 | Windows 11 (zh-TW) | 2 |
 | Windows 11 (English / en-US) | 1 |
@@ -227,6 +227,7 @@ pie showData title Bugs by status
 | FWK028 | [BUG0031](bugs/closed/BUG0031-os-probe-runs-before-power-on.md) | resolved |
 | FWK028 | [BUG0035](bugs/closed/BUG0035-result-json-write-crash-loses-run.md) | resolved |
 | FWK028 | [BUG0045](bugs/closed/BUG0045-report-shows-timeout-as-boot-time.md) | resolved |
+| FWK029 | [BUG0047](bugs/closed/BUG0047-net019-unmatched-mac-entry-silent.md) | resolved |
 | FWK031 | [BUG0034](bugs/closed/BUG0034-reboot-os-probe-before-init-dut.md) | resolved |
 | FWK031 | [BUG0036](bugs/open/BUG0036-reboot-slow-boot-misjudged-dead.md) | in-progress |
 | FWK032 | [BUG0025](bugs/closed/BUG0025-power-cycle-msg-notification-not-shown.md) | resolved |
@@ -265,8 +266,10 @@ pie showData title Bugs by status
 | NET008 | [BUG0029](bugs/closed/BUG0029-net-test-iperf3-firewall-rule-needs-elevation.md) | resolved |
 | NET009 | [BUG0029](bugs/closed/BUG0029-net-test-iperf3-firewall-rule-needs-elevation.md) | resolved |
 | NET011 | [BUG0015](bugs/open/BUG0015-net-test-sh-consumes-the-ssh-lifeline-nic.md) | open |
+| NET012 | [BUG0047](bugs/closed/BUG0047-net019-unmatched-mac-entry-silent.md) | resolved |
 | NET012 | [BUG0015](bugs/open/BUG0015-net-test-sh-consumes-the-ssh-lifeline-nic.md) | open |
 | NET016 | [BUG0037](bugs/closed/BUG0037-net-test-local-unbound-var-kills-pair.md) | resolved |
+| NET019 | [BUG0047](bugs/closed/BUG0047-net019-unmatched-mac-entry-silent.md) | resolved |
 | PWR004 | [BUG0046](bugs/open/BUG0046-calibrate-no-boot-power-down-race.md) | open |
 | PWR009 | [BUG0025](bugs/closed/BUG0025-power-cycle-msg-notification-not-shown.md) | resolved |
 | PWR009 | [BUG0033](bugs/closed/BUG0033-ssh-changed-host-key-blocks-all-cycles.md) | resolved |
@@ -303,7 +306,6 @@ _(may indicate untested code paths — worth a review)_
 | [DSK009](requirements/DSK009.md) | implemented | fio Engine and Write-Consistency Flags Aligned with KDiskMark v3.2.0 |
 | [FUN007](requirements/FUN007.md) | implemented | Windows PowerShell Shared Function Library |
 | [FWK002](requirements/FWK002.md) | implemented | Cross-Language Naming Conventions |
-| [FWK029](requirements/FWK029.md) | implemented | Emergency Stop Safety Mechanism |
 | [FWK030](requirements/FWK030.md) | implemented | Two-Phase Consecutive-Failure Stop Policy |
 | [PWR001](requirements/PWR001.md) | implemented | AT and ATX PSU Type Selection |
 | [PWR002](requirements/PWR002.md) | implemented | GPIO Relay Abstraction |
