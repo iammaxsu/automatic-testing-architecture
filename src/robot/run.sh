@@ -44,8 +44,31 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -z "${BMC_HOST}" ]] && { echo "[FATAL] -H <bmc-host> is required" >&2; usage >&2; exit 2; }
-command -v robot >/dev/null 2>&1 || {
-  echo "[FATAL] 'robot' not found - activate the venv (see src/robot/README.md)" >&2; exit 2; }
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+REPO_ROOT="$(cd "${HERE}/../.." && pwd)"
+
+# Use the project venv when the caller has not activated one. A stale system
+# launcher (e.g. ~/.local/bin/robot whose interpreter lost the package) other-
+# wise passes a "does the command exist" check and fails only mid-run.
+if [[ -z "${VIRTUAL_ENV:-}" && -f "${REPO_ROOT}/.venv/bin/activate" ]]; then
+  # shellcheck disable=SC1091
+  . "${REPO_ROOT}/.venv/bin/activate"
+  echo "[INFO] venv     : ${REPO_ROOT}/.venv (auto-activated)"
+fi
+
+# Verify robot really runs. `robot --version` prints the banner but exits 251,
+# so check the banner text, not the exit status (and avoid a pipeline, which
+# `set -o pipefail` would fail on that 251).
+_robot_banner="$(robot --version 2>&1 || true)"
+if [[ "${_robot_banner}" != "Robot Framework"* ]]; then
+  echo "[FATAL] 'robot' is not usable ($(command -v robot || echo 'not found'))." >&2
+  echo "        Set up the venv once:" >&2
+  echo "          python3 -m venv ${REPO_ROOT}/.venv" >&2
+  echo "          source ${REPO_ROOT}/.venv/bin/activate && pip install robotframework" >&2
+  echo "        See src/robot/README.md." >&2
+  exit 2
+fi
 
 # Filesystem-safe <dut> component (LOG025): IPv6 ':' and any '/' -> '_'.
 DUT_SAFE="${BMC_HOST//[:\/]/_}"
