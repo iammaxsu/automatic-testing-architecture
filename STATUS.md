@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-08-05 02:16 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-08-05 03:23 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -150,7 +150,7 @@ pie showData title Requirements by status
 
 ## Bugs
 
-**Total:** 47
+**Total:** 48
 
 ### By status
 
@@ -158,7 +158,7 @@ pie showData title Requirements by status
 | --- | --- |
 | open | 13 |
 | in-progress | 1 |
-| resolved | 21 |
+| resolved | 22 |
 | closed | 10 |
 | invalid | 2 |
 
@@ -166,7 +166,7 @@ pie showData title Requirements by status
 pie showData title Bugs by status
     "open" : 13
     "in-progress" : 1
-    "resolved" : 21
+    "resolved" : 22
     "closed" : 10
     "invalid" : 2
 ```
@@ -175,7 +175,7 @@ pie showData title Bugs by status
 
 | OS | Count |
 | --- | --- |
-| Ubuntu 24.04 LTS | 22 |
+| Ubuntu 24.04 LTS | 23 |
 | Ubuntu 26.04 LTS | 21 |
 | Windows 11 | 13 |
 | Windows 11 (zh-TW) | 2 |
@@ -226,6 +226,7 @@ pie showData title Bugs by status
 | FWK028 | [BUG0031](bugs/closed/BUG0031-os-probe-runs-before-power-on.md) | resolved |
 | FWK028 | [BUG0035](bugs/closed/BUG0035-result-json-write-crash-loses-run.md) | resolved |
 | FWK028 | [BUG0045](bugs/closed/BUG0045-report-shows-timeout-as-boot-time.md) | resolved |
+| FWK028 | [BUG0048](bugs/closed/BUG0048-net-err-trap-false-positives.md) | resolved |
 | FWK029 | [BUG0023](bugs/closed/BUG0023-log-dir-console-output.md) | resolved |
 | FWK029 | [BUG0047](bugs/closed/BUG0047-net019-unmatched-mac-entry-silent.md) | resolved |
 | FWK031 | [BUG0034](bugs/closed/BUG0034-reboot-os-probe-before-init-dut.md) | resolved |
@@ -251,6 +252,7 @@ pie showData title Bugs by status
 | LOG015 | [BUG0024](bugs/closed/BUG0024-extract-bw-fails-on-slow-disks-no-data-0-0-mib-s-f.md) | closed |
 | LOG015 | [BUG0043](bugs/closed/BUG0043-function-py-unbound-module-logger.md) | resolved |
 | LOG015 | [BUG0045](bugs/closed/BUG0045-report-shows-timeout-as-boot-time.md) | resolved |
+| LOG015 | [BUG0048](bugs/closed/BUG0048-net-err-trap-false-positives.md) | resolved |
 | LOG018 | [BUG0001](bugs/closed/BUG0001-no-total-test-time.md) | closed |
 | LOG018 | [BUG0018](bugs/closed/BUG0018-html-report-total-test-time-computed-from-file-mti.md) | closed |
 | LOG018 | [BUG0010](bugs/invalid/BUG0010-html-reports-may-be-parsing-log-instead-of-reading.md) | invalid |
@@ -265,11 +267,13 @@ pie showData title Bugs by status
 | NET006 | [BUG0029](bugs/closed/BUG0029-net-test-iperf3-firewall-rule-needs-elevation.md) | resolved |
 | NET006 | [BUG0037](bugs/closed/BUG0037-net-test-local-unbound-var-kills-pair.md) | resolved |
 | NET008 | [BUG0029](bugs/closed/BUG0029-net-test-iperf3-firewall-rule-needs-elevation.md) | resolved |
+| NET008 | [BUG0048](bugs/closed/BUG0048-net-err-trap-false-positives.md) | resolved |
 | NET009 | [BUG0029](bugs/closed/BUG0029-net-test-iperf3-firewall-rule-needs-elevation.md) | resolved |
 | NET011 | [BUG0015](bugs/open/BUG0015-net-test-sh-consumes-the-ssh-lifeline-nic.md) | open |
 | NET012 | [BUG0047](bugs/closed/BUG0047-net019-unmatched-mac-entry-silent.md) | resolved |
 | NET012 | [BUG0015](bugs/open/BUG0015-net-test-sh-consumes-the-ssh-lifeline-nic.md) | open |
 | NET016 | [BUG0037](bugs/closed/BUG0037-net-test-local-unbound-var-kills-pair.md) | resolved |
+| NET017 | [BUG0048](bugs/closed/BUG0048-net-err-trap-false-positives.md) | resolved |
 | NET019 | [BUG0047](bugs/closed/BUG0047-net019-unmatched-mac-entry-silent.md) | resolved |
 | PWR004 | [BUG0046](bugs/open/BUG0046-calibrate-no-boot-power-down-race.md) | open |
 | PWR009 | [BUG0025](bugs/closed/BUG0025-power-cycle-msg-notification-not-shown.md) | resolved |

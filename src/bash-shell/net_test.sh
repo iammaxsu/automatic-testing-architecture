@@ -265,12 +265,17 @@ _ping_check() {
   # Prints PASS or FAIL to stdout; detail goes to logfile.
   local ns="$1" addr="$2" v6="$3" logfile="$4"
   local tmpf; tmpf="$(mktemp)"
+  # `|| true`: ping exits 1 on packet loss, and with `set -o pipefail` that makes
+  # the whole pipeline fail. But a failed ping is the ANSWER here, not an error --
+  # the verdict is decided by the grep below, from the output we just captured.
+  # Without this the ERR trap fired on a completely handled path and reported a
+  # crash for every unreachable link (BUG0048).
   if [[ "$v6" == "1" ]]; then
     echo "${_pwd}" | sudo -S ip netns exec "${ns}" ping6 -6 -c 4 "${addr}" \
-      | tee "${tmpf}" >> "${logfile}"
+      | tee "${tmpf}" >> "${logfile}" || true
   else
     echo "${_pwd}" | sudo -S ip netns exec "${ns}" ping -c 4 "${addr}" \
-      | tee "${tmpf}" >> "${logfile}"
+      | tee "${tmpf}" >> "${logfile}" || true
   fi
   grep -q " 0% packet loss" "${tmpf}" && echo "PASS" || echo "FAIL"
   rm -f "${tmpf}"
@@ -280,7 +285,12 @@ _extract_rate() {
   local f="$1"
   local line
   line="$(awk '/receiver$/{ln=$0} END{print ln}' "$f")"
-  printf "%s\n" "$line" | grep -oE '[0-9.]+\s+[KMG]?bits/sec' | tail -n1
+  # `|| true`: no match is a valid, expected answer. An iperf3 client that could
+  # not connect writes no rate line at all, and every caller handles the empty
+  # string one line later ("N/A", or 0 in _extract_mbps_num). grep's exit 1 for
+  # "no match" must not look like a command failure to the ERR trap (BUG0048) --
+  # the sibling extractors below are awk-only and already return 0 for no match.
+  printf "%s\n" "$line" | grep -oE '[0-9.]+\s+[KMG]?bits/sec' | tail -n1 || true
 }
 
 # Extract throughput as a plain number in Mbits/sec (canonical unit for JSON).
@@ -478,7 +488,28 @@ _iperf3_progress() {
 _pair_abort() {
   local _rc=$? _ln="${1:-?}" _cmd="${2:-?}"
   trap - ERR   # never recurse if a command below also fails
-  local _why="worker aborted (exit ${_rc}) at line ${_ln}: ${_cmd}"
+
+  # At most ONE record per (iteration, speed) — BUG0048.
+  #
+  # `trap - ERR` above does not do what it looks like it does. Most failures
+  # happen inside command substitutions, and with `set -E` each substitution
+  # subshell inherits its own copy of the trap; disarming it there leaves the
+  # worker's copy armed, and the subshell exits immediately afterwards anyway.
+  # A single unreachable link therefore fired the handler 32 times and appended
+  # 32 identical ERROR entries to one 10 Mbps iteration, so summary.total counted
+  # trap firings rather than tests. The marker file is the only state that
+  # survives a subshell, so dedupe through the filesystem.
+  local _marker=""
+  if [[ -n "${pair_json:-}" ]]; then
+    _marker="${pair_json}.err.${_k:-0}.${_netspd:-0}"
+    [[ -e "${_marker}" ]] && return 0
+    : > "${_marker}" 2>/dev/null || true
+  fi
+
+  # Not "aborted": the handler also runs for failures inside a command
+  # substitution, where only the substitution's subshell dies and the worker
+  # carries on to the next step. Say what is actually known.
+  local _why="unhandled command failure (exit ${_rc}) at line ${_ln}: ${_cmd}"
   echo "[ERROR] Pair ${pair_idx:-?} (${pair:-?}) ${_why}" >> "${pairlog:-/dev/null}" 2>/dev/null || true
   _main_log "[Pair ${pair_idx:-?}] ERROR — ${_why}" 2>/dev/null || true
   if [[ -n "${pair_json:-}" && -f "${pair_json:-}" ]]; then
@@ -934,6 +965,9 @@ for (( loop_n=1; loop_n<=_loops_this_run; loop_n++ )); do
       _jq_pairs=$(jq --slurpfile add "${_tmp}" '. + $add' <<<"${_jq_pairs}")
       rm -f "${_tmp}"
     fi
+    # _pair_abort's per-(iteration,speed) dedupe markers (BUG0048) live beside
+    # the tmp JSON and are never read after the merge.
+    rm -f "${_tmp}".err.* 2>/dev/null || true
   done
 
   # N/A rows for odd-count NICs (no pair)
