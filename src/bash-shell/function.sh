@@ -216,10 +216,27 @@ log_dir() {
   fix_log_permissions "${_log_dir}" "shallow"
 
   export _log_dir _session_log_dir
-  echo "[INFO] log dir: ${_log_dir}"
-  echo "[INFO] session log dir: ${_session_log_dir}"
+
+  # Announce only when the resolved paths actually change (BUG0023). net_test.sh
+  # and slp_test.sh call log_dir() directly and then setup_session(), which calls
+  # it again with the same arguments, so an unconditional echo printed the same
+  # two lines twice per run and made the second call look like a second session.
+  if [[ "${_log_dir_announced:-}" != "${_log_dir}|${_session_log_dir}" ]]; then
+    echo "[INFO] log dir: ${_log_dir}"
+    echo "[INFO] session log dir: ${_session_log_dir}"
+    export _log_dir_announced="${_log_dir}|${_session_log_dir}"
+  fi
+
   export _now_timestamp="$(now_ts)"
-  printf '%s\n' "${_log_dir}"
+
+  # Deliberately prints nothing to stdout (BUG0023). This used to end with
+  # `printf '%s\n' "${_log_dir}"` as a return channel, but no caller ever
+  # captured it -- all five read the exported ${_log_dir} / ${_session_log_dir}
+  # instead -- so the bare path only leaked a stray line into every run's
+  # console output. Capturing it would have been broken anyway: the [INFO]
+  # lines above go to stdout too, so `x=$(log_dir …)` would have swallowed
+  # three lines, not one.
+  return 0
 }
 
 # ---------- Fix log ownership & permissions ----------
@@ -238,7 +255,10 @@ fix_log_permissions() {
   [[ -d "${_target_dir}" ]] || return 0
 
   # Identify the original invoking user. SUDO_USER is set by sudo.
-  local _real_user="${SUDO_USER:-${USER}}"
+  # USER is NOT always set: a systemd unit (the dev_detect autorun path) and
+  # `su -c` both start with it unset, and under `set -u` an unguarded ${USER}
+  # aborts the whole script here. `id -un` always answers.
+  local _real_user="${SUDO_USER:-${USER:-$(id -un 2>/dev/null || echo root)}}"
   local _real_group
   _real_group="$(id -gn "${_real_user}" 2>/dev/null || echo "${_real_user}")"
 
