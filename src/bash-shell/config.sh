@@ -94,6 +94,14 @@ setup_session() {
 # flags still win; these are the defaults.
 : "${_net_iperf_time_sec:=60}"   # NET007: iperf3 duration per direction (seconds).
 : "${_net_iperf_omit_sec:=3}"    # NET007: seconds omitted at start (ramp-up exclusion).
+: "${_net_iperf_overhead_sec:=5}"
+                                 # FWK038: allowance, in seconds, for connection setup
+                                 #   and the closing statistics exchange. Used ONLY to
+                                 #   size the progress bar, never to bound the transfer.
+                                 #   The bar's denominator is time + omit + this, so it
+                                 #   reaches 100% about when a healthy step ends and
+                                 #   "(still running)" keeps meaning "this one is
+                                 #   unusual" rather than appearing on every transfer.
 : "${_net_tcp_pass_pct:=95}"     # NET009: default TCP PASS threshold as % of link speed,
                                  #   used for any speed not in _net_tcp_pass_pct_tiers.
 : "${_net_tcp_pass_pct_tiers:=10:90,100:90,1000:95,2500:95,5000:95,10000:95}"

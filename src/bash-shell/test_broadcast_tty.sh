@@ -263,6 +263,34 @@ for s in disk_test dev_detect slp_test net_test; do
   fi
 done
 
+# ---------- FWK038: "(still running)" must stay a signal, not a constant ----------
+# The bar's denominator is the step's expected WALL CLOCK, not iperf3's --time.
+# --time governs the measured transfer only; --omit adds a warm-up on top, and
+# each direction pays setup plus a closing statistics exchange. With --time as
+# the denominator every healthy transfer overran and printed "(still running)"
+# (BUG0053), which is the marker for the abnormal case.
+if grep -q 'local _iperf_wall=\$(( _iperf_time + _iperf_omit + \${_net_iperf_overhead_sec:-5} ))' "${NET_TEST}"; then
+  ok "the bar is sized by expected wall clock, not by --time"
+else
+  bad "the bar is sized by expected wall clock, not by --time" \
+      "$(grep -n '_iperf_wall=' "${NET_TEST}")"
+fi
+
+if ! grep -qE '_iperf3_progress "[^"]*" "\$\{_iperf_time\}"' "${NET_TEST}"; then
+  ok "no call site still passes --time as the denominator"
+else
+  bad "no call site still passes --time as the denominator" \
+      "$(grep -nE '_iperf3_progress .*_iperf_time' "${NET_TEST}")"
+fi
+
+# A healthy transfer must finish inside the denominator, so the marker stays off.
+wall=$(( 60 + 3 + 5 ))
+if (( wall > 63 )); then
+  ok "the denominator (${wall}s) exceeds time+omit (63s), leaving setup headroom"
+else
+  bad "the denominator exceeds time+omit" "${wall}"
+fi
+
 echo
 echo "  ${PASS} passed, ${FAIL} failed"
 [[ ${FAIL} -eq 0 ]]

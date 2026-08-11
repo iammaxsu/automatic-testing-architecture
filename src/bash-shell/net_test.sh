@@ -444,14 +444,14 @@ _iperf_wait_ready() {
 # server and retry, up to 3 attempts, before giving up -- turning a transient
 # race into a self-healing retry instead of a spurious UNKNOWN verdict (NET008).
 # Relies on bash dynamic scope for ev/od/pair_idx/srv_pid/_netspd/_iperf_time/
-# _iperf_omit/pairlog (all locals of the calling _run_pair).
+# _iperf_omit/_iperf_wall/pairlog (all locals of the calling _run_pair).
 # Usage: _iperf_run_dir <progress_label> <logfile> <extra_client_args>
 _iperf_run_dir() {
   local label="$1" logfile="$2" extra="$3"
   local ip_cli="192.247.${pair_idx}.1" ip_srv="192.247.${pair_idx}.11"
   local attempt mbps _pp srvlog="${logfile%.log}_server.log"
   for attempt in 1 2 3; do
-    _iperf3_progress "${label}" "${_iperf_time}" &
+    _iperf3_progress "${label}" "${_iperf_wall}" &
     _pp=$!
     # shellcheck disable=SC2086
     echo "${_pwd}" | sudo -S ip netns exec "ns_${ev}" iperf3 \
@@ -745,6 +745,14 @@ _run_pair() {
 
     local _iperf_time="${_net_iperf_time_sec:-60}"
     local _iperf_omit="${_net_iperf_omit_sec:-3}"
+    # What the step should take on the WALL CLOCK, which is not --time (BUG0053).
+    # --time governs only the measured transfer; --omit runs an extra warm-up
+    # period on top of it, and each direction also pays connection setup and a
+    # closing statistics exchange. Showing --time as the denominator made every
+    # healthy transfer overrun and print "(still running)" -- a marker whose
+    # whole purpose is to flag the ABNORMAL case, so firing it every time
+    # destroys the signal it was added to carry.
+    local _iperf_wall=$(( _iperf_time + _iperf_omit + ${_net_iperf_overhead_sec:-5} ))
     local _prog_pid
 
     echo "[TCP Reverse] ${ev} <- ${od} @ ${_netspd} Mbps" >> "${pairlog}"
@@ -794,7 +802,7 @@ _run_pair() {
           --bitrate "${_netspd}M" --time "${_iperf_time}" --interval 3 --omit "${_iperf_omit}" \
           --logfile "${bi_rev}" &
       local _bi_pid_r=$!
-      _iperf3_progress "P${pair_idx} BIDIR ${ev}<->${od} @${_netspd}M" "${_iperf_time}" &
+      _iperf3_progress "P${pair_idx} BIDIR ${ev}<->${od} @${_netspd}M" "${_iperf_wall}" &
       _prog_pid=$!
       wait "${_bi_pid_f}" 2>/dev/null || true
       wait "${_bi_pid_r}" 2>/dev/null || true
