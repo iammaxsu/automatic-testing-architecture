@@ -53,10 +53,14 @@ fi
 log_dir "" 1
 log_root="${_session_log_dir}"
 
+# FWK038: liveness heartbeat — periodic proof the run has not hung.
+test_heartbeat_start "disk_test"
+
+
 # ---------- Cleanup on exit ----------
 # Ensures logs are readable by the login user even if the script is
 # interrupted (Ctrl+C, power failure, etc.) before generate_disk_report runs.
-trap 'fix_log_permissions "${_log_dir:-}" deep' EXIT
+trap 'test_heartbeat_stop; fix_log_permissions "${_log_dir:-}" deep' EXIT
 
 # Initialize, m = _target_loop
 counter_init "disk" "${_target_loop:-1}"
@@ -334,6 +338,7 @@ for (( loop_n=1; loop_n<=_loops_this_run; loop_n++ )); do
   k="${km%%/*}"
   mm="${km##*/}"
   test_progress_set "disk_test" "${k}" "${mm}"
+  test_heartbeat_phase "loop ${k}/${mm}"
   log "----- Iteration ${k} of ${mm} -----"
 
   n="${k}"   # 這一輪的編號（避免覆蓋）

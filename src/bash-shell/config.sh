@@ -18,6 +18,19 @@ export _config_api_version
 : "${_log_timestamp_format:=%Y%m%dT%H%M%S}"
 export _human_timestamp_format _log_timestamp_format
 
+# ---------- Liveness heartbeat (FWK038) ----------
+# How often the console is told the test is still alive, in seconds. This is the
+# operator's evidence that a long silent step is slow rather than hung; it is NOT
+# the "do not power off" broadcast to other users, which stays on its per-loop
+# cadence so it does not become spam.
+#
+# The value bounds how long the console may sit unchanged. Keep it well under the
+# time an operator would wait before concluding the run has died. 0 disables the
+# heartbeat entirely (e.g. when the output is being captured to a file that
+# should not carry it).
+: "${_heartbeat_interval_sec:=30}"
+export _heartbeat_interval_sec
+
 setup_session() {
   log_dir "" 1 || return 1   # 1 = ?? session 摮??冗
   : "${_pwd:="adlink"}"

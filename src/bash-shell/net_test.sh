@@ -183,7 +183,7 @@ set -- "${REM_ARGS[@]}"
 # netns_del restores all namespaced NICs to root.
 # fix_log_permissions ensures logs are readable by the login user even if
 # the script is interrupted (Ctrl+C, crash, etc.) before generate_net_report runs.
-trap 'iperf3_del; netns_del; fix_log_permissions "${_log_dir:-}" deep' EXIT
+trap 'test_heartbeat_stop; iperf3_del; netns_del; fix_log_permissions "${_log_dir:-}" deep' EXIT
 
 # ---------- Tools ----------
 prepare_net_tools
@@ -194,6 +194,10 @@ jq_install   # required for result.json emission (LOG015) and per-pair JSON tmp 
 # ---------- Log folder ----------
 log_dir "" 1
 log_root="${_session_log_dir}"
+
+# FWK038: liveness heartbeat — periodic proof the run has not hung.
+test_heartbeat_start "net_test"
+
 
 # ---------- Counter ----------
 counter_init "net" "${_target_loop:-1}"
@@ -481,6 +485,14 @@ _iperf3_progress() {
   local elapsed=0
   local hard_stop=$(( total * 5 + 600 ))
   local bar
+  # FWK038: claim the console while this bar is drawing, so the periodic
+  # heartbeat holds off. Two writers on one terminal produce garbage, and while
+  # the bar is up it is the better liveness indicator -- it updates every second
+  # and names the step. Released however this subshell ends.
+  if [[ -n "${_ADLINK_HB_BUSY_FILE:-}" ]]; then
+    : > "${_ADLINK_HB_BUSY_FILE}" 2>/dev/null || true
+    trap 'rm -f "${_ADLINK_HB_BUSY_FILE}" 2>/dev/null || true' EXIT
+  fi
   while (( elapsed < hard_stop )); do
     # \033[K erases from the cursor to end of line. Without it a shorter label
     # leaves the tail of the previous, longer one on screen -- which is how a
@@ -966,6 +978,7 @@ for (( loop_n=1; loop_n<=_loops_this_run; loop_n++ )); do
   _k="${_km%%/*}"
   _mm="${_km##*/}"
   test_progress_set "net_test" "${_k}" "${_mm}"
+  test_heartbeat_phase "iteration ${_k}/${_mm}"
 
   _main_log "=== Iteration ${_k}/${_mm} START — ${#even_ethArray[@]} pair(s) launching in parallel ==="
 

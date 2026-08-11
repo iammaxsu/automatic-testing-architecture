@@ -101,7 +101,7 @@ find_and_source "function.sh"
 # up front so every exit path -- not just the ones that happened to be
 # exercised before -- reports its real exit code.
 : "${_log_dir:=}"
-trap 'fix_log_permissions "${_log_dir:-}" deep' EXIT
+trap 'test_heartbeat_stop; fix_log_permissions "${_log_dir:-}" deep' EXIT
 
 # ---- API version check ----
 : "${_requires_config_api:=00.00.01}"
@@ -1020,6 +1020,10 @@ fi
 log_dir "" 1
 log_root="${_session_log_dir}"
 
+# FWK038: liveness heartbeat — periodic proof the run has not hung.
+test_heartbeat_start "dev_detect"
+
+
 # --- single instance lock ---
 LOCK_DIR="${_log_dir}/runlocks"
 mkdir -p -- "${LOCK_DIR}"
@@ -1093,6 +1097,7 @@ for (( dev_loop=1; dev_loop<=_loops_this_run; dev_loop++ )); do
   tag="$(counter_next_tag)"; k="${tag%%/*}"; m="${tag##*/}"
   echo "[DEBUG] next_tag=${tag} (k=${k} m=${m})  session=${_session_id}"
   test_progress_set "dev_detect" "$k" "$m"
+  test_heartbeat_phase "loop ${k}/${m}"
   echo "[$tag] Device detect..." | tee -a "${_devlog}"
 
   now_snapshot="${log_root}/${_dev_detect_test_name}_snapshot_${k}_of_${m}_${_run_ts}.txt"

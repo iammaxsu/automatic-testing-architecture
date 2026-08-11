@@ -1598,8 +1598,101 @@ _adlink_broadcast() {
   while read -r t; do
     [[ -z "${t}" || ! -w "${t}" ]] && continue
     [[ -n "${self}" && "${t}" == "${self}" ]] && continue
-    printf '%s\n' "${msg}" > "${t}" 2>/dev/null || true
+    printf '%s\n' "${msg}" >> "${t}" 2>/dev/null || true
   done < <(who 2>/dev/null | awk '{print "/dev/"$2}' | sort -u)
+}
+
+# ---------- FWK038 liveness heartbeat ----------
+#
+# Presence (the "do not power off" banner) and liveness (proof the run has not
+# hung) are different obligations. test_progress_set covers presence: it fires
+# once per loop, so on a single-iteration run it speaks once, at the start, and
+# says nothing about whether the process is still alive forty minutes later.
+#
+# This is the liveness half: a background ticker that writes one line to the
+# OPERATOR'S console at a fixed interval, for as long as the test runs. It never
+# broadcasts to other terminals -- at a 30 s cadence that would be spam, and
+# other users need presence, not liveness.
+
+# Write one line to the operator's own terminal, falling back to stderr when we
+# do not know which terminal that is (cron, systemd, a redirected run).
+_adlink_console() {
+  local line="$1"
+  if [[ -n "${_ADLINK_SELF_TTY:-}" && -w "${_ADLINK_SELF_TTY}" ]]; then
+    # Append, not truncate: identical on a TTY (a character device ignores
+    # O_TRUNC), but correct if the "terminal" is ever a regular file — a
+    # redirected run, or a test harness capturing what the operator would see.
+    printf '%s\n' "${line}" >> "${_ADLINK_SELF_TTY}" 2>/dev/null || true
+  else
+    printf '%s\n' "${line}" >&2
+  fi
+}
+
+_adlink_hms() {   # seconds -> "1h 03m 09s" / "3m 09s" / "9s"
+  local s="${1:-0}"
+  if   (( s >= 3600 )); then printf '%dh %02dm %02ds' $(( s/3600 )) $(( (s%3600)/60 )) $(( s%60 ))
+  elif (( s >= 60   )); then printf '%dm %02ds' $(( s/60 )) $(( s%60 ))
+  else printf '%ds' "$s"; fi
+}
+
+# Set the phase the heartbeat reports, e.g. test_heartbeat_phase "sweep 3/8".
+# Free-form and optional; the heartbeat still ticks without it.
+test_heartbeat_phase() {
+  [[ -n "${_ADLINK_HB_PHASE_FILE:-}" ]] || return 0
+  printf '%s\n' "${1:-}" > "${_ADLINK_HB_PHASE_FILE}" 2>/dev/null || true
+}
+
+# Start the ticker. Safe to call twice — the previous one is stopped first.
+# Usage: test_heartbeat_start <script-name> [interval_sec]
+test_heartbeat_start() {
+  local script="${1:?}"
+  local interval="${2:-${_heartbeat_interval_sec:-30}}"
+  [[ "${interval}" =~ ^[0-9]+$ ]] || interval=30
+  (( interval > 0 )) || return 0        # 0 disables the heartbeat
+
+  test_heartbeat_stop
+
+  local state_dir="${_log_dir:-/tmp}"
+  _ADLINK_HB_PHASE_FILE="${state_dir}/.heartbeat_phase.$$"
+  # A step already drawing its own live display (net_test's per-transfer bar)
+  # touches this so the heartbeat stays out of its way — two writers on one
+  # terminal produce garbage, and the bar is the better indicator while it runs.
+  _ADLINK_HB_BUSY_FILE="${state_dir}/.heartbeat_busy.$$"
+  export _ADLINK_HB_PHASE_FILE _ADLINK_HB_BUSY_FILE
+  : > "${_ADLINK_HB_PHASE_FILE}" 2>/dev/null || true
+  rm -f "${_ADLINK_HB_BUSY_FILE}" 2>/dev/null || true
+
+  local t0; t0="$(date +%s)"
+  # The ticker must die with the test it reports on. test_heartbeat_stop and the
+  # scripts' EXIT traps handle the normal paths, but a SIGKILL, or a failure in
+  # the few lines between starting the heartbeat and installing the trap, would
+  # otherwise leave an immortal loop writing to somebody's terminal. Watching the
+  # parent PID is a self-healing backstop; a wall-clock limit would not be, since
+  # a legitimate endurance run can last for days.
+  local watch_pid=$$
+  (
+    while :; do
+      sleep "${interval}"
+      kill -0 "${watch_pid}" 2>/dev/null || break   # test is gone; so are we
+      [[ -e "${_ADLINK_HB_BUSY_FILE}" ]] && continue
+      local _now _el _phase
+      _now="$(date +%s)"; _el=$(( _now - t0 ))
+      _phase="$(head -n1 "${_ADLINK_HB_PHASE_FILE}" 2>/dev/null || true)"
+      _adlink_console "[$(date '+%H:%M:%S')] ${script}: running — $(_adlink_hms "${_el}") elapsed${_phase:+  |  ${_phase}}"
+    done
+  ) &
+  _ADLINK_HB_PID=$!
+  export _ADLINK_HB_PID
+}
+
+# Stop the ticker and clean up its state. Idempotent; safe from an EXIT trap.
+test_heartbeat_stop() {
+  if [[ -n "${_ADLINK_HB_PID:-}" ]]; then
+    kill "${_ADLINK_HB_PID}" 2>/dev/null || true
+    wait "${_ADLINK_HB_PID}" 2>/dev/null || true
+    unset _ADLINK_HB_PID
+  fi
+  rm -f "${_ADLINK_HB_PHASE_FILE:-}" "${_ADLINK_HB_BUSY_FILE:-}" 2>/dev/null || true
 }
 
 _adlink_find_display() {

@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-08-05 04:02 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-08-11 03:59 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -19,14 +19,14 @@ _Generated 2026-08-05 04:02 · regenerate with `python scripts/stats.py > STATUS
 | Status | Count |
 | --- | --- |
 | proposed | 106 |
-| implementing | 12 |
-| implemented | 32 |
+| implementing | 11 |
+| implemented | 33 |
 
 ```mermaid
 pie showData title Requirements by status
     "proposed" : 106
-    "implementing" : 12
-    "implemented" : 32
+    "implementing" : 11
+    "implemented" : 33
 ```
 
 ### By section
@@ -38,7 +38,7 @@ pie showData title Requirements by status
 | DOC | 4 | 0 | 4 |
 | DSK | 10 | 0 | 8 |
 | FUN | 7 | 0 | 6 |
-| FWK | 38 | 0 | 31 |
+| FWK | 38 | 0 | 30 |
 | LOG | 26 | 0 | 23 |
 | NET | 18 | 0 | 18 |
 | PWR | 16 | 0 | 1 |
@@ -107,7 +107,6 @@ pie showData title Requirements by status
 | [FWK032](requirements/FWK032.md) | proposed | In-Test DUT User Notification |
 | [FWK033](requirements/FWK033.md) | proposed | Privilege Precondition Check |
 | [FWK036](requirements/FWK036.md) | proposed | Cross-Language Feature Parity |
-| [FWK038](requirements/FWK038.md) | implementing | In-Test Presence and Liveness Indication |
 | [LOG002](requirements/LOG002.md) | proposed | All Test Output in logs/ |
 | [LOG003](requirements/LOG003.md) | proposed | Log Filename Includes Test Name |
 | [LOG004](requirements/LOG004.md) | proposed | Log Filename Includes Loop Number |

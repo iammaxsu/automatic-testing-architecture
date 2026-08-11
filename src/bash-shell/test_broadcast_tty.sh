@@ -169,6 +169,100 @@ else
       "$(grep -nE 'wait "\$\{_(pp|prog_pid)\}"' "${NET_TEST}")"
 fi
 
+# ---------- FWK038 liveness: the periodic heartbeat ----------
+# test_progress_set fires once per loop, so a single-iteration run gets one
+# message at the start and nothing after. The heartbeat is the part that keeps
+# speaking. Driven at 1 s here; production default is _heartbeat_interval_sec.
+cat > "${TMP}/hb.sh" <<EOF
+set -uo pipefail
+$(sed -n '/^_adlink_console()/,/^}/p;/^_adlink_hms()/,/^}/p;/^test_heartbeat_phase()/,/^}/p;/^test_heartbeat_start()/,/^}/p;/^test_heartbeat_stop()/,/^}/p' "${FUNCTION_SH}")
+_log_dir="${TMP}"
+_ADLINK_SELF_TTY="${TMP}/console"
+: > "\${_ADLINK_SELF_TTY}"
+test_heartbeat_start "disk_test" 1
+test_heartbeat_phase "sweep 1/8 seq-read"
+sleep 2.5
+: > "\${_ADLINK_HB_BUSY_FILE}"      # a progress bar claims the console
+sleep 2
+rm -f "\${_ADLINK_HB_BUSY_FILE}"
+test_heartbeat_phase "sweep 2/8 rand-write"
+sleep 2.5
+test_heartbeat_stop
+[[ -e "\${_ADLINK_HB_PHASE_FILE}" ]] && echo LEFTOVER || echo CLEAN
+EOF
+hb_out="$(bash "${TMP}/hb.sh" 2>/dev/null)"
+console="$(cat "${TMP}/console" 2>/dev/null || true)"
+
+if (( $(grep -c "running —" <<<"${console}") >= 3 )); then
+  ok "the heartbeat ticks repeatedly, not once per loop"
+else
+  bad "the heartbeat ticks repeatedly, not once per loop" "${console}"
+fi
+
+if grep -q "sweep 1/8 seq-read" <<<"${console}" && grep -q "sweep 2/8 rand-write" <<<"${console}"; then
+  ok "the heartbeat reports the current phase"
+else
+  bad "the heartbeat reports the current phase" "${console}"
+fi
+
+# Elapsed must advance between ticks -- a fixed string proves nothing is alive.
+if (( $(grep -oE "— [0-9]+s elapsed" <<<"${console}" | sort -u | wc -l) >= 2 )); then
+  ok "elapsed advances between ticks"
+else
+  bad "elapsed advances between ticks" "${console}"
+fi
+
+# While a progress bar owns the console the heartbeat must hold off, or the two
+# writers garble each other.
+if ! grep -qE "— (3|4)s elapsed" <<<"${console}"; then
+  ok "the heartbeat holds off while a progress bar owns the console"
+else
+  bad "the heartbeat holds off while a progress bar owns the console" "${console}"
+fi
+
+if [[ "${hb_out}" == *CLEAN* ]]; then
+  ok "test_heartbeat_stop removes its state files"
+else
+  bad "test_heartbeat_stop removes its state files" "${hb_out}"
+fi
+
+# A heartbeat must not outlive the test it reports on, even under SIGKILL where
+# no EXIT trap can run.
+cat > "${TMP}/victim.sh" <<EOF
+source "${TMP}/hb.sh.lib"
+_log_dir="${TMP}"; _ADLINK_SELF_TTY="${TMP}/console2"
+test_heartbeat_start "victim" 1
+echo "\${_ADLINK_HB_PID}" > "${TMP}/hbpid"
+sleep 30
+EOF
+sed -n '/^_adlink_console()/,/^}/p;/^_adlink_hms()/,/^}/p;/^test_heartbeat_phase()/,/^}/p;/^test_heartbeat_start()/,/^}/p;/^test_heartbeat_stop()/,/^}/p' \
+    "${FUNCTION_SH}" > "${TMP}/hb.sh.lib"
+bash "${TMP}/victim.sh" >/dev/null 2>&1 &
+victim=$!
+sleep 2
+hbpid="$(cat "${TMP}/hbpid" 2>/dev/null || echo 0)"
+kill -9 "${victim}" 2>/dev/null || true
+wait "${victim}" 2>/dev/null || true
+sleep 3
+if [[ "${hbpid}" != "0" ]] && ! ps -p "${hbpid}" >/dev/null 2>&1; then
+  ok "an orphaned heartbeat exits when its test dies"
+else
+  ok_or_kill=1
+  kill -9 "${hbpid}" 2>/dev/null || true
+  bad "an orphaned heartbeat exits when its test dies" "pid ${hbpid} still alive"
+fi
+
+# Every long-running script must start and stop one.
+for s in disk_test dev_detect slp_test net_test; do
+  if grep -q "test_heartbeat_start \"${s}\"" "${SCRIPT_DIR}/${s}.sh" &&
+     grep -q "trap 'test_heartbeat_stop;" "${SCRIPT_DIR}/${s}.sh"; then
+    ok "${s}.sh starts a heartbeat and stops it from its EXIT trap"
+  else
+    bad "${s}.sh starts a heartbeat and stops it from its EXIT trap" \
+        "$(grep -n 'test_heartbeat\|^trap ' "${SCRIPT_DIR}/${s}.sh" | head -3)"
+  fi
+done
+
 echo
 echo "  ${PASS} passed, ${FAIL} failed"
 [[ ${FAIL} -eq 0 ]]
