@@ -105,6 +105,14 @@ setup_session() {
                                  #   around the runs at each speed and record the delta.
 : "${_net_err_fail_on_delta:=0}" # NET016: 1 = a non-zero rx/tx error delta downgrades an
                                  #   otherwise-PASS speed verdict to FAIL; 0 = warn only.
+
+# NET017: UDP datagram-loss reporting and optional gating.
+# iperf3 UDP is offered at the full link rate with no flow control, so some loss
+# is the expected outcome, not a defect -- double-digit percentages at 100G are
+# normal. Loss is therefore REPORTED by default and only judged if you opt in.
+: "${_net_udp_loss_max_pct:=1}"  # highlight (and, if gating is on, fail) above this %
+: "${_net_udp_loss_fail:=0}"     # 1 = a UDP loss above the cap downgrades the verdict
+
 : "${_net_test_bidir:=1}"        # NET017: 1 = also run a simultaneous bidirectional
                                  #   (full-duplex) iperf3 pass at each speed.
 : "${_net_test_jumbo:=1}"        # NET018: 1 = at each >=1000M speed verify a DF jumbo

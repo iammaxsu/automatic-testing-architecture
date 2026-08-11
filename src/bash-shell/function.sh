@@ -2106,7 +2106,7 @@ generate_net_report() {
       | if (.speeds | length) == 0 then
           { pair: $pair, spd: null, v4: null, v6: null,
             tf: null, tr: null, uf: null, ur: null,
-            pmax: $pmax, bd: null, retr: null, jit: null, loss: null,
+            pmax: $pmax, bd: null, retr: null, jit: null, loss: null, loss_cap: null,
             errc: null, jumbo: null, thr: null, pct: null, reason: null,
             verdict: "NOT_TESTED" }
         else
@@ -2124,6 +2124,7 @@ generate_net_report() {
               retr:    (((.quality.tcp_fwd_retr // null)|tostring) + "/" + ((.quality.tcp_rev_retr // null)|tostring)),
               jit:     (((.quality.udp_fwd_jitter_ms // null)|tostring) + "/" + ((.quality.udp_rev_jitter_ms // null)|tostring)),
               loss:    (((.quality.udp_fwd_lost_pct // null)|tostring) + "/" + ((.quality.udp_rev_lost_pct // null)|tostring)),
+              loss_cap: (.quality.udp_loss_max_pct // null),
               errc:    (if .error_counters == null then null
                         else ((.error_counters.even_rx_errors // 0) + (.error_counters.even_tx_errors // 0)
                             + (.error_counters.odd_rx_errors  // 0) + (.error_counters.odd_tx_errors  // 0)) end),
@@ -2169,15 +2170,21 @@ td{padding:5px 8px;border-bottom:.5px solid #f0f0f0}tr:hover td{background:#fafa
 </div>
 <div class="sec"><h2>Test results</h2>
 <p style="font-size:11px;color:#888;margin-bottom:.6rem">
-Max = pair's max link speed (NET015). Full-dup = simultaneous bidirectional TCP sum (NET017).
-Quality = TCP retransmits / UDP jitter(ms) / UDP loss(%), fwd/rev (NET017).
+All throughput columns are Mbps (Mbit/s) as measured at the receiver.
+Max = the highest link speed BOTH NICs of the pair support (NET015), fixed for the pair;
+Speed = the link speed this row was actually configured to and measured at.
+Full-dup = simultaneous bidirectional TCP sum (NET017).
+UDP loss = datagrams lost as a percentage of those sent, fwd/rev (NET017). UDP is
+offered at full link rate with no flow control, so loss here is expected and is
+reported, not judged, unless _net_udp_loss_fail is enabled in config.sh.
+Quality = TCP retransmits / UDP jitter(ms), fwd/rev (NET017).
 Err = NIC rx+tx error counter delta during the run (NET016) — non-zero is highlighted.
 Jumbo = 9000-MTU DF ping at &ge;1000M (NET018). Thr = TCP PASS threshold actually applied (NET009).
 Hover the Verdict cell for the reason (NET008).</p>
 <table><thead><tr>
-<th>Pair</th><th>Max</th><th>Speed(Mbps)</th><th>IPv4</th><th>IPv6</th>
-<th>TCP Fwd</th><th>TCP Rev</th><th>UDP Fwd</th><th>UDP Rev</th>
-<th>Full-dup</th><th>Quality</th><th>Err</th><th>Jumbo</th><th>Thr</th><th>Verdict</th>
+<th>Pair</th><th>Max (Mbps)</th><th>Speed (Mbps)</th><th>IPv4</th><th>IPv6</th>
+<th>TCP Fwd (Mbps)</th><th>TCP Rev (Mbps)</th><th>UDP Fwd (Mbps)</th><th>UDP Rev (Mbps)</th>
+<th>Full-dup (Mbps)</th><th>UDP loss (%)</th><th>Quality</th><th>Err</th><th>Jumbo</th><th>Thr</th><th>Verdict</th>
 </tr></thead><tbody id="tb"></tbody></table></div>
 <script>
 const ROWS=${rows_js};
@@ -2196,6 +2203,15 @@ ROWS.forEach(r=>{
   const errCell=(r.errc==null)?'—':(r.errc>0?'<span class="b FAIL">'+r.errc+'</span>':'0');
   const jumboCell=r.jumbo?'<span class="b '+(r.jumbo==='PASS'?'PASS':(r.jumbo==='SKIP'?'na':'FAIL'))+'">'+r.jumbo+'</span>':'—';
   const thrCell=(r.thr!=null)?fmtMbps(r.thr)+'M'+(r.pct!=null?' ('+r.pct+'%)':''):'—';
+  // UDP loss gets its own column: it was previously buried in the Quality cell
+  // with no unit, so a 41% loss read like a status code. Highlighted only when
+  // it exceeds the configured cap, since UDP at line rate loses by design.
+  const lossCell=(function(){
+    const s=qfmt(r.loss); if(s==='—')return '—';
+    const worst=Math.max.apply(null,String(r.loss).split('/').map(x=>parseFloat(x)).filter(x=>!isNaN(x)));
+    const cap=(r.loss_cap==null)?null:+r.loss_cap;
+    return (cap!=null&&isFinite(worst)&&worst>cap)?'<span class="b FAIL">'+s+'</span>':s;
+  })();
   const reasonAttr=r.reason?' title="'+String(r.reason).replace(/"/g,'&quot;')+'"':'';
   tr.innerHTML='<td>'+r.pair+'</td><td style="font-size:11px">'+maxCell+'</td><td>'+spdCell+'</td>'+
     '<td>'+badge(r.v4)+'</td><td>'+badge(r.v6)+'</td>'+
@@ -2204,7 +2220,8 @@ ROWS.forEach(r=>{
     '<td style="font-size:11px">'+fmtMbps(r.uf)+'</td>'+
     '<td style="font-size:11px">'+fmtMbps(r.ur)+'</td>'+
     '<td style="font-size:11px">'+fmtMbps(r.bd)+'</td>'+
-    '<td style="font-size:10px">retr '+qfmt(r.retr)+'<br>jit '+qfmt(r.jit)+' loss '+qfmt(r.loss)+'</td>'+
+    '<td style="font-size:11px">'+lossCell+'</td>'+
+    '<td style="font-size:10px">retr '+qfmt(r.retr)+'<br>jit '+qfmt(r.jit)+'</td>'+
     '<td style="font-size:11px">'+errCell+'</td>'+
     '<td style="font-size:11px">'+jumboCell+'</td>'+
     '<td style="font-size:11px">'+thrCell+'</td>'+

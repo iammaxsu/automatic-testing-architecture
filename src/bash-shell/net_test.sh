@@ -405,6 +405,28 @@ _kill_iperf3_pid() {
 # iperf3 always uses a TCP control channel (even for UDP tests), so a TCP
 # connect probe confirms readiness for both.  Returns 0 once reachable, 1 on
 # timeout (~5s).
+# List a NIC's supported full-duplex link speeds in Mbps, ascending, deduplicated.
+#
+# ethtool names a mode as <speed>base<medium><lanes>, e.g. 100000baseCR4/Full.
+# The speed is the digits BEFORE "base"; the trailing digit is the lane count.
+# Stripping every non-digit -- `sed 's/[^0-9]//g'`, what this used to do --
+# concatenates the two: 100000baseCR4 became "1000004", a nonexistent 1 Tb/s
+# speed the test then tried to set and measure (BUG0051). On a NIC offering the
+# same speed over different lane counts it also produced apparent duplicates
+# (50000baseCR and 50000baseCR2 -> 50000 and 500002) while the genuine 200000
+# and 400000 speeds, which this NIC only offers as CR2/CR4, were never tested at
+# their real value at all.
+#
+# Usage: _supported_speeds <netns> <ifname>
+_supported_speeds() {
+  local ns="$1" ifn="$2"
+  echo "${_pwd}" | sudo -S ip netns exec "${ns}" ethtool "${ifn}" 2>/dev/null \
+    | tr ' ' '\n' \
+    | grep -E '^[0-9]+base[^/]*/Full$' \
+    | sed -E 's/^([0-9]+)base.*$/\1/' \
+    | sort -n -u
+}
+
 _iperf_wait_ready() {
   local ns="$1" ip="$2" port="${3:-5201}" i
   for ((i=0; i<25; i++)); do
@@ -639,21 +661,23 @@ _run_pair() {
   # || true prevents set -e from aborting the subshell when grep finds no '/Full'
   # lines (NIC has no link / ethtool cannot read speed table).
   local _speed_list
-  _speed_list="$(echo "${_pwd}" | sudo -S ip netns exec "ns_${ev}" ethtool "${ev}" 2>/dev/null \
-    | tr ' ' '\n' | grep '/Full' | sed 's/[^0-9]//g' | sort -n | uniq)" || true
+  _speed_list="$(_supported_speeds "ns_${ev}" "${ev}")" || true
   [[ -z "${_speed_list}" ]] && _speed_list="10 100 1000 2500"
 
   # NET015: the pair's maximum link speed = highest speed BOTH NICs support.
   # _speed_list (from the even NIC) is ascending; the odd NIC's list is gathered
   # too, and the pair max is the greatest value common to both.
   local _odd_speed_list _pair_max_mbps=0 _even_max_mbps=0 _odd_max_mbps=0
-  _odd_speed_list="$(echo "${_pwd}" | sudo -S ip netns exec "ns_${od}" ethtool "${od}" 2>/dev/null \
-    | tr ' ' '\n' | grep '/Full' | sed 's/[^0-9]//g' | sort -n | uniq)" || true
+  _odd_speed_list="$(_supported_speeds "ns_${od}" "${od}")" || true
   [[ -z "${_odd_speed_list}" ]] && _odd_speed_list="${_speed_list}"
   local _sp
   for _sp in ${_speed_list}; do
     (( _sp > _even_max_mbps )) && _even_max_mbps="${_sp}" || true
-    if echo " ${_odd_speed_list} " | grep -q " ${_sp} " && (( _sp > _pair_max_mbps )); then
+    # grep -qx against the list: the previous test was `grep -q " ${_sp} "` over
+    # `echo " ${list} "`, but the list is NEWLINE-separated, so only its first and
+    # last entries ever had an adjacent space -- and neither had both. Nothing
+    # matched, and pair_max_mbps was reported as 0 on every run (BUG0052).
+    if grep -qxF -- "${_sp}" <<<"${_odd_speed_list}" && (( _sp > _pair_max_mbps )); then
       _pair_max_mbps="${_sp}"
     fi
   done
@@ -901,6 +925,27 @@ _run_pair() {
         _reason="${_reason}  [warning: NIC rx/tx error counters +${_err_total} during run]"
       fi
     fi
+    # NET017: UDP datagram loss above the configured cap annotates the reason
+    # and, when _net_udp_loss_fail=1, fails an otherwise-PASS speed.
+    #
+    # Reported but not judged by default, deliberately. iperf3 offers UDP at the
+    # full link rate with no flow control, so the receiver dropping a share of it
+    # is the expected outcome of the test as configured, not evidence of a faulty
+    # link -- double-digit percentages at 100G are routine. Gating on it by
+    # default would turn every healthy high-speed run red.
+    local _loss_worst
+    _loss_worst="$(awk -v a="${_loss_fwd:-}" -v b="${_loss_rev:-}" \
+      'BEGIN{x=(a==""?-1:a+0); y=(b==""?-1:b+0); print (x>y?x:y)}')"
+    if awk -v w="${_loss_worst}" -v c="${_net_udp_loss_max_pct:-1}" \
+         'BEGIN{exit (w>=0 && w>c)?0:1}'; then
+      if [[ "${_net_udp_loss_fail:-0}" == "1" && "${speed_verdict}" == "PASS" ]]; then
+        speed_verdict="FAIL"
+        _reason="FAIL: UDP datagram loss ${_loss_fwd:-?}%/${_loss_rev:-?}% (fwd/rev) exceeds the ${_net_udp_loss_max_pct:-1}% cap"
+      else
+        _reason="${_reason}  [warning: UDP loss ${_loss_fwd:-?}%/${_loss_rev:-?}% fwd/rev exceeds the ${_net_udp_loss_max_pct:-1}% cap]"
+      fi
+    fi
+
     # NET018: a failed jumbo test annotates the reason (informational); SKIP
     # (NIC/driver does not support the configured MTU) is not an error.
     if [[ "${_jumbo_res}" != "null" && "${_jumbo_res}" != "\"PASS\"" && "${_jumbo_res}" != "\"SKIP\"" ]]; then
@@ -925,6 +970,7 @@ _run_pair() {
       --argjson jit_r   "$(_jnum "${_jit_rev}")" \
       --argjson loss_f  "$(_jnum "${_loss_fwd}")" \
       --argjson loss_r  "$(_jnum "${_loss_rev}")" \
+      --argjson loss_cap "$(_jnum "${_net_udp_loss_max_pct:-}")" \
       --argjson errc    "${_err_json}" \
       --argjson jumbo   "${_jumbo_res}" \
       --argjson pct     "${_pct}" \
@@ -944,7 +990,8 @@ _run_pair() {
         bidirectional: { fwd_mbps: $bd_fwd, rev_mbps: $bd_rev, sum_mbps: $bd_sum },
         quality: { tcp_fwd_retr: $retr_f, tcp_rev_retr: $retr_r,
                    udp_fwd_jitter_ms: $jit_f, udp_rev_jitter_ms: $jit_r,
-                   udp_fwd_lost_pct: $loss_f, udp_rev_lost_pct: $loss_r },
+                   udp_fwd_lost_pct: $loss_f, udp_rev_lost_pct: $loss_r,
+                   udp_loss_max_pct: $loss_cap },
         error_counters: $errc,
         jumbo: { mtu: ('"${_net_jumbo_mtu:-9000}"'|tonumber), result: $jumbo },
         tcp_pass_pct: $pct,
