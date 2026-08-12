@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-08-12 03:54 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-08-12 07:26 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -150,7 +150,7 @@ pie showData title Requirements by status
 
 ## Bugs
 
-**Total:** 60
+**Total:** 61
 
 ### By status
 
@@ -158,7 +158,7 @@ pie showData title Requirements by status
 | --- | --- |
 | open | 14 |
 | in-progress | 1 |
-| resolved | 33 |
+| resolved | 34 |
 | closed | 10 |
 | invalid | 2 |
 
@@ -166,7 +166,7 @@ pie showData title Requirements by status
 pie showData title Bugs by status
     "open" : 14
     "in-progress" : 1
-    "resolved" : 33
+    "resolved" : 34
     "closed" : 10
     "invalid" : 2
 ```
@@ -175,7 +175,7 @@ pie showData title Bugs by status
 
 | OS | Count |
 | --- | --- |
-| Ubuntu 24.04 LTS | 35 |
+| Ubuntu 24.04 LTS | 36 |
 | Ubuntu 26.04 LTS | 21 |
 | Windows 11 | 13 |
 | Windows 11 (zh-TW) | 2 |
@@ -285,6 +285,7 @@ pie showData title Bugs by status
 | NET006 | [BUG0037](bugs/closed/BUG0037-net-test-local-unbound-var-kills-pair.md) | resolved |
 | NET007 | [BUG0053](bugs/closed/BUG0053-progress-denominator-is-iperf-time-not-wall-clock.md) | resolved |
 | NET007 | [BUG0058](bugs/closed/BUG0058-overrun-alarm-fires-on-normal-variation.md) | resolved |
+| NET007 | [BUG0061](bugs/closed/BUG0061-tcp-threshold-above-physical-ceiling.md) | resolved |
 | NET008 | [BUG0029](bugs/closed/BUG0029-net-test-iperf3-firewall-rule-needs-elevation.md) | resolved |
 | NET008 | [BUG0048](bugs/closed/BUG0048-net-err-trap-false-positives.md) | resolved |
 | NET008 | [BUG0054](bugs/closed/BUG0054-jumbo-ping-trips-err-trap.md) | resolved |
@@ -293,6 +294,7 @@ pie showData title Bugs by status
 | NET008 | [BUG0060](bugs/closed/BUG0060-first-ping-lost-to-address-resolution.md) | resolved |
 | NET009 | [BUG0029](bugs/closed/BUG0029-net-test-iperf3-firewall-rule-needs-elevation.md) | resolved |
 | NET009 | [BUG0051](bugs/closed/BUG0051-ethtool-lane-count-parsed-as-speed.md) | resolved |
+| NET009 | [BUG0061](bugs/closed/BUG0061-tcp-threshold-above-physical-ceiling.md) | resolved |
 | NET011 | [BUG0015](bugs/open/BUG0015-net-test-sh-consumes-the-ssh-lifeline-nic.md) | open |
 | NET012 | [BUG0047](bugs/closed/BUG0047-net019-unmatched-mac-entry-silent.md) | resolved |
 | NET012 | [BUG0015](bugs/open/BUG0015-net-test-sh-consumes-the-ssh-lifeline-nic.md) | open |
@@ -304,6 +306,7 @@ pie showData title Bugs by status
 | NET017 | [BUG0049](bugs/closed/BUG0049-wall-broadcast-clobbers-progress-display.md) | resolved |
 | NET017 | [BUG0050](bugs/closed/BUG0050-progress-bar-stops-before-step-does.md) | resolved |
 | NET018 | [BUG0054](bugs/closed/BUG0054-jumbo-ping-trips-err-trap.md) | resolved |
+| NET018 | [BUG0061](bugs/closed/BUG0061-tcp-threshold-above-physical-ceiling.md) | resolved |
 | NET019 | [BUG0047](bugs/closed/BUG0047-net019-unmatched-mac-entry-silent.md) | resolved |
 | PWR004 | [BUG0046](bugs/open/BUG0046-calibrate-no-boot-power-down-race.md) | open |
 | PWR009 | [BUG0025](bugs/closed/BUG0025-power-cycle-msg-notification-not-shown.md) | resolved |

@@ -111,6 +111,18 @@ setup_session() {
                                  #   Sized above the worst legitimate overrun seen (UDP
                                  #   teardown at 400G, ~20s) and well below a TCP connect
                                  #   timeout (~2 min), which is what the marker is for.
+# NET009/BUG0061: the TCP threshold is a percentage of ACHIEVABLE goodput, not of
+# the raw line rate. iperf3 measures TCP payload; the link speed is wire rate, and
+# every frame also carries 38 bytes the payload never sees (preamble+SFD 8, header
+# 14, FCS 4, inter-frame gap 12) plus IP/TCP headers inside the MTU.
+#
+# At MTU 1500 that ceiling is (1500-52)/(1500+38) = 94.15%, so comparing against
+# 95% of line rate demanded more than the wire can carry. A NIC measured at 94.2%
+# was at 100% of the achievable rate and was being failed.
+: "${_net_frame_overhead_bytes:=38}"   # preamble+SFD 8, eth header 14, FCS 4, IFG 12
+: "${_net_l3l4_overhead_bytes:=52}"    # IP 20 + TCP 20 + timestamps 12 (Linux default)
+: "${_net_mtu_for_thr:=1500}"          # MTU the throughput runs use
+
 : "${_net_tcp_pass_pct:=95}"     # NET009: default TCP PASS threshold as % of link speed,
                                  #   used for any speed not in _net_tcp_pass_pct_tiers.
 : "${_net_tcp_pass_pct_tiers:=10:90,100:90,1000:95,2500:95,5000:95,10000:95}"

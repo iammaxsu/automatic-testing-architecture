@@ -479,6 +479,28 @@ _supported_speeds() {
     | sort -n -u
 }
 
+# Maximum TCP goodput achievable on an Ethernet link, as a fraction of line rate.
+#
+# NET009 used to compare iperf3's number directly against the nominal link speed,
+# but they measure different things: the link speed is the WIRE rate, while
+# iperf3 reports TCP payload (goodput). Every frame also carries preamble+SFD (8),
+# Ethernet header (14), FCS (4) and the inter-frame gap (12) -- 38 bytes that
+# never appear in goodput -- plus IP and TCP headers inside the MTU.
+#
+# At MTU 1500 with Linux's default TCP timestamps that ceiling is 94.15%, so a
+# 95% threshold was ABOVE the physical maximum and could not be met by any
+# hardware (BUG0061). A NIC measured at 94.2% was running at 100% of what the
+# wire allows and was reported as a failure.
+#
+# Prints the fraction with 4 decimals. Usage: _goodput_efficiency <mtu>
+_goodput_efficiency() {
+  local mtu="${1:-1500}"
+  local ovh="${_net_frame_overhead_bytes:-38}"
+  local hdr="${_net_l3l4_overhead_bytes:-52}"    # IP 20 + TCP 20 + timestamps 12
+  awk -v m="${mtu}" -v o="${ovh}" -v h="${hdr}" \
+      'BEGIN{ if (m <= h) { print "1.0000"; exit } printf "%.4f", (m - h) / (m + o) }'
+}
+
 _iperf_wait_ready() {
   local ns="$1" ip="$2" port="${3:-5201}" i
   for ((i=0; i<25; i++)); do
@@ -979,9 +1001,14 @@ _run_pair() {
     n_udp_rev="$(_extract_mbps_num "${udp_rev}")"
 
     # NET009: per-speed-tier TCP PASS threshold (not a flat 95%).
-    local _pct _thr_mbps
+    local _pct _thr_mbps _eff
     _pct="$(_tcp_pass_pct_for "${_netspd}")"
-    _thr_mbps=$(awk -v s="${_netspd}" -v p="${_pct}" 'BEGIN{printf "%g", s*p/100}')
+    # BUG0061: the threshold is a percentage of what the wire can actually
+    # deliver as TCP payload, not of the raw line rate. Without the efficiency
+    # term a 95% target is unreachable at MTU 1500, where the ceiling is 94.15%.
+    _eff="$(_goodput_efficiency "${_net_mtu_for_thr:-1500}")"
+    _thr_mbps=$(awk -v s="${_netspd}" -v p="${_pct}" -v e="${_eff}" \
+                    'BEGIN{printf "%g", s*e*p/100}')
 
     if [[ "${v4_res}" != "PASS" || "${v6_res}" != "PASS" ]]; then
       speed_verdict="FAIL"
@@ -997,7 +1024,7 @@ _run_pair() {
       if awk -v f="${n_tcp_fwd}" -v r="${n_tcp_rev}" -v t="${_thr_mbps}" \
             'BEGIN{exit (f>=t && r>=t) ? 0 : 1}'; then
         speed_verdict="PASS"
-        _reason="TCP fwd ${n_tcp_fwd}M and rev ${n_tcp_rev}M both >= ${_thr_mbps}M (${_pct}% of ${_netspd}M)"
+        _reason="TCP fwd ${n_tcp_fwd}M and rev ${n_tcp_rev}M both >= ${_thr_mbps}M (${_pct}% of the ${_eff} goodput ceiling on ${_netspd}M at MTU ${_net_mtu_for_thr:-1500})"
       else
         speed_verdict="FAIL"
         local _c=""
@@ -1007,7 +1034,7 @@ _run_pair() {
         if awk -v r="${n_tcp_rev}" -v t="${_thr_mbps}" 'BEGIN{exit (r<t)?0:1}'; then
           _c="${_c:+${_c}; }TCP rev ${n_tcp_rev}M < ${_thr_mbps}M threshold"
         fi
-        _reason="FAIL: ${_c} (threshold ${_pct}% of ${_netspd}M = ${_thr_mbps}M)"
+        _reason="FAIL: ${_c} (threshold ${_thr_mbps}M = ${_pct}% of the ${_eff} TCP goodput ceiling at MTU ${_net_mtu_for_thr:-1500}, on a ${_netspd}M link)"
       fi
     fi
 
