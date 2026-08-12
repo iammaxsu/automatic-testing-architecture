@@ -122,6 +122,57 @@ else
   bad "handler no longer claims 'worker aborted'" "$(grep -n 'worker aborted (exit' "${NET_TEST}")"
 fi
 
+# 8. The jumbo DF ping is the same defect class at a site BUG0048 missed: a
+#    failing ping is the answer, and rc is inspected on the next line (BUG0054).
+if grep -q 'ping -M do -s "${payload}" -c 2 -W 2 "${dst}" 2>&1)" && rc=0 || rc=$?' "${NET_TEST}"; then
+  ok "the jumbo DF ping cannot trip the ERR trap"
+else
+  bad "the jumbo DF ping cannot trip the ERR trap" \
+      "$(grep -n 'ping -M do' "${NET_TEST}")"
+fi
+
+# The compound form must still preserve the real exit status, or FAIL-FRAG and
+# FAIL become indistinguishable.
+out3b="$(
+  set -Eeuo pipefail
+  trap 'echo TRAP' ERR
+  o="$( { echo "ping: local error: message too long"; exit 1; } 2>&1 )" && rc=0 || rc=$?
+  echo "rc=${rc} matched=$(grep -qiE 'message too long' <<<"${o}" && echo yes || echo no)"
+)"
+if [[ "${out3b}" == "rc=1 matched=yes" ]]; then
+  ok "the compound form keeps the exit status and the output"
+else
+  bad "the compound form keeps the exit status and the output" "${out3b}"
+fi
+
+# 9. The trap must record a NOTE, not a second result row for the same speed
+#    (BUG0055) -- that is what made every failing speed appear twice.
+# Scoped to _pair_abort's own body: the merge step legitimately appends a
+# speeds[] row for a note nobody claimed, and must not trip this.
+abort_body="$(sed -n '/^_pair_abort()/,/^}/p' "${NET_TEST}")"
+if grep -q 'printf .* > "${_marker}"' <<<"${abort_body}" &&
+   ! grep -q 'speeds +=' <<<"${abort_body}"; then
+  ok "_pair_abort writes a note, not a speeds[] row"
+else
+  bad "_pair_abort writes a note, not a speeds[] row" \
+      "$(grep -n 'speeds +=' <<<"${abort_body}")"
+fi
+
+if grep -q '_abort_note="$(_claim_abort_note)"' "${NET_TEST}"; then
+  ok "the real record claims and folds in the note"
+else
+  bad "the real record claims and folds in the note" "(claim missing)"
+fi
+
+# 10. Link state must be verified rather than slept through (BUG0056).
+if grep -q '_wait_link_up "ns_${ev}" "${ev}" "${_netspd}"' "${NET_TEST}" &&
+   ! grep -qE '^\s+sleep 4$' "${NET_TEST}"; then
+  ok "carrier is waited for, not guessed with a fixed sleep"
+else
+  bad "carrier is waited for, not guessed with a fixed sleep" \
+      "$(grep -nE '^\s+sleep 4$|_wait_link_up' "${NET_TEST}" | head -3)"
+fi
+
 echo
 echo "  ${PASS} passed, ${FAIL} failed"
 [[ ${FAIL} -eq 0 ]]

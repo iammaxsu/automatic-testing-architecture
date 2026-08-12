@@ -370,9 +370,16 @@ _nic_err_snapshot() {
 _jumbo_ping() {
   local ns="$1" dst="$2" mtu="$3"
   local payload=$(( mtu - 28 )) out rc
+  # A failing DF ping is the ANSWER here, not an error -- rc is inspected on the
+  # very next lines to tell FAIL-FRAG from FAIL. But the bare assignment made the
+  # command substitution's non-zero status trip the ERR trap, so every link that
+  # could not carry a 9000-MTU frame also produced a phantom "unhandled command
+  # failure at line 374" record (BUG0054). Same defect BUG0048 fixed in
+  # _ping_check and _extract_rate; this site was missed.
+  # `&& rc=0 || rc=$?` keeps the real exit status while making the whole thing a
+  # compound command, which the ERR trap does not fire on.
   out="$(echo "${_pwd}" | sudo -S ip netns exec "${ns}" \
-        ping -M do -s "${payload}" -c 2 -W 2 "${dst}" 2>&1)"
-  rc=$?
+        ping -M do -s "${payload}" -c 2 -W 2 "${dst}" 2>&1)" && rc=0 || rc=$?
   if (( rc == 0 )); then
     echo "PASS"
   elif echo "${out}" | grep -qiE 'message too long|frag needed|local error'; then
@@ -389,6 +396,37 @@ _set_speed() {
     echo "${_pwd}" | sudo -S ip netns exec "${ns}" \
         ethtool -s "${ifn}" speed "${spd}" 2>/dev/null || true
   fi
+}
+
+# Wait until a NIC reports carrier at the speed it was just set to (BUG0056).
+#
+# ethtool -s returns as soon as the driver accepts the request; bringing the link
+# up is asynchronous and, on a high-speed DAC link with RS-FEC, takes far longer
+# than the blind `sleep 4` this replaces. When the wait was too short every probe
+# that followed failed, and the run reported "IPv4 ICMP FAIL" -- true, but it
+# named a symptom three layers above the cause and looked identical to a real
+# connectivity fault.
+#
+# Prints the negotiated speed on success. Returns 1 if carrier never came up
+# within the timeout, 2 if it came up at a DIFFERENT speed than requested --
+# which is not a link fault but does mean the row cannot be judged against the
+# speed it claims to be testing.
+_wait_link_up() {
+  local ns="$1" ifn="$2" want="$3" timeout="${4:-${_net_link_up_timeout_sec:-30}}"
+  local i out link spd
+  for (( i=0; i<timeout; i++ )); do
+    out="$(echo "${_pwd}" | sudo -S ip netns exec "${ns}" ethtool "${ifn}" 2>/dev/null || true)"
+    link="$(grep -i 'Link detected:' <<<"${out}" | awk '{print $NF}')"
+    if [[ "${link}" == "yes" ]]; then
+      spd="$(grep -iE '^[[:space:]]*Speed:' <<<"${out}" | sed -E 's/.*Speed:[[:space:]]*([0-9]+).*/\1/')"
+      printf '%s\n' "${spd:-unknown}"
+      [[ "${spd}" == "${want}" ]] && return 0
+      return 2
+    fi
+    sleep 1
+  done
+  printf '%s\n' "down"
+  return 1
 }
 
 # Kill a specific iperf3 server by PID
@@ -456,7 +494,8 @@ _iperf_run_dir() {
     # shellcheck disable=SC2086
     echo "${_pwd}" | sudo -S ip netns exec "ns_${ev}" iperf3 \
         --bind "${ip_cli}" --client "${ip_srv}" --port "${_pair_port}" \
-        --bitrate "${_netspd}M" --time "${_iperf_time}" --interval 3 --omit "${_iperf_omit}" ${extra} \
+        --bitrate "${_netspd}M" --time "${_iperf_time}" --interval 3 --omit "${_iperf_omit}" \
+        --parallel "${_net_iperf_parallel:-1}" ${extra} \
         --logfile "${logfile}" || true
     _progress_stop "${_pp}"
     mbps="$(_extract_mbps_num "${logfile}")"
@@ -572,35 +611,43 @@ _pair_abort() {
   # 32 identical ERROR entries to one 10 Mbps iteration, so summary.total counted
   # trap firings rather than tests. The marker file is the only state that
   # survives a subshell, so dedupe through the filesystem.
-  local _marker=""
-  if [[ -n "${pair_json:-}" ]]; then
-    _marker="${pair_json}.err.${_k:-0}.${_netspd:-0}"
-    [[ -e "${_marker}" ]] && return 0
-    : > "${_marker}" 2>/dev/null || true
-  fi
-
-  # Not "aborted": the handler also runs for failures inside a command
-  # substitution, where only the substitution's subshell dies and the worker
-  # carries on to the next step. Say what is actually known.
   local _why="unhandled command failure (exit ${_rc}) at line ${_ln}: ${_cmd}"
   echo "[ERROR] Pair ${pair_idx:-?} (${pair:-?}) ${_why}" >> "${pairlog:-/dev/null}" 2>/dev/null || true
   _main_log "[Pair ${pair_idx:-?}] ERROR — ${_why}" 2>/dev/null || true
-  if [[ -n "${pair_json:-}" && -f "${pair_json:-}" ]]; then
-    local _ej
-    if _ej=$(jq --argjson speed "${_netspd:-0}" \
-                --arg v4 "${v4_res:-N/A}" --arg v6 "${v6_res:-N/A}" \
-                --arg reason "${_why}" \
-                '.speeds += [{ speed_mbps:$speed, ipv4_ping:$v4, ipv6_ping:$v6,
-                   throughput:{tcp_fwd_mbps:0,tcp_rev_mbps:0,udp_fwd_mbps:0,udp_rev_mbps:0},
-                   verdict:"ERROR", reason:$reason }]' "${pair_json}" 2>/dev/null); then
-      echo "${_ej}" > "${pair_json}"
-    fi
+
+  # Record the failure as a NOTE for this (iteration, speed), not as its own
+  # result row — BUG0048 (dedupe) and BUG0055 (duplication).
+  #
+  # `trap - ERR` above does not do what it looks like it does. Most failures
+  # happen inside command substitutions, and with `set -E` each substitution
+  # subshell inherits its own copy of the trap; disarming it there leaves the
+  # worker's copy armed, and the subshell exits immediately afterwards anyway.
+  # A marker file is the only state that survives a subshell, so dedupe through
+  # the filesystem.
+  #
+  # It must not append to .speeds[] directly either: the speed usually goes on to
+  # complete and write its real record, and the report then showed the SAME speed
+  # twice, once ERROR and once with the actual result, inflating "speed tests
+  # run". The note is instead folded into that real record's reason; a note left
+  # unclaimed means the worker really did die mid-speed, and the parent turns it
+  # into an ERROR row after the join.
+  if [[ -n "${pair_json:-}" ]]; then
+    local _marker="${pair_json}.err.${_k:-0}.${_netspd:-0}"
+    [[ -e "${_marker}" ]] && return 0
+    printf '%s\n' "${_why}" > "${_marker}" 2>/dev/null || true
   fi
-  if [[ -n "${pair_sum:-}" ]]; then
-    printf "%-23s | %10s | %8s | %8s | %18s | %18s | %18s | %18s\n" \
-      "${pair:-pair}(ERROR)" "${_netspd:-?}" "${v4_res:-N/A}" "${v6_res:-N/A}" "-" "-" "-" "-" \
-      >> "${pair_sum}" 2>/dev/null || true
-  fi
+}
+
+# Claim any _pair_abort note for this (iteration, speed) and print it, so the
+# speed's real record can carry it. Consuming the note is what distinguishes
+# "the step recovered" from "the worker died here" (BUG0055).
+_claim_abort_note() {
+  local _marker="${pair_json:-}/dev/null"
+  [[ -n "${pair_json:-}" ]] || return 0
+  _marker="${pair_json}.err.${_k:-0}.${_netspd:-0}"
+  [[ -e "${_marker}" ]] || return 0
+  head -n1 "${_marker}" 2>/dev/null || true
+  rm -f "${_marker}" 2>/dev/null || true
 }
 
 # ---------- Per-pair worker ----------
@@ -699,7 +746,19 @@ _run_pair() {
 
     _set_speed "ns_${ev}" "${ev}" "${_netspd}"
     _set_speed "ns_${od}" "${od}" "${_netspd}"
-    sleep 4
+    # Wait for carrier instead of guessing (BUG0056). _link_note is empty when
+    # both ends came up at the requested speed; otherwise it says what actually
+    # happened, and the speed's reason leads with that rather than with the ICMP
+    # failure it causes.
+    local _link_note="" _lk_ev _lk_od _lk_rc_ev=0 _lk_rc_od=0
+    _lk_ev="$(_wait_link_up "ns_${ev}" "${ev}" "${_netspd}")" || _lk_rc_ev=$?
+    _lk_od="$(_wait_link_up "ns_${od}" "${od}" "${_netspd}")" || _lk_rc_od=$?
+    if (( _lk_rc_ev == 1 || _lk_rc_od == 1 )); then
+      _link_note="link did not come up at ${_netspd}M within ${_net_link_up_timeout_sec:-30}s (${ev}=${_lk_ev}, ${od}=${_lk_od}) -- the NIC/cable may not support this speed"
+    elif (( _lk_rc_ev == 2 || _lk_rc_od == 2 )); then
+      _link_note="link came up at a different speed than requested ${_netspd}M (${ev}=${_lk_ev}M, ${od}=${_lk_od}M)"
+    fi
+    [[ -n "${_link_note}" ]] && echo "[WARN] ${_link_note}" >> "${pairlog}"
 
     # IPv4 ping
     echo "[IPv4 ICMP] ${ev} -> 192.247.${pair_idx}.11" >> "${pairlog}"
@@ -960,6 +1019,16 @@ _run_pair() {
       _reason="${_reason}  [jumbo MTU ${_net_jumbo_mtu:-9000}: $(echo "${_jumbo_res}" | tr -d '\"')]"
     fi
 
+    # BUG0055: if the ERR trap fired during this speed, carry its note here
+    # instead of letting it become a second row for the same speed.
+    local _abort_note
+    _abort_note="$(_claim_abort_note)"
+    [[ -n "${_abort_note}" ]] && _reason="${_reason}  [${_abort_note}]"
+    # BUG0056: a down link explains every probe that failed after it, so it leads
+    # the reason. Without this the row said "IPv4 ICMP FAIL" and the operator had
+    # no way to tell an unsupported speed from a broken cable.
+    [[ -n "${_link_note}" ]] && _reason="LINK: ${_link_note}  |  ${_reason}"
+
     local _pair_json_new
     _pair_json_new=$(jq \
       --argjson speed   "${_netspd}" \
@@ -1055,7 +1124,7 @@ for (( loop_n=1; loop_n<=_loops_this_run; loop_n++ )); do
   _main_log "=== Iteration ${_k}/${_mm} DONE ==="
 
   # Merge per-pair temp summaries into main summary (ordered by pair index)
-  _tmp=""
+  _tmp="" _jq_tmp=""
   for (( i=0; i<${#even_ethArray[@]}; i++ )); do
     _tmp="${log_root}/.pair${i}_sum_${_run_ts}.tmp"
     if [[ -f "${_tmp}" ]]; then
@@ -1068,13 +1137,27 @@ for (( loop_n=1; loop_n<=_loops_this_run; loop_n++ )); do
   # Each pair_json contains a {name, speeds[]} object built by _run_pair.
   for (( i=0; i<${#even_ethArray[@]}; i++ )); do
     _tmp="${log_root}/.pair${i}_data_${_run_ts}.json.tmp"
+    # An unclaimed _pair_abort note means the worker died inside that speed and
+    # never wrote its real record, so nothing else will report it. Turn it into
+    # the ERROR row it deserves — but only now, after the join, when "unclaimed"
+    # is finally knowable (BUG0055).
+    local _mk _mspd
+    for _mk in "${_tmp}".err.*; do
+      [[ -e "${_mk}" ]] || continue
+      _mspd="${_mk##*.}"
+      if [[ -f "${_tmp}" ]]; then
+        _jq_tmp=$(jq --argjson speed "${_mspd:-0}" --arg reason "$(head -n1 "${_mk}")" \
+          '.speeds += [{ speed_mbps:$speed, ipv4_ping:"N/A", ipv6_ping:"N/A",
+             throughput:{tcp_fwd_mbps:0,tcp_rev_mbps:0,udp_fwd_mbps:0,udp_rev_mbps:0},
+             verdict:"ERROR", reason:$reason }]' "${_tmp}" 2>/dev/null) \
+          && printf '%s\n' "${_jq_tmp}" > "${_tmp}"
+      fi
+      rm -f "${_mk}" 2>/dev/null || true
+    done
     if [[ -f "${_tmp}" ]]; then
       _jq_pairs=$(jq --slurpfile add "${_tmp}" '. + $add' <<<"${_jq_pairs}")
       rm -f "${_tmp}"
     fi
-    # _pair_abort's per-(iteration,speed) dedupe markers (BUG0048) live beside
-    # the tmp JSON and are never read after the merge.
-    rm -f "${_tmp}".err.* 2>/dev/null || true
   done
 
   # N/A rows for odd-count NICs (no pair)

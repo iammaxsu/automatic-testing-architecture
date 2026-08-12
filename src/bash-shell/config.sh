@@ -121,6 +121,26 @@ setup_session() {
 : "${_net_udp_loss_max_pct:=1}"  # highlight (and, if gating is on, fail) above this %
 : "${_net_udp_loss_fail:=0}"     # 1 = a UDP loss above the cap downgrades the verdict
 
+# NET004/BUG0056: how long to wait for carrier after setting a link speed.
+# `ethtool -s` returns as soon as the driver accepts the request; the link comes
+# up asynchronously, and a high-speed DAC link with RS-FEC can take far longer
+# than the 4-second blind sleep this replaced. Too short a wait makes a healthy
+# NIC look like a dead cable.
+: "${_net_link_up_timeout_sec:=30}"
+
+# NET007/NET009: parallel iperf3 streams (-P). Default 1 = single stream.
+#
+# A single TCP stream is bounded by one CPU core's ability to drive the stack,
+# not by the link: on this class of hardware it plateaus around 75-85 Gbit/s
+# whatever the link is set to. At 100G and above the NET009 threshold of 95% of
+# link speed is therefore unreachable by construction, and every such row fails
+# for a reason that says nothing about the NIC.
+#
+# Raise this to measure what the LINK can do (4-8 is typical for 100G+); leave it
+# at 1 to measure what a single stream can do. They are different questions, so
+# the default is not changed silently -- pick the one you mean.
+: "${_net_iperf_parallel:=1}"
+
 : "${_net_test_bidir:=1}"        # NET017: 1 = also run a simultaneous bidirectional
                                  #   (full-duplex) iperf3 pass at each speed.
 : "${_net_test_jumbo:=1}"        # NET018: 1 = at each >=1000M speed verify a DF jumbo
