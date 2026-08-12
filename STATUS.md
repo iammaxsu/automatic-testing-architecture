@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-08-12 07:26 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-08-12 07:57 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -150,7 +150,7 @@ pie showData title Requirements by status
 
 ## Bugs
 
-**Total:** 61
+**Total:** 62
 
 ### By status
 
@@ -158,7 +158,7 @@ pie showData title Requirements by status
 | --- | --- |
 | open | 14 |
 | in-progress | 1 |
-| resolved | 34 |
+| resolved | 35 |
 | closed | 10 |
 | invalid | 2 |
 
@@ -166,7 +166,7 @@ pie showData title Requirements by status
 pie showData title Bugs by status
     "open" : 14
     "in-progress" : 1
-    "resolved" : 34
+    "resolved" : 35
     "closed" : 10
     "invalid" : 2
 ```
@@ -175,7 +175,7 @@ pie showData title Bugs by status
 
 | OS | Count |
 | --- | --- |
-| Ubuntu 24.04 LTS | 36 |
+| Ubuntu 24.04 LTS | 37 |
 | Ubuntu 26.04 LTS | 21 |
 | Windows 11 | 13 |
 | Windows 11 (zh-TW) | 2 |
@@ -243,6 +243,7 @@ pie showData title Bugs by status
 | FWK035 | [BUG0034](bugs/closed/BUG0034-reboot-os-probe-before-init-dut.md) | resolved |
 | FWK037 | [BUG0039](bugs/closed/BUG0039-dimm-populated-but-not-usable-undetected.md) | resolved |
 | FWK037 | [BUG0043](bugs/closed/BUG0043-function-py-unbound-module-logger.md) | resolved |
+| FWK037 | [BUG0062](bugs/closed/BUG0062-link-detail-not-recorded.md) | resolved |
 | FWK038 | [BUG0050](bugs/closed/BUG0050-progress-bar-stops-before-step-does.md) | resolved |
 | FWK038 | [BUG0053](bugs/closed/BUG0053-progress-denominator-is-iperf-time-not-wall-clock.md) | resolved |
 | FWK038 | [BUG0058](bugs/closed/BUG0058-overrun-alarm-fires-on-normal-variation.md) | resolved |
@@ -264,6 +265,7 @@ pie showData title Bugs by status
 | LOG015 | [BUG0048](bugs/closed/BUG0048-net-err-trap-false-positives.md) | resolved |
 | LOG015 | [BUG0055](bugs/closed/BUG0055-abort-note-duplicated-as-result-row.md) | resolved |
 | LOG015 | [BUG0059](bugs/closed/BUG0059-top-level-local-destroyed-the-report.md) | resolved |
+| LOG015 | [BUG0062](bugs/closed/BUG0062-link-detail-not-recorded.md) | resolved |
 | LOG015 | [BUG0057](bugs/open/BUG0057-report-labelled-with-stale-session-id.md) | open |
 | LOG018 | [BUG0001](bugs/closed/BUG0001-no-total-test-time.md) | closed |
 | LOG018 | [BUG0018](bugs/closed/BUG0018-html-report-total-test-time-computed-from-file-mti.md) | closed |
@@ -281,6 +283,7 @@ pie showData title Bugs by status
 | NET002 | [BUG0060](bugs/closed/BUG0060-first-ping-lost-to-address-resolution.md) | resolved |
 | NET004 | [BUG0051](bugs/closed/BUG0051-ethtool-lane-count-parsed-as-speed.md) | resolved |
 | NET004 | [BUG0056](bugs/closed/BUG0056-no-link-state-check-after-speed-change.md) | resolved |
+| NET004 | [BUG0062](bugs/closed/BUG0062-link-detail-not-recorded.md) | resolved |
 | NET006 | [BUG0029](bugs/closed/BUG0029-net-test-iperf3-firewall-rule-needs-elevation.md) | resolved |
 | NET006 | [BUG0037](bugs/closed/BUG0037-net-test-local-unbound-var-kills-pair.md) | resolved |
 | NET007 | [BUG0053](bugs/closed/BUG0053-progress-denominator-is-iperf-time-not-wall-clock.md) | resolved |
@@ -301,6 +304,7 @@ pie showData title Bugs by status
 | NET015 | [BUG0051](bugs/closed/BUG0051-ethtool-lane-count-parsed-as-speed.md) | resolved |
 | NET015 | [BUG0052](bugs/closed/BUG0052-pair-max-speed-always-zero.md) | resolved |
 | NET015 | [BUG0056](bugs/closed/BUG0056-no-link-state-check-after-speed-change.md) | resolved |
+| NET015 | [BUG0062](bugs/closed/BUG0062-link-detail-not-recorded.md) | resolved |
 | NET016 | [BUG0037](bugs/closed/BUG0037-net-test-local-unbound-var-kills-pair.md) | resolved |
 | NET017 | [BUG0048](bugs/closed/BUG0048-net-err-trap-false-positives.md) | resolved |
 | NET017 | [BUG0049](bugs/closed/BUG0049-wall-broadcast-clobbers-progress-display.md) | resolved |

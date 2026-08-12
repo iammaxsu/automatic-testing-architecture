@@ -501,6 +501,24 @@ _goodput_efficiency() {
       'BEGIN{ if (m <= h) { print "1.0000"; exit } printf "%.4f", (m - h) / (m + o) }'
 }
 
+# Report how a link is actually running: lane count and active FEC encoding.
+#
+# This is the evidence that distinguishes "the NIC cannot do this speed" from
+# "the cable is bad" (BUG0062), and until now it existed only in dmesg, which
+# needs root and is not part of any artefact. A 200G link that comes up as
+# 4 lanes with RS(544,514) is running 50G per lane; 400GBASE-CR4 needs 100G per
+# lane, so the same port failing at 400G is a signalling-rate limit, not a fault.
+#
+# Prints "lanes=<n> fec=<encoding>", with "?" for anything unavailable.
+_link_detail() {
+  local ns="$1" ifn="$2" out fec lanes
+  out="$(echo "${_pwd}" | sudo -S ip netns exec "${ns}" ethtool "${ifn}" 2>/dev/null || true)"
+  lanes="$(grep -iE '^[[:space:]]*Lanes:' <<<"${out}" | awk '{print $NF}')"
+  fec="$(echo "${_pwd}" | sudo -S ip netns exec "${ns}" ethtool --show-fec "${ifn}" 2>/dev/null \
+         | grep -i 'Active FEC' | sed -E 's/.*:[[:space:]]*//')"
+  printf 'lanes=%s fec=%s\n' "${lanes:-?}" "${fec:-?}"
+}
+
 _iperf_wait_ready() {
   local ns="$1" ip="$2" port="${3:-5201}" i
   for ((i=0; i<25; i++)); do
@@ -720,6 +738,10 @@ _run_pair() {
   local pair_json="${log_root}/.pair${pair_idx}_data_${_run_ts}.json.tmp"
   jq -n --arg name "$pair" '{ name: $name, speeds: [] }' > "${pair_json}"
 
+  # Highest speed whose link actually came up, for this pair. Declared here so it
+  # cannot leak between pairs and so `set -u` has something to read (BUG0062).
+  local _last_linked_spd=""
+
   # Surface (don't swallow) an unhandled failure anywhere in this worker.
   local _netspd="" v4_res="" v6_res=""   # so the handler can reference them safely
   trap '_pair_abort "${LINENO}" "${BASH_COMMAND}"' ERR
@@ -804,12 +826,22 @@ _run_pair() {
     local _link_note="" _lk_ev _lk_od _lk_rc_ev=0 _lk_rc_od=0
     _lk_ev="$(_wait_link_up "ns_${ev}" "${ev}" "${_netspd}")" || _lk_rc_ev=$?
     _lk_od="$(_wait_link_up "ns_${od}" "${od}" "${_netspd}")" || _lk_rc_od=$?
+    local _lk_detail_ev _lk_detail_od
+    _lk_detail_ev="$(_link_detail "ns_${ev}" "${ev}")"
+    _lk_detail_od="$(_link_detail "ns_${od}" "${od}")"
     if (( _lk_rc_ev == 1 || _lk_rc_od == 1 )); then
-      _link_note="link did not come up at ${_netspd}M within ${_net_link_up_timeout_sec:-30}s (${ev}=${_lk_ev}, ${od}=${_lk_od}) -- the NIC/cable may not support this speed"
+      # Name the highest speed that DID establish, so "cannot do 400G" is
+      # separable from "cannot do anything" without re-reading the whole log.
+      _link_note="link did not come up at ${_netspd}M within ${_net_link_up_timeout_sec:-30}s (${ev}=${_lk_ev}, ${od}=${_lk_od}); highest speed established so far this run: ${_last_linked_spd:-none}. ${ev}: ${_lk_detail_ev} | ${od}: ${_lk_detail_od}"
     elif (( _lk_rc_ev == 2 || _lk_rc_od == 2 )); then
       _link_note="link came up at a different speed than requested ${_netspd}M (${ev}=${_lk_ev}M, ${od}=${_lk_od}M)"
     fi
-    [[ -n "${_link_note}" ]] && echo "[WARN] ${_link_note}" >> "${pairlog}"
+    if [[ -z "${_link_note}" ]]; then
+      _last_linked_spd="${_netspd}"
+      echo "[INFO] link up at ${_netspd}M -- ${ev}: ${_lk_detail_ev} | ${od}: ${_lk_detail_od}" >> "${pairlog}"
+    else
+      echo "[WARN] ${_link_note}" >> "${pairlog}"
+    fi
 
     # IPv4 ping
     echo "[IPv4 ICMP] ${ev} -> 192.247.${pair_idx}.11" >> "${pairlog}"
