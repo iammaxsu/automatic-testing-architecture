@@ -119,6 +119,9 @@ fi
 cat > "${TMP}/live.sh" <<EOF
 set -uo pipefail
 $(sed -n '/^_iperf3_progress()/,/^}/p;/^_progress_stop()/,/^}/p' "${NET_TEST}")
+# Scaled down from the 30 s production default so the case runs in seconds; the
+# grace itself is covered separately below (BUG0058).
+_net_iperf_overrun_grace_sec=1
 _iperf3_progress "P0 TCP Fwd enp12s0->enp12s2 @10M" 3 2>"${TMP}/frames.txt" &
 pp=\$!
 sleep 6
@@ -289,6 +292,45 @@ if (( wall > 63 )); then
   ok "the denominator (${wall}s) exceeds time+omit (63s), leaving setup headroom"
 else
   bad "the denominator exceeds time+omit" "${wall}"
+fi
+
+# ---------- FWK038: the alarm threshold is not the bar's estimate ----------
+# "88s / 68s" already tells the operator the step is slower than predicted, and a
+# modest overrun is normal -- UDP teardown at 400G runs ~20 s past any fixed
+# allowance. "(still running)" is the ALARM and must wait for the grace period,
+# or it fires on ordinary variation and stops discriminating (BUG0058).
+cat > "${TMP}/grace.sh" <<EOF
+set -uo pipefail
+$(sed -n '/^_iperf3_progress()/,/^}/p;/^_progress_stop()/,/^}/p' "${NET_TEST}")
+_net_iperf_overrun_grace_sec=3
+_iperf3_progress "P0 UDP Rev @400000M" 3 2>"${TMP}/grace.txt" &
+pp=\$!
+sleep 9
+_progress_stop "\$pp"
+EOF
+bash "${TMP}/grace.sh" >/dev/null 2>&1
+gframes="$(tr '\r' '\n' < "${TMP}/grace.txt" | sed 's/\x1b\[K//')"
+
+# Inside the grace window the bar keeps moving but stays quiet.
+if grep -qE '^ +\[#+\] +5s / +3s +P0 UDP Rev @400000M$' <<<"${gframes}"; then
+  ok "a modest overrun keeps ticking without raising the alarm"
+else
+  bad "a modest overrun keeps ticking without raising the alarm" "${gframes}"
+fi
+
+# Past it, the alarm appears.
+if grep -qE '^ +\[#+\] +[78]s / +3s .*still running' <<<"${gframes}"; then
+  ok "past the grace period the alarm is raised"
+else
+  bad "past the grace period the alarm is raised" "${gframes}"
+fi
+
+# The two thresholds must be distinct in source, not the same number reused.
+if grep -q 'elapsed > total + \${_net_iperf_overrun_grace_sec:-30}' "${NET_TEST}"; then
+  ok "the alarm threshold is separate from the bar denominator"
+else
+  bad "the alarm threshold is separate from the bar denominator" \
+      "$(grep -n 'still running' "${NET_TEST}" | head -2)"
 fi
 
 echo

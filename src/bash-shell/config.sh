@@ -102,6 +102,15 @@ setup_session() {
                                  #   reaches 100% about when a healthy step ends and
                                  #   "(still running)" keeps meaning "this one is
                                  #   unusual" rather than appearing on every transfer.
+: "${_net_iperf_overrun_grace_sec:=30}"
+                                 # FWK038: how far past the estimate a step may run
+                                 #   before the bar raises "(still running)". The bar
+                                 #   showing "88s / 68s" already says it is slower than
+                                 #   predicted; this is the point at which that stops
+                                 #   being normal variation and becomes worth flagging.
+                                 #   Sized above the worst legitimate overrun seen (UDP
+                                 #   teardown at 400G, ~20s) and well below a TCP connect
+                                 #   timeout (~2 min), which is what the marker is for.
 : "${_net_tcp_pass_pct:=95}"     # NET009: default TCP PASS threshold as % of link speed,
                                  #   used for any speed not in _net_tcp_pass_pct_tiers.
 : "${_net_tcp_pass_pct_tiers:=10:90,100:90,1000:95,2500:95,5000:95,10000:95}"

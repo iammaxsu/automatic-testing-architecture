@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-08-12 01:59 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-08-12 03:11 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -150,7 +150,7 @@ pie showData title Requirements by status
 
 ## Bugs
 
-**Total:** 57
+**Total:** 58
 
 ### By status
 
@@ -158,7 +158,7 @@ pie showData title Requirements by status
 | --- | --- |
 | open | 14 |
 | in-progress | 1 |
-| resolved | 30 |
+| resolved | 31 |
 | closed | 10 |
 | invalid | 2 |
 
@@ -166,7 +166,7 @@ pie showData title Requirements by status
 pie showData title Bugs by status
     "open" : 14
     "in-progress" : 1
-    "resolved" : 30
+    "resolved" : 31
     "closed" : 10
     "invalid" : 2
 ```
@@ -175,7 +175,7 @@ pie showData title Bugs by status
 
 | OS | Count |
 | --- | --- |
-| Ubuntu 24.04 LTS | 32 |
+| Ubuntu 24.04 LTS | 33 |
 | Ubuntu 26.04 LTS | 21 |
 | Windows 11 | 13 |
 | Windows 11 (zh-TW) | 2 |
@@ -244,6 +244,7 @@ pie showData title Bugs by status
 | FWK037 | [BUG0043](bugs/closed/BUG0043-function-py-unbound-module-logger.md) | resolved |
 | FWK038 | [BUG0050](bugs/closed/BUG0050-progress-bar-stops-before-step-does.md) | resolved |
 | FWK038 | [BUG0053](bugs/closed/BUG0053-progress-denominator-is-iperf-time-not-wall-clock.md) | resolved |
+| FWK038 | [BUG0058](bugs/closed/BUG0058-overrun-alarm-fires-on-normal-variation.md) | resolved |
 | LOG001 | [BUG0023](bugs/closed/BUG0023-log-dir-console-output.md) | resolved |
 | LOG001 | [BUG0042](bugs/closed/BUG0042-python-logs-follow-cwd.md) | resolved |
 | LOG001 | [BUG0057](bugs/open/BUG0057-report-labelled-with-stale-session-id.md) | open |
@@ -279,6 +280,7 @@ pie showData title Bugs by status
 | NET006 | [BUG0029](bugs/closed/BUG0029-net-test-iperf3-firewall-rule-needs-elevation.md) | resolved |
 | NET006 | [BUG0037](bugs/closed/BUG0037-net-test-local-unbound-var-kills-pair.md) | resolved |
 | NET007 | [BUG0053](bugs/closed/BUG0053-progress-denominator-is-iperf-time-not-wall-clock.md) | resolved |
+| NET007 | [BUG0058](bugs/closed/BUG0058-overrun-alarm-fires-on-normal-variation.md) | resolved |
 | NET008 | [BUG0029](bugs/closed/BUG0029-net-test-iperf3-firewall-rule-needs-elevation.md) | resolved |
 | NET008 | [BUG0048](bugs/closed/BUG0048-net-err-trap-false-positives.md) | resolved |
 | NET008 | [BUG0054](bugs/closed/BUG0054-jumbo-ping-trips-err-trap.md) | resolved |

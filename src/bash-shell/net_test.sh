@@ -565,10 +565,25 @@ _iperf3_progress() {
       printf "\r  [%-40s] %3ds / %3ds  %s\033[K" \
         "${bar}" "${elapsed}" "${total}" "${label}" >&2
     else
-      # Overrun: the step is still running past its nominal duration. Keep the
-      # display alive and name the reason, so "slow" never reads as "hung".
-      printf "\r  [%-40s] %3ds / %3ds  %s  (still running)\033[K" \
-        "$(printf '#%.0s' $(seq 1 40))" "${elapsed}" "${total}" "${label}" >&2
+      # Past the estimate the bar simply reads e.g. "88s / 68s", which already
+      # says the step is taking longer than predicted and is not, by itself,
+      # cause for concern -- the denominator is an estimate, and UDP teardown at
+      # 400G is legitimately slower than any fixed allowance predicts.
+      #
+      # "(still running)" is the ALARM, and it is deliberately not the same
+      # threshold (BUG0058). Sizing the bar and deciding something is wrong are
+      # different questions: BUG0053 fixed the bar by making its denominator
+      # honest, but left the alarm firing the instant the estimate was passed, so
+      # any step a few seconds slow raised it. Only past the grace period does
+      # this become the thing it was added for -- a client blocked on a connect
+      # timeout, roughly two minutes, that would otherwise look like a hang.
+      if (( elapsed > total + ${_net_iperf_overrun_grace_sec:-30} )); then
+        printf "\r  [%-40s] %3ds / %3ds  %s  (still running)\033[K" \
+          "$(printf '#%.0s' $(seq 1 40))" "${elapsed}" "${total}" "${label}" >&2
+      else
+        printf "\r  [%-40s] %3ds / %3ds  %s\033[K" \
+          "$(printf '#%.0s' $(seq 1 40))" "${elapsed}" "${total}" "${label}" >&2
+      fi
     fi
     sleep 1
     (( elapsed++ )) || true
