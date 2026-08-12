@@ -173,6 +173,40 @@ else
       "$(grep -nE '^\s+sleep 4$|_wait_link_up' "${NET_TEST}" | head -3)"
 fi
 
+# 11. The neighbour cache must be primed before measuring (BUG0060). A speed
+#     change drops carrier and clears the ARP/ND entry; the first packet then
+#     pays for resolution and ping counts it as loss.
+ping_body="$(sed -n '/^_ping_check()/,/^}/p' "${NET_TEST}")"
+if grep -q -- '-c 1 -W 2 "${addr}"' <<<"${ping_body}" &&
+   grep -q '>/dev/null 2>&1 || true' <<<"${ping_body}"; then
+  ok "a discarded priming packet precedes the measurement"
+else
+  bad "a discarded priming packet precedes the measurement" "${ping_body}"
+fi
+
+# The priming packet must not reach the log or the verdict.
+if [[ "$(grep -c -- '-c 4 "${addr}"' <<<"${ping_body}")" == "1" ]]; then
+  ok "only the 4-packet run is measured and logged"
+else
+  bad "only the 4-packet run is measured and logged" "${ping_body}"
+fi
+
+# Priming must apply to both families, or the asymmetry that made this look
+# IPv4-specific simply moves.
+if grep -q '_png="ping"; \[\[ "$v6" == "1" \]\] && _png="ping6 -6"' <<<"${ping_body}"; then
+  ok "priming and measurement use the same family-selected command"
+else
+  bad "priming and measurement use the same family-selected command" "${ping_body}"
+fi
+
+# The reported symptom, reproduced: 4 sent / 3 received fails a 0%-loss check.
+sample="4 packets transmitted, 3 received, 25% packet loss, time 3060ms"
+if ! grep -q " 0% packet loss" <<<"${sample}"; then
+  ok "a single lost packet is enough to fail the check, hence the priming"
+else
+  bad "a single lost packet is enough to fail the check" "${sample}"
+fi
+
 echo
 echo "  ${PASS} passed, ${FAIL} failed"
 [[ ${FAIL} -eq 0 ]]

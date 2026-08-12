@@ -269,18 +269,32 @@ _ping_check() {
   # Prints PASS or FAIL to stdout; detail goes to logfile.
   local ns="$1" addr="$2" v6="$3" logfile="$4"
   local tmpf; tmpf="$(mktemp)"
+  local _png="ping"; [[ "$v6" == "1" ]] && _png="ping6 -6"
+
+  # Prime the neighbour cache before measuring (BUG0060).
+  #
+  # A link-speed change takes the carrier down, which clears the ARP/ND entry for
+  # the peer. The FIRST packet afterwards is then consumed resolving the address,
+  # and ping counts it as lost -- 4 transmitted, 3 received, 25% loss -- so a
+  # perfectly healthy link failed the "0% packet loss" check. The remaining three
+  # replies arriving at 0.3 ms, and 44 Gbit/s of TCP immediately afterwards, are
+  # what show it was never a connectivity fault.
+  #
+  # Only IPv4 showed it, which looked like an IPv4-specific bug and is not: IPv6
+  # runs second, by which time the neighbour is already resolved. Priming makes
+  # the two symmetric and measures steady-state reachability, which is the thing
+  # this check is actually about.
+  # shellcheck disable=SC2086
+  echo "${_pwd}" | sudo -S ip netns exec "${ns}" ${_png} -c 1 -W 2 "${addr}" \
+    >/dev/null 2>&1 || true
   # `|| true`: ping exits 1 on packet loss, and with `set -o pipefail` that makes
   # the whole pipeline fail. But a failed ping is the ANSWER here, not an error --
   # the verdict is decided by the grep below, from the output we just captured.
   # Without this the ERR trap fired on a completely handled path and reported a
   # crash for every unreachable link (BUG0048).
-  if [[ "$v6" == "1" ]]; then
-    echo "${_pwd}" | sudo -S ip netns exec "${ns}" ping6 -6 -c 4 "${addr}" \
-      | tee "${tmpf}" >> "${logfile}" || true
-  else
-    echo "${_pwd}" | sudo -S ip netns exec "${ns}" ping -c 4 "${addr}" \
-      | tee "${tmpf}" >> "${logfile}" || true
-  fi
+  # shellcheck disable=SC2086
+  echo "${_pwd}" | sudo -S ip netns exec "${ns}" ${_png} -c 4 "${addr}" \
+    | tee "${tmpf}" >> "${logfile}" || true
   grep -q " 0% packet loss" "${tmpf}" && echo "PASS" || echo "FAIL"
   rm -f "${tmpf}"
 }
@@ -1156,7 +1170,9 @@ for (( loop_n=1; loop_n<=_loops_this_run; loop_n++ )); do
     # never wrote its real record, so nothing else will report it. Turn it into
     # the ERROR row it deserves — but only now, after the join, when "unclaimed"
     # is finally knowable (BUG0055).
-    local _mk _mspd
+    # NOT `local`: this loop runs at top level, and `local` outside a function is
+    # a fatal error under `set -e` -- which is exactly how BUG0059 destroyed a
+    # completed run's report.
     for _mk in "${_tmp}".err.*; do
       [[ -e "${_mk}" ]] || continue
       _mspd="${_mk##*.}"

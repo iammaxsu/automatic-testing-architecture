@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-08-12 03:11 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-08-12 03:54 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -150,7 +150,7 @@ pie showData title Requirements by status
 
 ## Bugs
 
-**Total:** 58
+**Total:** 60
 
 ### By status
 
@@ -158,7 +158,7 @@ pie showData title Requirements by status
 | --- | --- |
 | open | 14 |
 | in-progress | 1 |
-| resolved | 31 |
+| resolved | 33 |
 | closed | 10 |
 | invalid | 2 |
 
@@ -166,7 +166,7 @@ pie showData title Requirements by status
 pie showData title Bugs by status
     "open" : 14
     "in-progress" : 1
-    "resolved" : 31
+    "resolved" : 33
     "closed" : 10
     "invalid" : 2
 ```
@@ -175,7 +175,7 @@ pie showData title Bugs by status
 
 | OS | Count |
 | --- | --- |
-| Ubuntu 24.04 LTS | 33 |
+| Ubuntu 24.04 LTS | 35 |
 | Ubuntu 26.04 LTS | 21 |
 | Windows 11 | 13 |
 | Windows 11 (zh-TW) | 2 |
@@ -229,6 +229,7 @@ pie showData title Bugs by status
 | FWK028 | [BUG0045](bugs/closed/BUG0045-report-shows-timeout-as-boot-time.md) | resolved |
 | FWK028 | [BUG0048](bugs/closed/BUG0048-net-err-trap-false-positives.md) | resolved |
 | FWK028 | [BUG0055](bugs/closed/BUG0055-abort-note-duplicated-as-result-row.md) | resolved |
+| FWK028 | [BUG0059](bugs/closed/BUG0059-top-level-local-destroyed-the-report.md) | resolved |
 | FWK029 | [BUG0023](bugs/closed/BUG0023-log-dir-console-output.md) | resolved |
 | FWK029 | [BUG0047](bugs/closed/BUG0047-net019-unmatched-mac-entry-silent.md) | resolved |
 | FWK031 | [BUG0034](bugs/closed/BUG0034-reboot-os-probe-before-init-dut.md) | resolved |
@@ -262,6 +263,7 @@ pie showData title Bugs by status
 | LOG015 | [BUG0045](bugs/closed/BUG0045-report-shows-timeout-as-boot-time.md) | resolved |
 | LOG015 | [BUG0048](bugs/closed/BUG0048-net-err-trap-false-positives.md) | resolved |
 | LOG015 | [BUG0055](bugs/closed/BUG0055-abort-note-duplicated-as-result-row.md) | resolved |
+| LOG015 | [BUG0059](bugs/closed/BUG0059-top-level-local-destroyed-the-report.md) | resolved |
 | LOG015 | [BUG0057](bugs/open/BUG0057-report-labelled-with-stale-session-id.md) | open |
 | LOG018 | [BUG0001](bugs/closed/BUG0001-no-total-test-time.md) | closed |
 | LOG018 | [BUG0018](bugs/closed/BUG0018-html-report-total-test-time-computed-from-file-mti.md) | closed |
@@ -275,6 +277,8 @@ pie showData title Bugs by status
 | LOG025 | [BUG0041](bugs/closed/BUG0041-explicit-cycles-ignored-on-resume.md) | resolved |
 | LOG025 | [BUG0042](bugs/closed/BUG0042-python-logs-follow-cwd.md) | resolved |
 | LOG026 | [BUG0042](bugs/closed/BUG0042-python-logs-follow-cwd.md) | resolved |
+| NET001 | [BUG0060](bugs/closed/BUG0060-first-ping-lost-to-address-resolution.md) | resolved |
+| NET002 | [BUG0060](bugs/closed/BUG0060-first-ping-lost-to-address-resolution.md) | resolved |
 | NET004 | [BUG0051](bugs/closed/BUG0051-ethtool-lane-count-parsed-as-speed.md) | resolved |
 | NET004 | [BUG0056](bugs/closed/BUG0056-no-link-state-check-after-speed-change.md) | resolved |
 | NET006 | [BUG0029](bugs/closed/BUG0029-net-test-iperf3-firewall-rule-needs-elevation.md) | resolved |
@@ -286,6 +290,7 @@ pie showData title Bugs by status
 | NET008 | [BUG0054](bugs/closed/BUG0054-jumbo-ping-trips-err-trap.md) | resolved |
 | NET008 | [BUG0055](bugs/closed/BUG0055-abort-note-duplicated-as-result-row.md) | resolved |
 | NET008 | [BUG0056](bugs/closed/BUG0056-no-link-state-check-after-speed-change.md) | resolved |
+| NET008 | [BUG0060](bugs/closed/BUG0060-first-ping-lost-to-address-resolution.md) | resolved |
 | NET009 | [BUG0029](bugs/closed/BUG0029-net-test-iperf3-firewall-rule-needs-elevation.md) | resolved |
 | NET009 | [BUG0051](bugs/closed/BUG0051-ethtool-lane-count-parsed-as-speed.md) | resolved |
 | NET011 | [BUG0015](bugs/open/BUG0015-net-test-sh-consumes-the-ssh-lifeline-nic.md) | open |
