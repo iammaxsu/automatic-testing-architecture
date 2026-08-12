@@ -2136,6 +2136,48 @@ generate_net_report() {
         end
     ]' "${resultjson}")"
 
+  # ---- NET009 method section (BUG0063) ----
+  # Rendered from result.json's .details.method, never hand-written, so the
+  # standard shown beside a verdict is the one that produced it.
+  local method_html=""
+  local _m_req _m_formula _m_mtu _m_frame _m_l3l4 _m_eff _m_pct _m_tiers
+  local _m_par _m_parfrom _m_parn _m_udpcap _m_udpgate _m_errgate
+  if [[ "$(jq -r '.details.method // empty' "${resultjson}")" != "" ]]; then
+    _m_req="$(jq -r '.details.method.requirement // "?"' "${resultjson}")"
+    _m_formula="$(jq -r '.details.method.tcp_threshold.formula // "?"' "${resultjson}")"
+    _m_mtu="$(jq -r '.details.method.tcp_threshold.mtu_bytes // "?"' "${resultjson}")"
+    _m_frame="$(jq -r '.details.method.tcp_threshold.frame_overhead_bytes // "?"' "${resultjson}")"
+    _m_l3l4="$(jq -r '.details.method.tcp_threshold.l3l4_overhead_bytes // "?"' "${resultjson}")"
+    _m_eff="$(jq -r '.details.method.tcp_threshold.goodput_efficiency // "?"' "${resultjson}")"
+    _m_pct="$(jq -r '.details.method.tcp_threshold.pass_pct // "?"' "${resultjson}")"
+    _m_tiers="$(jq -r '.details.method.tcp_threshold.pass_pct_tiers // ""' "${resultjson}")"
+    _m_par="$(jq -r '.details.method.iperf_streams.setting // "?"' "${resultjson}")"
+    _m_parfrom="$(jq -r '.details.method.iperf_streams.auto_from_mbps // "?"' "${resultjson}")"
+    _m_parn="$(jq -r '.details.method.iperf_streams.auto_streams // "?"' "${resultjson}")"
+    _m_udpcap="$(jq -r '.details.method.udp_loss.cap_pct // "?"' "${resultjson}")"
+    _m_udpgate="$(jq -r 'if .details.method.udp_loss.gates_verdict then "yes" else "no" end' "${resultjson}")"
+    _m_errgate="$(jq -r 'if .details.method.nic_error_counters.gates_verdict then "yes" else "no" end' "${resultjson}")"
+    method_html="$(cat <<MEOF
+<div class="sec"><h2>Method and thresholds (${_m_req})</h2>
+<p style="font-size:11px;color:#888;margin-bottom:.6rem">
+Recorded in <code>result.json</code> by the run that produced these verdicts, and rendered from it.
+A verdict is only auditable if the rule behind it travels with the numbers.</p>
+<table>
+<tbody>
+<tr><th style="width:26%">TCP pass rule</th><td><code>${_m_formula}</code></td></tr>
+<tr><th>Why not % of line rate</th><td>iperf3 reports TCP <b>payload</b>; the link speed is <b>wire rate</b>.
+Each frame also spends ${_m_frame} bytes on preamble+SFD, Ethernet header, FCS and the inter-frame gap,
+plus ${_m_l3l4} bytes of IP/TCP headers inside the MTU. At MTU ${_m_mtu} that caps goodput at
+<b>${_m_eff}</b> of line rate, so a threshold expressed against line rate above that figure is unreachable by any hardware.</td></tr>
+<tr><th>Pass percentage</th><td>${_m_pct}% of the achievable figure above$( [[ -n "${_m_tiers}" ]] && echo " &nbsp;·&nbsp; per-speed overrides in force: <code>${_m_tiers}</code>" || echo ", uniform at every link speed — the efficiency term depends only on MTU, not on speed" )</td></tr>
+<tr><th>iperf3 streams</th><td><code>${_m_par}</code>$( [[ "${_m_par}" == "auto" ]] && echo " &nbsp;·&nbsp; 1 below ${_m_parfrom} Mb/s, ${_m_parn} at or above" ) &nbsp;— a single stream is bounded by one CPU core and plateaus near 75-85 Gbit/s whatever the link is set to, so above that point it measures the host rather than the NIC</td></tr>
+<tr><th>UDP loss</th><td>cap ${_m_udpcap}% &nbsp;·&nbsp; gates the verdict: <b>${_m_udpgate}</b> &nbsp;— UDP is offered at full link rate with no flow control, so loss is an expected outcome of the method</td></tr>
+<tr><th>NIC error counters</th><td>gate the verdict: <b>${_m_errgate}</b></td></tr>
+</tbody></table></div>
+MEOF
+)"
+  fi
+
   # ---- HTML ----
   cat > "${out}" <<NREOF
 <!DOCTYPE html><html lang="en"><head>
@@ -2186,6 +2228,7 @@ Hover the Verdict cell for the reason (NET008).</p>
 <th>TCP Fwd (Mbps)</th><th>TCP Rev (Mbps)</th><th>UDP Fwd (Mbps)</th><th>UDP Rev (Mbps)</th>
 <th>Full-dup (Mbps)</th><th>UDP loss (%)</th><th>Quality</th><th>Err</th><th>Jumbo</th><th>Thr</th><th>Verdict</th>
 </tr></thead><tbody id="tb"></tbody></table></div>
+${method_html}
 <script>
 const ROWS=${rows_js};
 const tb=document.getElementById('tb');

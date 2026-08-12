@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-08-12 07:57 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-08-12 08:28 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -19,14 +19,14 @@ _Generated 2026-08-12 07:57 · regenerate with `python scripts/stats.py > STATUS
 | Status | Count |
 | --- | --- |
 | proposed | 106 |
-| implementing | 11 |
-| implemented | 33 |
+| implementing | 10 |
+| implemented | 34 |
 
 ```mermaid
 pie showData title Requirements by status
     "proposed" : 106
-    "implementing" : 11
-    "implemented" : 33
+    "implementing" : 10
+    "implemented" : 34
 ```
 
 ### By section
@@ -40,7 +40,7 @@ pie showData title Requirements by status
 | FUN | 7 | 0 | 6 |
 | FWK | 38 | 0 | 30 |
 | LOG | 26 | 0 | 23 |
-| NET | 18 | 0 | 18 |
+| NET | 18 | 0 | 17 |
 | PWR | 16 | 0 | 1 |
 | SET | 7 | 0 | 4 |
 | SLP | 5 | 0 | 5 |
@@ -150,7 +150,7 @@ pie showData title Requirements by status
 
 ## Bugs
 
-**Total:** 62
+**Total:** 63
 
 ### By status
 
@@ -158,7 +158,7 @@ pie showData title Requirements by status
 | --- | --- |
 | open | 14 |
 | in-progress | 1 |
-| resolved | 35 |
+| resolved | 36 |
 | closed | 10 |
 | invalid | 2 |
 
@@ -166,7 +166,7 @@ pie showData title Requirements by status
 pie showData title Bugs by status
     "open" : 14
     "in-progress" : 1
-    "resolved" : 35
+    "resolved" : 36
     "closed" : 10
     "invalid" : 2
 ```
@@ -175,7 +175,7 @@ pie showData title Bugs by status
 
 | OS | Count |
 | --- | --- |
-| Ubuntu 24.04 LTS | 37 |
+| Ubuntu 24.04 LTS | 38 |
 | Ubuntu 26.04 LTS | 21 |
 | Windows 11 | 13 |
 | Windows 11 (zh-TW) | 2 |
@@ -230,6 +230,7 @@ pie showData title Bugs by status
 | FWK028 | [BUG0048](bugs/closed/BUG0048-net-err-trap-false-positives.md) | resolved |
 | FWK028 | [BUG0055](bugs/closed/BUG0055-abort-note-duplicated-as-result-row.md) | resolved |
 | FWK028 | [BUG0059](bugs/closed/BUG0059-top-level-local-destroyed-the-report.md) | resolved |
+| FWK028 | [BUG0063](bugs/closed/BUG0063-method-not-recorded-in-artefacts.md) | resolved |
 | FWK029 | [BUG0023](bugs/closed/BUG0023-log-dir-console-output.md) | resolved |
 | FWK029 | [BUG0047](bugs/closed/BUG0047-net019-unmatched-mac-entry-silent.md) | resolved |
 | FWK031 | [BUG0034](bugs/closed/BUG0034-reboot-os-probe-before-init-dut.md) | resolved |
@@ -266,6 +267,7 @@ pie showData title Bugs by status
 | LOG015 | [BUG0055](bugs/closed/BUG0055-abort-note-duplicated-as-result-row.md) | resolved |
 | LOG015 | [BUG0059](bugs/closed/BUG0059-top-level-local-destroyed-the-report.md) | resolved |
 | LOG015 | [BUG0062](bugs/closed/BUG0062-link-detail-not-recorded.md) | resolved |
+| LOG015 | [BUG0063](bugs/closed/BUG0063-method-not-recorded-in-artefacts.md) | resolved |
 | LOG015 | [BUG0057](bugs/open/BUG0057-report-labelled-with-stale-session-id.md) | open |
 | LOG018 | [BUG0001](bugs/closed/BUG0001-no-total-test-time.md) | closed |
 | LOG018 | [BUG0018](bugs/closed/BUG0018-html-report-total-test-time-computed-from-file-mti.md) | closed |
@@ -298,6 +300,7 @@ pie showData title Bugs by status
 | NET009 | [BUG0029](bugs/closed/BUG0029-net-test-iperf3-firewall-rule-needs-elevation.md) | resolved |
 | NET009 | [BUG0051](bugs/closed/BUG0051-ethtool-lane-count-parsed-as-speed.md) | resolved |
 | NET009 | [BUG0061](bugs/closed/BUG0061-tcp-threshold-above-physical-ceiling.md) | resolved |
+| NET009 | [BUG0063](bugs/closed/BUG0063-method-not-recorded-in-artefacts.md) | resolved |
 | NET011 | [BUG0015](bugs/open/BUG0015-net-test-sh-consumes-the-ssh-lifeline-nic.md) | open |
 | NET012 | [BUG0047](bugs/closed/BUG0047-net019-unmatched-mac-entry-silent.md) | resolved |
 | NET012 | [BUG0015](bugs/open/BUG0015-net-test-sh-consumes-the-ssh-lifeline-nic.md) | open |

@@ -123,13 +123,24 @@ setup_session() {
 : "${_net_l3l4_overhead_bytes:=52}"    # IP 20 + TCP 20 + timestamps 12 (Linux default)
 : "${_net_mtu_for_thr:=1500}"          # MTU the throughput runs use
 
-: "${_net_tcp_pass_pct:=95}"     # NET009: default TCP PASS threshold as % of link speed,
-                                 #   used for any speed not in _net_tcp_pass_pct_tiers.
-: "${_net_tcp_pass_pct_tiers:=10:90,100:90,1000:95,2500:95,5000:95,10000:95}"
-                                 # NET009: per-speed-tier override "speedMbps:pct,...".
-                                 #   TCP overhead is proportionally larger at lower link
-                                 #   speeds (~94-95% at 100M is normal), so 100M and below
-                                 #   default to 90% while 1000M+ keep 95%.
+: "${_net_tcp_pass_pct:=95}"     # NET009: TCP PASS threshold as a % of ACHIEVABLE
+                                 #   goodput (see the efficiency block above), not of the
+                                 #   raw line rate. Uniform across every speed.
+: "${_net_tcp_pass_pct_tiers:=}"
+                                 # NET009: optional per-speed override "speedMbps:pct,...".
+                                 #   EMPTY BY DEFAULT.
+                                 #
+                                 #   It used to read 10:90,100:90,1000:95,... — the 90%
+                                 #   entries were hand-compensating for framing overhead
+                                 #   that the threshold did not model. Now that the
+                                 #   efficiency term is explicit and is itself
+                                 #   speed-independent (it depends only on MTU), the same
+                                 #   percentage is correct at 10 Mb/s and at 800 Gb/s, and
+                                 #   the tiers have nothing left to correct for.
+                                 #
+                                 #   Use this only to record a real, measured PLATFORM
+                                 #   limit -- e.g. "400G on a PCIe 4.0 host cannot exceed
+                                 #   90% of achievable" -- and say why in the commit.
 : "${_net_err_counter_check:=1}" # NET016: 1 = diff ethtool -S error/discard counters
                                  #   around the runs at each speed and record the delta.
 : "${_net_err_fail_on_delta:=0}" # NET016: 1 = a non-zero rx/tx error delta downgrades an
@@ -157,10 +168,18 @@ setup_session() {
 # link speed is therefore unreachable by construction, and every such row fails
 # for a reason that says nothing about the NIC.
 #
-# Raise this to measure what the LINK can do (4-8 is typical for 100G+); leave it
-# at 1 to measure what a single stream can do. They are different questions, so
-# the default is not changed silently -- pick the one you mean.
-: "${_net_iperf_parallel:=1}"
+# "auto" (default) uses 1 stream below _net_parallel_auto_from_mbps and
+# _net_parallel_auto_streams at or above it. An explicit integer overrides.
+#
+# The threshold is set from _net_parallel_auto_from_mbps=25000 because that is
+# where the measured evidence put the single-stream wall: on the reference DUT a
+# single stream plateaued at 75-85 Gbit/s regardless of link speed, so 100G and
+# 200G both measured ~80 Gbit/s. With 8 streams the same hardware reached 99.8%,
+# 100.1% and 100.1% of achievable at 25G, 50G and 100G. Below 25G a single stream
+# saturates the link, so nothing is gained by adding more.
+: "${_net_iperf_parallel:=auto}"
+: "${_net_parallel_auto_from_mbps:=25000}"   # at/above this speed, auto uses several streams
+: "${_net_parallel_auto_streams:=8}"
 
 : "${_net_test_bidir:=1}"        # NET017: 1 = also run a simultaneous bidirectional
                                  #   (full-duplex) iperf3 pass at each speed.

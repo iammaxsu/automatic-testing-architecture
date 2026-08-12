@@ -519,6 +519,30 @@ _link_detail() {
   printf 'lanes=%s fec=%s\n' "${lanes:-?}" "${fec:-?}"
 }
 
+# Resolve _net_iperf_parallel for a given link speed (NET009 method).
+#
+# "auto" = 1 stream below _net_parallel_auto_from_mbps, _net_parallel_auto_streams
+# at or above it. An explicit integer wins.
+#
+# The default threshold is 25000 because that is where the measured evidence put
+# the single-stream wall: on the reference DUT one stream plateaued at
+# 75-85 Gbit/s whatever the link was set to, so 100G and 200G both measured about
+# 80 Gbit/s and the result described the host's CPU rather than the NIC. With 8
+# streams the same hardware reached 99.8 / 100.1 / 100.1 % of achievable at
+# 25 / 50 / 100 G. Below 25G a single stream already saturates the link.
+_iperf_parallel_for() {
+  local spd="${1:-0}" p="${_net_iperf_parallel:-auto}"
+  if [[ "${p}" == "auto" ]]; then
+    if (( spd >= ${_net_parallel_auto_from_mbps:-25000} )); then
+      printf '%s\n' "${_net_parallel_auto_streams:-8}"
+    else
+      printf '1\n'
+    fi
+  else
+    printf '%s\n' "${p}"
+  fi
+}
+
 _iperf_wait_ready() {
   local ns="$1" ip="$2" port="${3:-5201}" i
   for ((i=0; i<25; i++)); do
@@ -549,7 +573,7 @@ _iperf_run_dir() {
     echo "${_pwd}" | sudo -S ip netns exec "ns_${ev}" iperf3 \
         --bind "${ip_cli}" --client "${ip_srv}" --port "${_pair_port}" \
         --bitrate "${_netspd}M" --time "${_iperf_time}" --interval 3 --omit "${_iperf_omit}" \
-        --parallel "${_net_iperf_parallel:-1}" ${extra} \
+        --parallel "$(_iperf_parallel_for "${_netspd}")" ${extra} \
         --logfile "${logfile}" || true
     _progress_stop "${_pp}"
     mbps="$(_extract_mbps_num "${logfile}")"
@@ -1321,7 +1345,50 @@ _summary_json=$(jq -n \
   '{ total: $total, passed: $passed, failed: $failed,
      unknown: $unknown, skipped: $skipped, error: $error }')
 
-_details_json=$(jq -n --argjson pairs "$_jq_pairs" '{ pairs: $pairs }')
+# NET009 method record — the derivation travels WITH the numbers (FWK028).
+#
+# A verdict is only auditable if the rule that produced it is recoverable from
+# the same artefact. Without this, "why did 94.2 Gbit/s fail on a 100G link?"
+# needs the reader to know which framework version ran, what MTU and stream count
+# were in force, and which formula was current at the time -- none of which the
+# report carried. It cost this project one wrong requirement (BUG0061) and
+# several hours of bench time to notice.
+_method_json=$(jq -n \
+  --arg  req        "NET009" \
+  --arg  formula    "threshold = link_speed x (mtu - l3l4_overhead) / (mtu + frame_overhead) x pct / 100" \
+  --argjson mtu     "${_net_mtu_for_thr:-1500}" \
+  --argjson frame   "${_net_frame_overhead_bytes:-38}" \
+  --argjson l3l4    "${_net_l3l4_overhead_bytes:-52}" \
+  --arg  eff        "$(_goodput_efficiency "${_net_mtu_for_thr:-1500}")" \
+  --argjson pct     "${_net_tcp_pass_pct:-95}" \
+  --arg  tiers      "${_net_tcp_pass_pct_tiers:-}" \
+  --arg  parallel   "${_net_iperf_parallel:-auto}" \
+  --argjson par_from "${_net_parallel_auto_from_mbps:-25000}" \
+  --argjson par_n   "${_net_parallel_auto_streams:-8}" \
+  --argjson udp_cap "${_net_udp_loss_max_pct:-1}" \
+  --argjson udp_gate "${_net_udp_loss_fail:-0}" \
+  --argjson err_gate "${_net_err_fail_on_delta:-0}" \
+  '{ requirement: $req,
+     tcp_threshold: {
+       formula: $formula,
+       mtu_bytes: $mtu,
+       frame_overhead_bytes: $frame,
+       l3l4_overhead_bytes: $l3l4,
+       goodput_efficiency: ($eff|tonumber),
+       pass_pct: $pct,
+       pass_pct_tiers: $tiers,
+       note: "pct is a share of ACHIEVABLE goodput, not of line rate. The efficiency term depends only on MTU, so the same pct applies at every link speed."
+     },
+     iperf_streams: {
+       setting: $parallel, auto_from_mbps: $par_from, auto_streams: $par_n,
+       note: "A single TCP stream is bounded by one core and plateaus near 75-85 Gbit/s regardless of link speed, so at 25G and above it measures the host, not the NIC."
+     },
+     udp_loss: { cap_pct: $udp_cap, gates_verdict: ($udp_gate == 1),
+       note: "iperf3 offers UDP at full link rate with no flow control, so loss is the expected outcome of the method and is reported, not judged, unless gating is enabled." },
+     nic_error_counters: { gates_verdict: ($err_gate == 1) } }')
+
+_details_json=$(jq -n --argjson pairs "$_jq_pairs" --argjson method "$_method_json" \
+                   '{ pairs: $pairs, method: $method }')
 
 # Overall verdict roll-up (same logic as disk_test):
 #   any ERROR → ERROR; any FAIL → FAIL;
