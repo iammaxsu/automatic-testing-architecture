@@ -103,6 +103,11 @@ def parse_args() -> argparse.Namespace:
                    dest="off_time", help="Off-time between cycles in seconds (default: %(default)s)")
     p.add_argument("--pin",      default=config.GPIO_PIN, type=int,
                    help="GPIO BOARD pin number (default: %(default)s)")
+    p.add_argument("--force-off-escalate", default=config.ATX_FORCE_OFF_ESCALATE_SEC,
+                   type=float, dest="force_off_escalate",
+                   help="Longer power-button hold, in seconds, for the force-off "
+                        "after a cycle that already failed to boot; 0 disables "
+                        "escalation (default: %(default)s)")
     p.add_argument("--out",      default=config.LOG_DIR,
                    help="Output directory for logs (default: %(default)s)")
     p.add_argument("--report",   default=None,
@@ -296,6 +301,10 @@ def run_one_cycle(
         "t_dead":           None,
         "shutdown_time_sec": None,
         "shutdown_method":  None,
+        # Hold time commanded for a force-off, in seconds. Records what was
+        # asked of the relay; the DUT's actual power state is not observable
+        # from here (BUG0066).
+        "force_off_sec":    None,
         "bios_version":     None,
         "bmc_version":      None,
         "bmc_method":       None,
@@ -359,8 +368,16 @@ def run_one_cycle(
                 log.error("Cycle %d: --debug active — leaving relay/DUT state as-is "
                            "for inspection (NOT forcing off)", n)
             else:
-                # Ensure DUT is actually off before next cycle
-                _force_off(args, relay)
+                # Try to leave the DUT off before the next cycle. If the previous
+                # cycle also failed to boot, the normal hold has already been
+                # tried once and did not lead anywhere, so hold longer (BUG0066)
+                # — an unverifiable force-off is worth escalating, not repeating.
+                hold = None
+                if args.force_off_escalate > 0 and _prev_cycle_no_boot(result):
+                    hold = args.force_off_escalate
+                    log.warning("Cycle %d: previous cycle also failed to boot — "
+                                "escalating the force-off hold to %.1f s", n, hold)
+                rec["force_off_sec"] = _force_off(args, relay, hold)
             return rec
 
         log.info("Cycle %d: DUT alive in %.1f s", n, boot_t)
@@ -409,7 +426,7 @@ def run_one_cycle(
             log.error("Cycle %d: --debug active — leaving relay/DUT state as-is "
                        "for inspection (NOT forcing off)", n)
         else:
-            _force_off(args, relay)
+            rec["force_off_sec"] = _force_off(args, relay)
         return rec
 
     # ── 4. Shutdown (SSH -> ATX soft -> force-off -> time-based) ─────────
@@ -565,16 +582,31 @@ def _run_calibrate_phase(
     return False
 
 
-def _force_off(args: argparse.Namespace, relay: RelayController) -> None:
-    """Best-effort force power off before next cycle."""
+def _prev_cycle_no_boot(result: dict) -> bool:
+    """True when the cycle before this one also ended without a boot."""
+    cycles = (result or {}).get("cycles") or []
+    return bool(cycles) and cycles[-1].get("verdict") == NO_BOOT
+
+
+def _force_off(args: argparse.Namespace, relay: RelayController,
+               duration: float = None) -> float:
+    """Best-effort force power off before next cycle.
+
+    Returns the hold time commanded, so the cycle record can state what was
+    asked for. It cannot state what happened: the relay is an output only
+    (BUG0066), so "force-off issued" is never the same claim as "DUT powered
+    down".
+    """
+    hold = config.ATX_LONG_PRESS_SEC if duration is None else duration
     try:
         if args.type == "ATX":
-            relay.atx_force_off(config.ATX_LONG_PRESS_SEC)
+            relay.atx_force_off(hold)
         else:
             relay.at_power_off()
         time.sleep(config.OFF_TIME_SEC)
     except Exception as exc:
         log.error("Force-off error: %s", exc)
+    return hold
 
 
 # ── summary helpers ───────────────────────────────────────────────────────────

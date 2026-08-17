@@ -52,6 +52,20 @@ RELAY_ACTIVE_LOW = True     # True for most RPi relay modules (LOW = relay ON)
 ATX_SHORT_PRESS_SEC = 0.5   # Power on, or request soft shutdown (single button tap)
 ATX_LONG_PRESS_SEC  = 5.0   # Force power off, ignores OS state (>=4 s per ATX spec)
 
+# CLI: --force-off-escalate    Hold time used for the force-off that follows a
+# cycle which already failed to boot. 0 disables escalation (always use
+# ATX_LONG_PRESS_SEC).
+#
+# BUG0066: relay control is open-loop — the framework can command a force-off
+# but has no way to observe whether the DUT actually powered down, so a run
+# where every force-off silently did nothing looks identical in the log to one
+# where every force-off worked. A longer hold on the retry costs 5 s in the only
+# situation where something is already wrong, and makes the next run evidence:
+# if 10 s recovers a DUT that 5 s did not, press duration was the cause; if it
+# does not, press duration is excluded and the platform's power-button override
+# (BIOS / BMC-mediated front panel) is the place to look.
+ATX_FORCE_OFF_ESCALATE_SEC = 10.0
+
 # ---------- Test parameters ----------
 CYCLES        = 1000        # CLI: --cycles   Total counted cycles to run
 ON_TIME_SEC   = 90          # CLI: --on   Phase 2: how long to keep DUT on after boot.

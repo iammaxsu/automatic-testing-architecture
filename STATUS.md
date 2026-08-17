@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-08-17 08:39 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-08-17 08:55 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -150,14 +150,14 @@ pie showData title Requirements by status
 
 ## Bugs
 
-**Total:** 65
+**Total:** 66
 
 ### By status
 
 | Status | Count |
 | --- | --- |
 | open | 14 |
-| in-progress | 1 |
+| in-progress | 2 |
 | resolved | 38 |
 | closed | 10 |
 | invalid | 2 |
@@ -165,7 +165,7 @@ pie showData title Requirements by status
 ```mermaid
 pie showData title Bugs by status
     "open" : 14
-    "in-progress" : 1
+    "in-progress" : 2
     "resolved" : 38
     "closed" : 10
     "invalid" : 2
@@ -175,13 +175,13 @@ pie showData title Bugs by status
 
 | OS | Count |
 | --- | --- |
-| Ubuntu 24.04 LTS | 39 |
-| Ubuntu 26.04 LTS | 22 |
+| Ubuntu 24.04 LTS | 40 |
+| Ubuntu 26.04 LTS | 23 |
 | Windows 11 | 13 |
 | Windows 11 (zh-TW) | 2 |
+| Windows | 2 |
 | Windows 11 (English / en-US) | 1 |
 | Windows 11 (Traditional Chinese / zh-TW) | 1 |
-| Windows | 1 |
 
 ### Open bugs (oldest first)
 
@@ -202,6 +202,7 @@ pie showData title Bugs by status
 | [BUG0036](bugs/open/BUG0036-reboot-slow-boot-misjudged-dead.md) | 2026-06-30 | in-progress | `reboot.py` misjudges a slow-booting DUT as dead |
 | [BUG0046](bugs/open/BUG0046-calibrate-no-boot-power-down-race.md) | 2026-08-03 | open | isolated NO_BOOT during calibration; off-time is measured from network-offline, not confirmed power-off |
 | [BUG0057](bugs/open/BUG0057-report-labelled-with-stale-session-id.md) | 2026-08-11 | open | a re-run is labelled with the previous invocation's session id |
+| [BUG0066](bugs/open/BUG0066-force-off-is-open-loop.md) | 2026-08-17 | in-progress | the force-off is commanded, never confirmed |
 
 ## Traceability
 
@@ -235,6 +236,7 @@ pie showData title Bugs by status
 | FWK028 | [BUG0059](bugs/closed/BUG0059-top-level-local-destroyed-the-report.md) | resolved |
 | FWK028 | [BUG0063](bugs/closed/BUG0063-method-not-recorded-in-artefacts.md) | resolved |
 | FWK028 | [BUG0065](bugs/closed/BUG0065-dev-detect-harness-stale-after-det002.md) | resolved |
+| FWK028 | [BUG0066](bugs/open/BUG0066-force-off-is-open-loop.md) | in-progress |
 | FWK029 | [BUG0023](bugs/closed/BUG0023-log-dir-console-output.md) | resolved |
 | FWK029 | [BUG0047](bugs/closed/BUG0047-net019-unmatched-mac-entry-silent.md) | resolved |
 | FWK031 | [BUG0034](bugs/closed/BUG0034-reboot-os-probe-before-init-dut.md) | resolved |
@@ -283,6 +285,7 @@ pie showData title Bugs by status
 | LOG023 | [BUG0035](bugs/closed/BUG0035-result-json-write-crash-loses-run.md) | resolved |
 | LOG023 | [BUG0041](bugs/closed/BUG0041-explicit-cycles-ignored-on-resume.md) | resolved |
 | LOG023 | [BUG0057](bugs/open/BUG0057-report-labelled-with-stale-session-id.md) | open |
+| LOG023 | [BUG0066](bugs/open/BUG0066-force-off-is-open-loop.md) | in-progress |
 | LOG025 | [BUG0041](bugs/closed/BUG0041-explicit-cycles-ignored-on-resume.md) | resolved |
 | LOG025 | [BUG0042](bugs/closed/BUG0042-python-logs-follow-cwd.md) | resolved |
 | LOG026 | [BUG0042](bugs/closed/BUG0042-python-logs-follow-cwd.md) | resolved |
@@ -320,10 +323,14 @@ pie showData title Bugs by status
 | NET018 | [BUG0054](bugs/closed/BUG0054-jumbo-ping-trips-err-trap.md) | resolved |
 | NET018 | [BUG0061](bugs/closed/BUG0061-tcp-threshold-above-physical-ceiling.md) | resolved |
 | NET019 | [BUG0047](bugs/closed/BUG0047-net019-unmatched-mac-entry-silent.md) | resolved |
+| PWR001 | [BUG0066](bugs/open/BUG0066-force-off-is-open-loop.md) | in-progress |
+| PWR003 | [BUG0066](bugs/open/BUG0066-force-off-is-open-loop.md) | in-progress |
 | PWR004 | [BUG0046](bugs/open/BUG0046-calibrate-no-boot-power-down-race.md) | open |
+| PWR004 | [BUG0066](bugs/open/BUG0066-force-off-is-open-loop.md) | in-progress |
 | PWR009 | [BUG0025](bugs/closed/BUG0025-power-cycle-msg-notification-not-shown.md) | resolved |
 | PWR009 | [BUG0033](bugs/closed/BUG0033-ssh-changed-host-key-blocks-all-cycles.md) | resolved |
 | PWR009 | [BUG0064](bugs/closed/BUG0064-windows-startup-repair-traps-power-cycle.md) | resolved |
+| PWR009 | [BUG0066](bugs/open/BUG0066-force-off-is-open-loop.md) | in-progress |
 | PWR011 | [BUG0025](bugs/closed/BUG0025-power-cycle-msg-notification-not-shown.md) | resolved |
 | PWR011 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
 | PWR011 | [BUG0027](bugs/closed/BUG0027-reboot-py-boot-time-sec-measurement-defect.md) | resolved |
@@ -360,9 +367,7 @@ _(may indicate untested code paths — worth a review)_
 | [FUN007](requirements/FUN007.md) | implemented | Windows PowerShell Shared Function Library |
 | [FWK002](requirements/FWK002.md) | implemented | Cross-Language Naming Conventions |
 | [FWK030](requirements/FWK030.md) | implemented | Two-Phase Consecutive-Failure Stop Policy |
-| [PWR001](requirements/PWR001.md) | implemented | AT and ATX PSU Type Selection |
 | [PWR002](requirements/PWR002.md) | implemented | GPIO Relay Abstraction |
-| [PWR003](requirements/PWR003.md) | implemented | Network-Based DUT Liveness Detection |
 | [PWR005](requirements/PWR005.md) | implemented | Structured result.json Output (LOG015 Compliance) |
 | [PWR007](requirements/PWR007.md) | implemented | Safety Controls: Consecutive Fail Abort and Graceful Stop |
 | [PWR008](requirements/PWR008.md) | implemented | Power Cycle Test Warmup and Initial-State Normalization |

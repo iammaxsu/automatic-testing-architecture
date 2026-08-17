@@ -48,7 +48,8 @@ class _DeadChecker:
 def _args():
     return argparse.Namespace(type="ATX", boot_timeout=5, cycles=10,
                               debug=True,          # skip the force-off branch
-                              dry_run=True, ssh_user="", no_check=False)
+                              dry_run=True, ssh_user="", no_check=False,
+                              force_off_escalate=10.0)
 
 
 class PhaseBannerTest(unittest.TestCase):

@@ -469,6 +469,10 @@ def _render(result: dict) -> str:
             screen = ("the Windows Startup Repair / Automatic Repair screen"
                       if "win" in _os else
                       "a boot menu or recovery shell (GRUB, initramfs, fsck prompt)")
+            holds = sorted({c.get("force_off_sec") for c in no_power
+                            if c.get("force_off_sec")})
+            escalated = (f' The force-off after these was held for '
+                         f'{", ".join(f"{h:g}" for h in holds)} s.' if holds else '')
             warnings.append(
                 f'{best} of those NO_BOOT cycles are consecutive. A power-on or '
                 f'relay fault is random; a DUT stopped at {screen} is not — it has '
@@ -476,6 +480,15 @@ def _render(result: dict) -> str:
                 f'more interrupted boot, which is what put it there. Check what is '
                 f'on the DUT\'s display before suspecting the relay, and see '
                 f'BUG0064 for the setup_dut settings that prevent it.'
+            )
+            warnings.append(
+                f'Note that the force-off between these cycles is commanded, not '
+                f'confirmed: the relay is an output only, so a force-off that the '
+                f'DUT ignored is indistinguishable here from one that worked, and '
+                f'the regular cycle timing above reflects the script\'s schedule '
+                f'rather than the DUT\'s behaviour (BUG0066).{escalated} Watching '
+                f'the DUT\'s display or power LED through one such cycle is '
+                f'currently the only way to tell.'
             )
     warning_banners = "".join(
         f'<div class="warning-banner">{w}</div>' for w in warnings
