@@ -50,7 +50,26 @@ cat > "${FAKEBIN}/poweroff" <<'EOF'
 echo "MOCK_POWEROFF $*" >> "${MOCK_LOG:?}"
 exit 0
 EOF
-chmod +x "${FAKEBIN}"/sudo "${FAKEBIN}"/reboot "${FAKEBIN}"/poweroff
+# DET002 needs a DMI view of installed memory. Without dmidecode the usability
+# check is UNKNOWN by design (never a silent Pass), which rolls up like INIT and
+# would make every scenario here exit 3 — the harness would be testing the
+# absence of a tool, not dev_detect.sh. Report one DIMM sized to just above the
+# running kernel's MemTotal so installed >= usable with a gap far below the
+# 2 GiB tolerance floor, i.e. a healthy machine.
+_mock_dimm_gb="$(awk '/^MemTotal:/ { g = int($2 / 1048576); if (g * 1048576 < $2) g++; print (g < 1 ? 1 : g); exit }' /proc/meminfo)"
+cat > "${FAKEBIN}/dmidecode" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+  *"-t memory"*|*"-t 17"*)
+    printf '%s\n' 'Handle 0x0040, DMI type 17, 40 bytes' \\
+                  'Memory Device' \\
+                  '	Size: ${_mock_dimm_gb} GB' \\
+                  '	Locator: DIMM_A1'
+    ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "${FAKEBIN}"/sudo "${FAKEBIN}"/reboot "${FAKEBIN}"/poweroff "${FAKEBIN}"/dmidecode
 
 export PATH="${FAKEBIN}:${PATH}"
 export MOCK_LOG
@@ -265,7 +284,7 @@ assert_contains "USB section names the PassMark target" "${out}" "Target: PassMa
 assert_contains "USB section counts exactly one PassMark plug" "${out}" "Count: 1"
 
 # ---------------------------------------------------------------------------
-section "standalone mode: autorun is attempted (mocked), no real systemd change"
+section "standalone mode: a single run stays in the foreground (BUG0038)"
 TOOL_PATH="${WORK}/standalone_tool"
 mkdir -p "${TOOL_PATH}"
 unit_before="$(systemd_unit_mtime)"
@@ -273,10 +292,13 @@ unit_before="$(systemd_unit_mtime)"
 mark_now
 code="$(run_dev_detect)"
 assert_eq "standalone single-target-loop run exit code (INIT on clean DUT)" "3" "${code}"
+# Boot persistence exists to keep a multi-boot campaign going. A one-shot run
+# finishes in this process, so installing a systemd unit would leave the DUT
+# re-running dev_detect at every boot forever (BUG0038).
 if grep -qE 'systemctl|systemd' "${MOCK_LOG}" 2>/dev/null; then
-  ok "autorun_setup attempted a systemd-related sudo call (mocked, no real systemd touched)"
+  bad "a single run installs no autorun unit (mock log: $(cat "${MOCK_LOG}"))"
 else
-  bad "autorun_setup attempted a systemd-related sudo call"
+  ok "a single run installs no autorun unit"
 fi
 assert_eq "no real systemd unit modification in standalone mode" "${unit_before}" "$(systemd_unit_mtime)"
 if grep -qE "MOCK_REBOOT|MOCK_POWEROFF" "${MOCK_LOG}" 2>/dev/null; then
@@ -289,6 +311,27 @@ if [[ -n "${sidecar}" && -f "${sidecar}" ]]; then
   ok "JSON sidecar also written in standalone mode"
 else
   bad "JSON sidecar also written in standalone mode"
+fi
+
+# ---------------------------------------------------------------------------
+section "standalone mode: a multi-boot campaign does install autorun"
+TOOL_PATH="${WORK}/campaign_tool"
+mkdir -p "${TOOL_PATH}"
+unit_before="$(systemd_unit_mtime)"
+: > "${MOCK_LOG}"
+mark_now
+code="$(run_dev_detect 2)"
+if grep -qE 'systemctl|systemd' "${MOCK_LOG}" 2>/dev/null; then
+  ok "autorun_setup attempted a systemd-related sudo call (mocked, no real systemd touched)"
+else
+  bad "autorun_setup attempted a systemd-related sudo call (mock log: $(cat "${MOCK_LOG}"))"
+fi
+assert_eq "no real systemd unit modification for the campaign either" \
+          "${unit_before}" "$(systemd_unit_mtime)"
+if grep -qE "MOCK_REBOOT|MOCK_POWEROFF" "${MOCK_LOG}" 2>/dev/null; then
+  ok "the campaign reboots to reach its second pass"
+else
+  bad "the campaign reboots to reach its second pass (mock log: $(cat "${MOCK_LOG}"))"
 fi
 
 # ---------------------------------------------------------------------------

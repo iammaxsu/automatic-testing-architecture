@@ -477,6 +477,52 @@ Set-ItemProperty -Path $wuPath -Name "AUOptions"                     -Value 2 -T
 Write-OK "Windows Update will not auto-reboot during tests"
 
 
+# -- 7b. Startup Repair / boot-failure counting (BUG0064) ----------------------
+#
+# Windows counts consecutive unsuccessful boots and, after two, stops booting and
+# presents the Automatic Repair screen instead. A hard power-off applied while
+# Windows is still booting or shutting down counts as one of those.
+#
+# A power-cycle endurance test does exactly that: after a NO_BOOT the framework
+# force-offs to establish a known state, and one interrupted boot is enough to
+# arm the counter. Two make the DUT enter Startup Repair, which never brings the
+# network up, so the next cycle is also a NO_BOOT, which force-offs again -- the
+# run cannot escape, and the failure becomes permanent rather than intermittent.
+#
+# On a reference run this produced 39 NO_BOOTs out of 100 cycles: sporadic at
+# first, then 27 consecutive from cycle 74 to the end.
+#
+# This is the Windows counterpart of the GRUB menu-wait fix setup_dut.sh applies
+# to Linux DUTs (BUG0032): an unattended bench must never stop at a screen that
+# waits for an operator who is not there.
+
+Write-Step "7b / 12 Startup Repair (unattended boot)"
+
+$bcdOk = $true
+foreach ($pair in @(
+    @{ BcdArgs = @("/set", "{default}", "recoveryenabled", "No")
+       What    = "Automatic Repair disabled" },
+    @{ BcdArgs = @("/set", "{default}", "bootstatuspolicy", "IgnoreAllFailures")
+       What    = "boot-failure counting disabled" }
+)) {
+    & bcdedit.exe @($pair.BcdArgs) 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn "bcdedit $($pair.BcdArgs -join ' ') failed (exit $LASTEXITCODE)"
+        $bcdOk = $false
+    } else {
+        Write-OK $pair.What
+    }
+}
+if ($bcdOk) {
+    Write-OK "DUT boots past a failed boot instead of stopping at Startup Repair"
+} else {
+    Write-Warn "Startup Repair may still appear - run this script elevated to apply it"
+}
+# Restore with:
+#   bcdedit /set {default} recoveryenabled Yes
+#   bcdedit /deletevalue {default} bootstatuspolicy
+
+
 # -- 8. Auto-logon (optional) --------------------------------------------------
 
 Write-Step "8 / 12 Auto-logon"

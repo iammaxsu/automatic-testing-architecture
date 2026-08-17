@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-08-12 08:28 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-08-17 08:21 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -150,7 +150,7 @@ pie showData title Requirements by status
 
 ## Bugs
 
-**Total:** 63
+**Total:** 65
 
 ### By status
 
@@ -158,7 +158,7 @@ pie showData title Requirements by status
 | --- | --- |
 | open | 14 |
 | in-progress | 1 |
-| resolved | 36 |
+| resolved | 38 |
 | closed | 10 |
 | invalid | 2 |
 
@@ -166,7 +166,7 @@ pie showData title Requirements by status
 pie showData title Bugs by status
     "open" : 14
     "in-progress" : 1
-    "resolved" : 36
+    "resolved" : 38
     "closed" : 10
     "invalid" : 2
 ```
@@ -175,12 +175,13 @@ pie showData title Bugs by status
 
 | OS | Count |
 | --- | --- |
-| Ubuntu 24.04 LTS | 38 |
-| Ubuntu 26.04 LTS | 21 |
+| Ubuntu 24.04 LTS | 39 |
+| Ubuntu 26.04 LTS | 22 |
 | Windows 11 | 13 |
 | Windows 11 (zh-TW) | 2 |
 | Windows 11 (English / en-US) | 1 |
 | Windows 11 (Traditional Chinese / zh-TW) | 1 |
+| Windows | 1 |
 
 ### Open bugs (oldest first)
 
@@ -211,9 +212,11 @@ pie showData title Bugs by status
 | CMP005 | [BUG0011](bugs/closed/BUG0011-dev-detect-aborts-silently-when-an-upstream-detect.md) | closed |
 | DET002 | [BUG0039](bugs/closed/BUG0039-dimm-populated-but-not-usable-undetected.md) | resolved |
 | DET002 | [BUG0043](bugs/closed/BUG0043-function-py-unbound-module-logger.md) | resolved |
+| DET002 | [BUG0065](bugs/closed/BUG0065-dev-detect-harness-stale-after-det002.md) | resolved |
 | DET009 | [BUG0012](bugs/open/BUG0012-dev-detect-first-run-snapshot-vs-golden-template-n.md) | open |
 | DET012 | [BUG0038](bugs/closed/BUG0038-dev-detect-reruns-every-boot.md) | resolved |
 | DET013 | [BUG0038](bugs/closed/BUG0038-dev-detect-reruns-every-boot.md) | resolved |
+| DET013 | [BUG0065](bugs/closed/BUG0065-dev-detect-harness-stale-after-det002.md) | resolved |
 | FUN005 | [BUG0013](bugs/open/BUG0013-log-entries-do-not-include-log-level-prefix.md) | open |
 | FWK011 | [BUG0037](bugs/closed/BUG0037-net-test-local-unbound-var-kills-pair.md) | resolved |
 | FWK013 | [BUG0038](bugs/closed/BUG0038-dev-detect-reruns-every-boot.md) | resolved |
@@ -231,6 +234,7 @@ pie showData title Bugs by status
 | FWK028 | [BUG0055](bugs/closed/BUG0055-abort-note-duplicated-as-result-row.md) | resolved |
 | FWK028 | [BUG0059](bugs/closed/BUG0059-top-level-local-destroyed-the-report.md) | resolved |
 | FWK028 | [BUG0063](bugs/closed/BUG0063-method-not-recorded-in-artefacts.md) | resolved |
+| FWK028 | [BUG0065](bugs/closed/BUG0065-dev-detect-harness-stale-after-det002.md) | resolved |
 | FWK029 | [BUG0023](bugs/closed/BUG0023-log-dir-console-output.md) | resolved |
 | FWK029 | [BUG0047](bugs/closed/BUG0047-net019-unmatched-mac-entry-silent.md) | resolved |
 | FWK031 | [BUG0034](bugs/closed/BUG0034-reboot-os-probe-before-init-dut.md) | resolved |
@@ -242,6 +246,7 @@ pie showData title Bugs by status
 | FWK034 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
 | FWK035 | [BUG0033](bugs/closed/BUG0033-ssh-changed-host-key-blocks-all-cycles.md) | resolved |
 | FWK035 | [BUG0034](bugs/closed/BUG0034-reboot-os-probe-before-init-dut.md) | resolved |
+| FWK036 | [BUG0064](bugs/closed/BUG0064-windows-startup-repair-traps-power-cycle.md) | resolved |
 | FWK037 | [BUG0039](bugs/closed/BUG0039-dimm-populated-but-not-usable-undetected.md) | resolved |
 | FWK037 | [BUG0043](bugs/closed/BUG0043-function-py-unbound-module-logger.md) | resolved |
 | FWK037 | [BUG0062](bugs/closed/BUG0062-link-detail-not-recorded.md) | resolved |
@@ -318,6 +323,7 @@ pie showData title Bugs by status
 | PWR004 | [BUG0046](bugs/open/BUG0046-calibrate-no-boot-power-down-race.md) | open |
 | PWR009 | [BUG0025](bugs/closed/BUG0025-power-cycle-msg-notification-not-shown.md) | resolved |
 | PWR009 | [BUG0033](bugs/closed/BUG0033-ssh-changed-host-key-blocks-all-cycles.md) | resolved |
+| PWR009 | [BUG0064](bugs/closed/BUG0064-windows-startup-repair-traps-power-cycle.md) | resolved |
 | PWR011 | [BUG0025](bugs/closed/BUG0025-power-cycle-msg-notification-not-shown.md) | resolved |
 | PWR011 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
 | PWR011 | [BUG0027](bugs/closed/BUG0027-reboot-py-boot-time-sec-measurement-defect.md) | resolved |
@@ -335,7 +341,9 @@ pie showData title Bugs by status
 | PWR016 | [BUG0044](bugs/closed/BUG0044-calibrate-cycles-print-warmup-banner.md) | resolved |
 | PWR016 | [BUG0045](bugs/closed/BUG0045-report-shows-timeout-as-boot-time.md) | resolved |
 | PWR016 | [BUG0046](bugs/open/BUG0046-calibrate-no-boot-power-down-race.md) | open |
+| SET005 | [BUG0064](bugs/closed/BUG0064-windows-startup-repair-traps-power-cycle.md) | resolved |
 | SET007 | [BUG0032](bugs/closed/BUG0032-grub-menu-can-block-unattended-reboot-tests.md) | resolved |
+| SET007 | [BUG0064](bugs/closed/BUG0064-windows-startup-repair-traps-power-cycle.md) | resolved |
 | SLP001 | [BUG0020](bugs/open/BUG0020-sleep-test-not-yet-integrated-or-verified.md) | open |
 | SLP002 | [BUG0028](bugs/closed/BUG0028-sleep-test-detect-crashes-on-localized-windows.md) | resolved |
 | SLP003 | [BUG0028](bugs/closed/BUG0028-sleep-test-detect-crashes-on-localized-windows.md) | resolved |
@@ -359,6 +367,5 @@ _(may indicate untested code paths — worth a review)_
 | [PWR007](requirements/PWR007.md) | implemented | Safety Controls: Consecutive Fail Abort and Graceful Stop |
 | [PWR008](requirements/PWR008.md) | implemented | Power Cycle Test Warmup and Initial-State Normalization |
 | [PWR010](requirements/PWR010.md) | implemented | Cycle Phase Timing Model and Parameter Defaults |
-| [SET005](requirements/SET005.md) | implemented | Windows DUT Pre-test Bootstrap Script |
 | [SET006](requirements/SET006.md) | implemented | Dual-Layer Configuration: config.py as Default Reference |
 
