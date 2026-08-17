@@ -100,8 +100,9 @@ class LivenessChecker:
         Side effect: sets self.ping_seen_during_wait to True if the DUT responded
         to ping at any point during the wait. On a timeout (returns False) this
         lets the caller distinguish "the DUT was booting (ping came up) but SSH
-        was not ready in time" from "the DUT never responded at all (likely it
-        did not power on)".
+        was not ready in time" from "the DUT never responded at all". The second
+        is ambiguous on purpose: no power-on and a DUT stopped at a boot menu or
+        recovery screen are indistinguishable from the network (BUG0064).
         """
         deadline = time.monotonic() + timeout_sec
         self.ping_seen_during_wait = False

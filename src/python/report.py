@@ -436,17 +436,47 @@ def _render(result: dict) -> str:
             f'valid for what they measured, but this DUT is not running with all of '
             f'its installed memory.'
         )
-    # NO_BOOT that never even pinged: likely a failed power-on, not a slow boot.
+    # NO_BOOT that never even pinged: either the DUT did not power on, or it
+    # powered on into something that never brings the network up. Both look
+    # identical over the wire, so the report must not assert the first (BUG0064:
+    # the original wording sent the operator to check the relay while the DUT
+    # was actually sitting at the Windows Startup Repair screen).
     no_power = [c for c in cycles if c.get("no_boot_kind") == "no_power_on"]
     if no_power:
         np_cycles = ", ".join(str(c.get("n")) for c in no_power[:20])
         more = "" if len(no_power) <= 20 else f" (+{len(no_power) - 20} more)"
         warnings.append(
             f'{len(no_power)} NO_BOOT cycle(s) never responded to ping at all '
-            f'(cycles {np_cycles}{more}) — this looks like the DUT did not power on '
-            f'(check the power-button press / relay / DUT power state), NOT a '
-            f'boot-time timeout. Raising --boot-timeout will not help these.'
+            f'(cycles {np_cycles}{more}) — the DUT either did not power on, or '
+            f'powered on into a state with no network (a boot menu or recovery '
+            f'screen). Either way this is NOT a boot-time timeout: raising '
+            f'--boot-timeout will not help these.'
         )
+        # A power-on fault is random; a boot-blocking screen is sticky, because
+        # the force-off after each NO_BOOT is itself another interrupted boot.
+        # A long unbroken run therefore points at the screen, not the relay.
+        run = best = 0
+        last_np = None
+        for c in cycles:
+            if c.get("no_boot_kind") != "no_power_on":
+                continue
+            n = c.get("n")
+            run = run + 1 if last_np is not None and n == last_np + 1 else 1
+            last_np = n
+            best = max(best, run)
+        if best >= 3:
+            _os = str(cfg.get("dut_os", "")).lower()
+            screen = ("the Windows Startup Repair / Automatic Repair screen"
+                      if "win" in _os else
+                      "a boot menu or recovery shell (GRUB, initramfs, fsck prompt)")
+            warnings.append(
+                f'{best} of those NO_BOOT cycles are consecutive. A power-on or '
+                f'relay fault is random; a DUT stopped at {screen} is not — it has '
+                f'no network, so the cycle force-offs it, and that force-off is one '
+                f'more interrupted boot, which is what put it there. Check what is '
+                f'on the DUT\'s display before suspecting the relay, and see '
+                f'BUG0064 for the setup_dut settings that prevent it.'
+            )
     warning_banners = "".join(
         f'<div class="warning-banner">{w}</div>' for w in warnings
     )

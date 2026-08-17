@@ -331,10 +331,14 @@ def run_one_cycle(
 
         if not ok:
             rec["verdict"] = NO_BOOT
-            # Distinguish a slow-but-booting DUT from one that never powered on:
-            # if it responded to ping at any point it WAS coming up (SSH just
-            # wasn't ready in time → raise the timeout); if it never pinged it
-            # likely did not power on (check the power-button press / DUT state).
+            # Distinguish a slow-but-booting DUT from one that never reached the
+            # network at all: if it responded to ping at any point it WAS coming
+            # up (SSH just wasn't ready in time → raise the timeout).
+            #
+            # Silence is ambiguous and must be reported as such (BUG0064): a DUT
+            # that did not power on and a DUT stopped at a boot menu or recovery
+            # screen look identical from here. Naming only the first sends the
+            # operator to check the relay while the screen is the real cause.
             if getattr(checker, "ping_seen_during_wait", False):
                 rec["no_boot_kind"] = "slow_boot"
                 rec["notes"] = (
@@ -345,9 +349,10 @@ def run_one_cycle(
             else:
                 rec["no_boot_kind"] = "no_power_on"
                 rec["notes"] = (
-                    f"suspected no power-on: DUT never responded to ping within "
-                    f"{args.boot_timeout}s (check the power-button press / DUT power "
-                    f"state — not a boot-time timeout)"
+                    f"no network at all: DUT never responded to ping within "
+                    f"{args.boot_timeout}s — it either did not power on, or powered "
+                    f"on into a state with no network (boot menu / recovery screen). "
+                    f"Look at the DUT's display; not a boot-time timeout"
                 )
             log.warning("Cycle %d: NO_BOOT (%s)", n, rec["no_boot_kind"])
             if args.debug:

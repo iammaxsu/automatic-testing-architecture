@@ -374,8 +374,9 @@ def run_one_cycle(
                 rec["no_boot_kind"] = "no_power_on"
                 rec["notes"] = (
                     f"DUT never responded to ping within {args.boot_timeout}s after "
-                    f"the reboot command (did it actually reboot? — not a boot-time "
-                    f"timeout)"
+                    f"the reboot command — it either never rebooted, or came back "
+                    f"into a state with no network (boot menu / recovery screen, "
+                    f"BUG0064). Look at the DUT's display; not a boot-time timeout"
                 )
             log.warning("Cycle %d: NO_BOOT (%s, timeout %ds)",
                         n, rec["no_boot_kind"], args.boot_timeout)
