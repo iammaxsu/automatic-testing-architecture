@@ -97,19 +97,21 @@ could not make.
 
 ## Verification
 
-Pending on the bench. The immediate question is why a 5 s hold did not force the
-DUT off at the Automatic Repair screen, which is answerable by hand:
+The hand test this section used to ask for has been done: at the Automatic
+Repair screen a 10 s physical press powers the DUT off. The platform's override
+works, so the relay path is not excluded but the hold time was the immediate
+cause, and `ATX_LONG_PRESS_SEC` is set from that observation.
 
-1. Bring the DUT to the Automatic Repair screen.
-2. Press the **physical** power button for 10 s.
-   - Powers off → the platform's override works; the relay path is the suspect
-     (wiring, contact, GPIO drive, effective hold at the pin).
-   - Does not power off → the 4 s power-button override is not effective on this
-     platform in this state. Check BIOS setup for a power-button / override
-     option, and whether the front-panel button is mediated by the BMC or a CPLD
-     rather than wired to PWRBTN# directly.
-3. Repeat with the relay instead of a finger (`--dry-run` off, a single
-   force-off) to separate the two paths.
+Pending on the bench, from the next `power_cycle.py` run:
 
-Until that is answered, no code change can be verified — which is the point of
-this bug.
+1. No `NO_BOOT` tail. If one appears anyway, note whether the escalated 15 s
+   hold was reached (`force_off_sec` in `result.json`, and the report's banner
+   lists the holds used). Still stuck at 15 s implicates the relay path —
+   wiring, contact, GPIO drive, effective hold at the pin — and the next step is
+   to fire a single force-off at a DUT parked on that screen and watch it.
+2. The escalation is visible when it should be: a second consecutive failed boot
+   logs "escalating the force-off hold to 15.0 s".
+
+Neither of these verifies the force-off itself, which is the point of this bug
+and needs the power-state input above. What they verify is that the bench is no
+longer being defeated by a hold time.
