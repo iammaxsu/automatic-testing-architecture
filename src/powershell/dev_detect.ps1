@@ -5,7 +5,7 @@
 
 .DESCRIPTION
   - Ensures a "logs" folder beside this script.
-  - Loads config.ps1 if present beside this script (for $_date2 / $_newcount).
+  - Loads the shared settings file config.ps1 if present beside this script (SET001).
   - Runs five hardware checks and compares against golden reference files.
   - First run initialises each golden file from the current machine values.
   - Subsequent runs compare current values to goldens; deviations = FAIL.
@@ -15,16 +15,94 @@
   Designed to run at startup via Task Scheduler (as SYSTEM, no user logon
   needed).  Register via: setup_dut.ps1 -DevDetectScript PATH_TO_SCRIPT
 
+  DET013 run modes:
+    (default)        Standalone. Unchanged: re-invoked at every boot by the
+                      Task Scheduler entry registered via setup_dut.ps1; this
+                      script itself never reboots/powers off (it never has).
+    -SnapshotOnly     Same single pass; documents that an external
+                      orchestrator (e.g. power_cycle.py) owns the loop and
+                      power-cycling for this run. dev_detect.ps1 does not
+                      install or modify the Task Scheduler entry either way
+                      -- that remains setup_dut.ps1's job.
+
+  Every pass exits with a DET013-standard code and writes a JSON sidecar
+  next to its per-run .log file; see docs/dev_detect.md.
+
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File .\dev_detect.ps1
+
+.EXAMPLE
+  powershell -ExecutionPolicy Bypass -File .\dev_detect.ps1 -SnapshotOnly
 #>
+
+param(
+    [switch]$SnapshotOnly,
+    [Alias('h')][switch]$Help
+)
+
+# Accept Unix-style double-dash aliases and HARD-ERROR on anything else.
+# PowerShell binds -Help / -SnapshotOnly natively; any argument it could not
+# bind (e.g. --help, --snapshot-only, a positional count like "10", a typo)
+# lands in $args. The original script left $args unread, so unknown arguments
+# were silently swallowed and a normal detection pass ran anyway -- bumping the
+# counter and writing a misleading log. We now translate the known aliases and
+# reject everything else before any side effect occurs.
+$_show_help = [bool]$Help
+foreach ($_a in $args) {
+    switch -Regex ("$_a") {
+        '^(--help|-\?|/\?|/h|/help)$' { $_show_help = $true }
+        '^--snapshot-only$'           { $SnapshotOnly = $true }
+        default {
+            Write-Host "dev_detect.ps1: unrecognized argument '$_a'" -ForegroundColor Red
+            Write-Host "Run 'dev_detect.ps1 -Help' (or --help) for usage." -ForegroundColor Red
+            exit 64   # EX_USAGE; deliberately NOT a DET013 verdict (0/1/2/3)
+        }
+    }
+}
+
+if ($_show_help) {
+    @'
+Usage: dev_detect.ps1 [-SnapshotOnly|--snapshot-only] [-Help|-h|--help]
+
+Run modes:
+  (no flag)       Standalone mode (default). Re-invoked at every boot by the
+                  Task Scheduler entry (registered via setup_dut.ps1). This
+                  script performs one pass and exits either way; it has no
+                  self-triggered reboot/poweroff to suppress.
+  -SnapshotOnly   Documents that an external orchestrator (e.g.
+  --snapshot-only power_cycle.py) owns the loop/power-cycling for this run.
+                  Behaves the same as default mode (see above) -- the flag
+                  exists for parity with dev_detect.sh and so the JSON
+                  sidecar can record which mode produced a given pass.
+
+Other options:
+  -Help, -h       Show this help and exit. --help is also accepted.
+
+Note: this PowerShell port performs exactly ONE pass per invocation; the
+repeat/reboot loop is owned by Task Scheduler (standalone) or an external
+orchestrator (snapshot). It does NOT accept a pass-count argument the way
+dev_detect.sh does -- see docs/dev_detect.md.
+
+Exit codes:
+  0  Pass   - every check matches its existing golden reference
+  1  Fail   - at least one check deviates from its golden reference
+  2  Error  - a check could not run
+  3  INIT   - at least one golden did not exist yet and was just created
+             (not a verified pass), and no check failed
+  64 Usage  - unrecognized command-line argument (no pass run)
+
+Each pass also writes a JSON sidecar next to its per-run .log file; see
+docs/dev_detect.md for the schema.
+'@ | Write-Host
+    exit 0
+}
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # -- Version & shared library --------------------------------------------------
 
-$_script_ver                = '00.00.03'
+$_script_ver                = '00.00.07'
 $_requires_function_ps1_api = '00.00.01'
 
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -50,9 +128,18 @@ if (-not (Test-Path $_log_path)) {
     New-Item -Path $_log_path -ItemType Directory | Out-Null
 }
 
-# Optional: load config.ps1 beside this script (provides $_date2 / $_newcount)
+# Optional: load the shared settings file (config.ps1, SET001) if present.
 $_cfg = Resolve-FirstExisting -Paths @( (Join-Path $_script_root 'config.ps1') )
 if ($_cfg) { . $_cfg }
+
+# DET013: a freshly-created golden never verified anything -- report INIT,
+# not PASS, so the orchestrator can tell "just baselined" from "checked OK".
+function Get-DevDetectResultTag {
+    param([string]$CurrentScalar, [string]$GoldenScalar)
+    if ($script:_golden_was_init) { return 'INIT' }
+    if ($CurrentScalar -eq $GoldenScalar) { return 'Pass' }
+    return 'Fail'
+}
 
 # -- CPU check -----------------------------------------------------------------
 
@@ -72,7 +159,7 @@ function Invoke-CpuCheck {
     $goldenScalar  = Initialize-Golden -GoldenFileName 'golden_cpu.log' -CurrentScalar $currentScalar
     [pscustomobject]@{
         name           = 'cpu_model'
-        result_tag     = if ($currentScalar -eq $goldenScalar) { 'PASS' } else { 'FAIL' }
+        result_tag     = Get-DevDetectResultTag -CurrentScalar $currentScalar -GoldenScalar $goldenScalar
         content_text   = $currentText
         golden_scalar  = $goldenScalar
         current_scalar = $currentScalar
@@ -86,6 +173,7 @@ function Get-MemoryText {
     $totalGB    = [math]::Round($totalBytes / 1GB)
     $perDimms   = Get-CimInstance Win32_PhysicalMemory |
                     Select-Object Manufacturer,
+                        @{Name='PartNumber'; Expression={ if ($_.PartNumber) { $_.PartNumber.ToString().Trim() } else { 'Unknown' } }},
                         @{Name='CapacityGB'; Expression={[math]::Round($_.Capacity/1GB)}},
                         Speed
     return ("TotalPhysicalMemoryGB: {0}`r`n{1}" -f $totalGB, ($perDimms | Format-Table -AutoSize | Out-String).TrimEnd())
@@ -101,9 +189,30 @@ function Invoke-MemoryCheck {
     $goldenScalar  = Initialize-Golden -GoldenFileName 'golden_mem_total.log' -CurrentScalar $currentScalar
     [pscustomobject]@{
         name           = 'memory_total_gb'
-        result_tag     = if ($currentScalar -eq $goldenScalar) { 'PASS' } else { 'FAIL' }
+        result_tag     = Get-DevDetectResultTag -CurrentScalar $currentScalar -GoldenScalar $goldenScalar
         content_text   = $currentText
         golden_scalar  = $goldenScalar
+        current_scalar = $currentScalar
+    }
+}
+
+# DET002/BUG0039: an INTRINSIC check -- its verdict comes from the check itself,
+# not from a golden comparison, so a populated-but-untrained DIMM FAILs on the
+# very first run (a golden captured while already faulty would hide it forever).
+# Windows shows the same discrepancy natively as "192 GB installed (128 GB
+# usable)"; installed = sum(Win32_PhysicalMemory.Capacity), usable =
+# Win32_ComputerSystem.TotalPhysicalMemory.
+function Invoke-MemoryUsabilityCheck {
+    $m = Get-MemoryUsability
+    $currentScalar = ('installed={0}GiB usable={1}GiB dimms={2}' -f `
+        (Format-GiB $m.InstalledBytes), (Format-GiB $m.UsableBytes), $m.DimmCount)
+    $text = ("Usability: {0} - {1}" -f $m.Result, $m.Reason)
+    Write-Host ("Memory     : {0} - {1}" -f $m.Result, $m.Reason)
+    [pscustomobject]@{
+        name           = 'memory_usable'
+        result_tag     = $m.Result          # Pass | Fail | UNKNOWN
+        content_text   = $text
+        golden_scalar  = $null
         current_scalar = $currentScalar
     }
 }
@@ -137,7 +246,7 @@ function Invoke-UsbCheck {
     $goldenScalar  = Initialize-Golden -GoldenFileName 'golden_usb_passmark_count.log' -CurrentScalar $currentScalar
     [pscustomobject]@{
         name           = 'usb_passmark_count'
-        result_tag     = if ($currentScalar -eq $goldenScalar) { 'PASS' } else { 'FAIL' }
+        result_tag     = Get-DevDetectResultTag -CurrentScalar $currentScalar -GoldenScalar $goldenScalar
         content_text   = $currentText
         golden_scalar  = $goldenScalar
         current_scalar = $currentScalar
@@ -198,10 +307,9 @@ function Get-NicText {
             InterfaceDescription = $desc
             Status               = $statusVal
             SpeedGbps            = $speedGbps
-            PcieGen              = if ($link) { $link.Gen }      else { 'Unknown' }
-            PcieWidth            = if ($link) { $link.Width }    else { 'Unknown' }
-            PcieSpeed            = if ($link) { $link.SpeedGTs } else { 'Unknown' }
-            PcieApproxGBs        = if ($link) { $link.ApproxGBs } else { 'Unknown' }
+            PcieGenSpeed         = if ($link) { $link.GenSpeed }       else { 'Unknown' }
+            PcieWidth            = if ($link) { $link.Width }          else { 'Unknown' }
+            PcieTheoreticalGBs   = if ($link) { $link.TheoreticalGBs } else { 'Unknown' }
         }
     }
     $detail     = ($rows | Format-Table -AutoSize | Out-String).TrimEnd()
@@ -226,7 +334,7 @@ function Invoke-NicCheck {
     $goldenScalar  = Initialize-Golden -GoldenFileName 'golden_nic_model_count.log' -CurrentScalar $currentScalar
     [pscustomobject]@{
         name           = 'nic_model_counts'
-        result_tag     = if ($currentScalar -eq $goldenScalar) { 'PASS' } else { 'FAIL' }
+        result_tag     = Get-DevDetectResultTag -CurrentScalar $currentScalar -GoldenScalar $goldenScalar
         content_text   = $currentText
         golden_scalar  = $goldenScalar
         current_scalar = $currentScalar
@@ -255,20 +363,20 @@ function Get-StorageText {
                  Select-Object -First 1
         if ($wdd) { $iid = $wdd.PNPDeviceID }
 
-        $pcieInfo = $null; $usbHint = $null; $sataRate = $null
+        $pcieInfo = $null; $usbHint = $null; $sataInfo = $null
         if ($iid) {
             if    ($bus -match 'NVMe|RAID|PCI') { $pcieInfo = Get-PcieLinkInfo -InstanceIdOrChild $iid }
             elseif ($bus -match 'USB')           { $usbHint  = Get-UsbVersionHint -InstanceId $iid }
-            elseif ($bus -match 'SATA|ATA')      { $sataRate = Get-SataLinkRate -InstanceId $iid }
+            elseif ($bus -match 'SATA|ATA' -and $wdd) { $sataInfo = Get-SataLinkInfo -PhysicalDriveIndex $wdd.Index }
         }
         [pscustomobject]@{
             Model         = $model; Bus = $bus; SizeGB = $szGB
-            PCIeGen       = if ($pcieInfo) { $pcieInfo.Gen }      else { $null }
-            PCIeWidth     = if ($pcieInfo) { $pcieInfo.Width }    else { $null }
-            PCIeSpeed     = if ($pcieInfo) { $pcieInfo.SpeedGTs } else { $null }
-            PCIeApproxGBs = if ($pcieInfo) { $pcieInfo.ApproxGBs } else { $null }
+            PCIeGenSpeed       = if ($pcieInfo) { $pcieInfo.GenSpeed }       else { $null }
+            PCIeWidth          = if ($pcieInfo) { $pcieInfo.Width }          else { $null }
+            PCIeTheoreticalGBs = if ($pcieInfo) { $pcieInfo.TheoreticalGBs } else { $null }
             UsbVersion    = $usbHint
-            SataLink      = $sataRate
+            SataProto     = if ($sataInfo) { $sataInfo.Proto }    else { $null }
+            SataLink      = if ($sataInfo) { $sataInfo.CurLabel } else { $null }
         }
     }
     $detail = ($rows | Format-Table -AutoSize | Out-String).TrimEnd()
@@ -299,7 +407,7 @@ function Invoke-StorageCheck {
     $goldenScalar  = Initialize-Golden -GoldenFileName 'golden_storage_model_bus_count.log' -CurrentScalar $currentScalar
     [pscustomobject]@{
         name           = 'storage_model_bus_counts'
-        result_tag     = if ($currentScalar -eq $goldenScalar) { 'PASS' } else { 'FAIL' }
+        result_tag     = Get-DevDetectResultTag -CurrentScalar $currentScalar -GoldenScalar $goldenScalar
         content_text   = $currentText
         golden_scalar  = $goldenScalar
         current_scalar = $currentScalar
@@ -311,18 +419,70 @@ function Invoke-StorageCheck {
 $_date2 = Get-Date2
 $_count = Get-NextCount
 
+# FWK037: show the system configuration this run was produced on.
+Write-Host ""
+Write-Host (Get-SystemInfoText)
+Write-Host ""
+
 $_results  = @()
 $_results += Invoke-CpuCheck
 $_results += Invoke-MemoryCheck
+$_results += Invoke-MemoryUsabilityCheck
 $_results += Invoke-UsbCheck
 $_results += Invoke-NicCheck
 $_results += Invoke-StorageCheck
 
-$_overall_tag  = if (@($_results | Where-Object { $_.result_tag -ne 'PASS' }).Count -eq 0) { 'PASS' } else { 'FAIL' }
+# DET013: precedence mirrors dev_detect.sh -- Fail beats INIT beats Pass.
+# UNKNOWN (DET002: usability could not be determined) rolls up like INIT so it
+# is never reported as a silent Pass.
+# (Error is reserved for a check that threw; CIM/exception failures above
+# already propagate via $ErrorActionPreference = 'Stop' rather than landing
+# here as a result_tag, so it is not assigned below.)
+if     (@($_results | Where-Object { $_.result_tag -eq 'Fail' }).Count -gt 0) { $_overall_tag = 'Fail' }
+elseif (@($_results | Where-Object { $_.result_tag -in @('INIT','UNKNOWN') }).Count -gt 0) { $_overall_tag = 'INIT' }
+else                                                                          { $_overall_tag = 'Pass' }
+
+$_exit_code = switch ($_overall_tag) {
+    'Pass' { 0 }
+    'Fail' { 1 }
+    'INIT' { 3 }
+    default { 2 }
+}
 
 $_per_run_path = Write-CombinedPerRunLog -Count $_count -Date2 $_date2 -OverallTag $_overall_tag -Results $_results
 Add-CombinedSummary                  -Count $_count -Date2 $_date2 -OverallTag $_overall_tag -Results $_results
 
+# DET013 / contract-alignment-plan Layer 2: JSON sidecar, additive to the
+# existing per-run .log file. Each component now carries the full
+# { result, current, golden } triple instead of a bare result tag, so the
+# orchestrator gets per-component comparison without parsing any text. On an
+# INIT pass no golden existed yet, so golden is emitted as null (the scalar
+# we hold is the just-baselined value, not something we compared against).
+$_components = [ordered]@{}
+foreach ($r in $_results) {
+    $_components[$r.name] = [ordered]@{
+        result  = $r.result_tag
+        current = $r.current_scalar
+        golden  = $(if ($r.result_tag -eq 'INIT') { $null } else { $r.golden_scalar })
+    }
+}
+$_sidecar_path = Join-Path $_log_path ('{0}_{1}_{2}.json' -f $_count, $_date2, $_overall_tag)
+[ordered]@{
+    schema_version = '2.0'
+    session_id     = $_date2
+    k              = $_count
+    m              = $null
+    result         = $_overall_tag
+    timestamp      = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    log_path       = $_per_run_path
+    mode           = $(if ($SnapshotOnly) { 'snapshot' } else { 'standalone' })
+    system_info    = (Get-SystemInfo)   # FWK037: configuration this run ran on
+    components     = $_components
+} | ConvertTo-Json -Depth 6 | Set-Content -Path $_sidecar_path -Encoding UTF8
+
 Write-Host ("Overall    : {0}" -f $_overall_tag)
 Write-Host ("Per-run log: {0}" -f $_per_run_path)
+Write-Host ("Sidecar    : {0}" -f $_sidecar_path)
 Write-Host ("Summary log: {0}" -f $_summary_file)
+
+exit $_exit_code

@@ -92,9 +92,12 @@ $ErrorActionPreference = 'Stop'
 
 # -- Version & defaults --------------------------------------------------------
 
-$_script_ver                = '00.00.13'
+$_script_ver                = '00.00.14'
 $_requires_function_ps1_api = '00.00.01'
-$_default_cycles            = 1000   # used when run with no -Cycles and no test in progress
+
+# Hard fallbacks, used only if config.ps1 is missing or a value is unset.
+$_def_cycles     = 1000   # used when run with no -Cycles and no test in progress
+$_def_settle_sec = 30     # countdown shown before each reboot fires
 
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 
@@ -104,6 +107,27 @@ if (-not (Test-Path $_fn)) { Write-Error "function.ps1 not found at $_fn"; exit 
 if ($script:_function_ps1_api -lt $_requires_function_ps1_api) {
     Write-Error "function.ps1 API '$($script:_function_ps1_api)' is too old; need '$_requires_function_ps1_api'"
     exit 1
+}
+
+# -- Config file (SET001) ------------------------------------------------------
+# Tunable defaults live in the shared config.ps1 ($_reboot_*); a command-line
+# parameter overrides them (it wins only when explicitly passed).  config.ps1 is
+# side-effect free, so loading it is safe even on the Task Scheduler -Resume path.
+$_cfg_file = Join-Path $_script_root 'config.ps1'
+if (Test-Path $_cfg_file) {
+    try { . $_cfg_file } catch { Write-Warning "Could not load config.ps1: $($_.Exception.Message)" }
+}
+
+function Get-ConfigValue {
+    param([string]$Name, $Fallback)
+    $v = Get-Variable -Name $Name -Scope Script -ErrorAction SilentlyContinue
+    if ($null -ne $v -and $null -ne $v.Value -and "$($v.Value)" -ne '') { return $v.Value }
+    return $Fallback
+}
+
+$_default_cycles = [int](Get-ConfigValue '_reboot_cycles'     $_def_cycles)
+if (-not $PSBoundParameters.ContainsKey('Settle')) {
+    $Settle = [int](Get-ConfigValue '_reboot_settle_sec' $_def_settle_sec)
 }
 
 # -- Paths ---------------------------------------------------------------------

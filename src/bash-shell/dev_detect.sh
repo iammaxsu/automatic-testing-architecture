@@ -1,4 +1,51 @@
 #!/usr/bin/env bash
+# ---------- --help / -h (DET013): answer before requiring root ----------
+# Checked first so a user can see usage without sudo/root.
+for _arg in "$@"; do
+  case "${_arg}" in
+    --help|-h)
+      cat <<'USAGE'
+Usage: dev_detect.sh [N] [options]
+
+  N                     Number of detection passes to run across reboots
+                        (standalone mode only; default 1).
+
+Run modes:
+  (no flag)             Standalone mode (default). The script owns its own
+                        persistent loop: installs a systemd autorun service
+                        and reboots/powers off itself between passes until
+                        N passes have run.
+  --snapshot-only       Run exactly ONE detection pass and exit. Does NOT
+                        install autorun and does NOT reboot/poweroff.
+                        Intended for use under an external orchestrator
+                        (e.g. power_cycle.py) that already owns the
+                        power-cycle loop.
+
+Other options:
+  --power-cycle         In standalone mode, use poweroff instead of reboot
+                        between passes (default: reboot).
+  --vpu-check           Enable the optional VPU (PCIe device 1ffc) check.
+  --vpu-vid VID         VPU vendor:device ID to match (default: 1ffc).
+  --vpu-count N         Expected VPU device count (default: 18).
+  --vpu-speed SPEED     Expected PCIe link speed, e.g. 8GT/s (default: 8GT/s).
+  --vpu-width WIDTH     Expected PCIe link width, e.g. x2 (default: x2).
+  --help, -h            Show this help and exit.
+
+Exit codes (every pass, both modes):
+  0  Pass   - output matches an existing golden reference
+  1  Fail   - output deviates from an existing golden reference
+  2  Error  - detection could not run
+  3  INIT   - no golden existed; one was just created (not a verified pass)
+  64 Usage  - unrecognized command-line argument (no pass run)
+
+Each pass also writes a JSON sidecar next to its .log file; see
+docs/dev_detect.md for the schema.
+USAGE
+      exit 0
+      ;;
+  esac
+done
+
 # ---------- Self-elevate to root (FWK025) ----------
 # This test reads SMBIOS/USB descriptors that require root.
 # If invoked as a non-root user, re-execute under sudo, preserving
@@ -11,7 +58,7 @@ fi
 set -Eeuo pipefail
 
 export _dev_detect_version
-: "${_dev_detect_version:="00.00.04"}"
+: "${_dev_detect_version:="00.00.08"}"
 #: "${_dev_detect_requires_config_api_version:=00.00.01}"
 #: "${_dev_detect_requires_function_api_version:=00.00.01}"
 
@@ -45,11 +92,20 @@ find_and_source "function.sh"
 # dev_detect reboots the machine multiple times. Each run's EXIT trap fires
 # before the reboot, so logs get readable by the login user even between
 # reboots or if the final run (generate_dev_detect_report) never completes.
-trap 'fix_log_permissions "${_log_dir:-}" deep' EXIT
+#
+# _log_dir is not assigned until log_dir() runs further below, so any exit
+# before that point (e.g. check_api_versions's exit 63, or a CLI usage
+# error) used to hit fix_log_permissions with $1 expanding to "" and its
+# own "${1:-${_log_dir}}" fallback then reading a still-unbound _log_dir
+# under `set -u`, which replaced the real exit code with 1. Bind it to ""
+# up front so every exit path -- not just the ones that happened to be
+# exercised before -- reports its real exit code.
+: "${_log_dir:=}"
+trap 'test_heartbeat_stop; fix_log_permissions "${_log_dir:-}" deep' EXIT
 
 # ---- API version check ----
 : "${_requires_config_api:=00.00.01}"
-: "${_requires_function_api:=00.00.02}"
+: "${_requires_function_api:=00.00.05}"
 check_api_versions "dev_detect.sh" "${_requires_config_api}" "${_requires_function_api}"
 
 #_function_require_versions "${_dev_detect_test_name}" "${_dev_detect_requires_config_api_version}" "${_dev_detect_requires_function_api_version}" "${_dev_detect_api_version}"
@@ -72,21 +128,40 @@ _vpu_expect_width="x2"
 
 _reset_mode="reboot"   # reboot | power-cycle  (pass --power-cycle to switch)
 
+# DET013: snapshot mode hands the persistent loop over to an external
+# orchestrator (power_cycle.py). One pass, no autorun, no reboot/poweroff.
+_snapshot_only=0
+
 _parse_vpu_flags_from_rem_args() {
   # Parse from REM_ARGS (provided by parse_common_cli in function.sh).
   # We do NOT mutate REM_ARGS because autorun_install_self_if_needed reuses it.
+  #
+  # DET013 / contract-alignment-plan Layer 1: any token here that is not one
+  # of the flags below (a typo, a stray positional, an unsupported option)
+  # used to be silently dropped and the script ran a normal pass anyway --
+  # the same class of bug fixed on the PowerShell side. Now it is a hard
+  # usage error, matching dev_detect.ps1's exit 64 (EX_USAGE).
   local i=0
+  local -a _unrecognized=()
   while [[ $i -lt ${#REM_ARGS[@]} ]]; do
     case "${REM_ARGS[$i]}" in
-      --vpu-check)    _vpu_enable=1 ;;
-      --vpu-vid)      ((i+=1)); _vpu_vid="${REM_ARGS[$i]:-$_vpu_vid}" ;;
-      --vpu-count)    ((i+=1)); _vpu_expect_count="${REM_ARGS[$i]:-$_vpu_expect_count}" ;;
-      --vpu-speed)    ((i+=1)); _vpu_expect_speed="${REM_ARGS[$i]:-$_vpu_expect_speed}" ;;
-      --vpu-width)    ((i+=1)); _vpu_expect_width="${REM_ARGS[$i]:-$_vpu_expect_width}" ;;
-      --power-cycle)  _reset_mode="power-cycle" ;;
+      --vpu-check)      _vpu_enable=1 ;;
+      --vpu-vid)        ((i+=1)); _vpu_vid="${REM_ARGS[$i]:-$_vpu_vid}" ;;
+      --vpu-count)      ((i+=1)); _vpu_expect_count="${REM_ARGS[$i]:-$_vpu_expect_count}" ;;
+      --vpu-speed)      ((i+=1)); _vpu_expect_speed="${REM_ARGS[$i]:-$_vpu_expect_speed}" ;;
+      --vpu-width)      ((i+=1)); _vpu_expect_width="${REM_ARGS[$i]:-$_vpu_expect_width}" ;;
+      --power-cycle)    _reset_mode="power-cycle" ;;
+      --snapshot-only)  _snapshot_only=1 ;;
+      *)                _unrecognized+=("${REM_ARGS[$i]}") ;;
     esac
     ((i+=1))
   done
+
+  if [[ ${#_unrecognized[@]} -gt 0 ]]; then
+    echo "dev_detect.sh: unrecognized argument(s): ${_unrecognized[*]}" >&2
+    echo "Run 'dev_detect.sh --help' for usage." >&2
+    exit 64   # EX_USAGE; deliberately NOT a DET013 verdict (0/1/2/3)
+  fi
 }
 
 _vpu_need_cmd() { command -v "$1" >/dev/null 2>&1 || return 1; }
@@ -306,6 +381,15 @@ detect_ram() {
     printf 'Total: %s\n' "$(free -h | awk '/^Mem:/{print $2}')"
   fi
 
+  # DET002/BUG0039: installed (DMI/SPD) vs usable (OS). A DIMM that failed
+  # training still shows up as populated below, so print both totals and the
+  # verdict -- "Populated: 6" alone would hide 2 unusable modules.
+  local _memchk _memres _memreason
+  _memchk="$(mem_usability_check)"
+  _memres="${_memchk%%|*}"
+  _memreason="$(printf '%s' "${_memchk}" | cut -d'|' -f7-)"
+  printf 'Usability: %s — %s\n' "${_memres}" "${_memreason}"
+
   if ! command -v dmidecode >/dev/null 2>&1; then
     echo "dmidecode: not found; cannot list slots/speed/voltage"
     return 0
@@ -494,6 +578,28 @@ detect_usb() {
       echo "Current=?  bcdUSB=?"
     fi
   done < <(LANG=C lsusb)
+
+  echo
+  echo "## PassMark USB Loopback Plug"
+  # DET004/DET012 parity: dev_detect.ps1 counts PassMark USB3.0 Loopback
+  # plugs by matching the device's FriendlyName. lsusb prints the same
+  # iProduct string descriptor (when the kernel can read it, i.e. running
+  # as root) as part of its one-line description, so match on that.
+  local _passmark_target="PassMark USB3.0 Loopback plug"
+  printf "Target: %s\n" "$_passmark_target"
+  local -a _passmark_lines=()
+  mapfile -t _passmark_lines < <(LANG=C lsusb | grep -i "passmark" || true)
+  printf "Count: %s\n" "${#_passmark_lines[@]}"
+  if [[ "${#_passmark_lines[@]}" -gt 0 ]]; then
+    printf "%-6s %-6s %-9s %s\n" "Bus" "Dev" "ID" "Description"
+    for line in "${_passmark_lines[@]}"; do
+      bus="$(echo "$line" | awk '{print $2}')"
+      dev="$(echo "$line" | awk '{print $4}' | sed 's/://')"
+      vidpid="$(echo "$line" | awk '{print $6}')"
+      desc="$(echo "$line" | cut -d" " -f7-)"
+      printf "%-6s %-6s %-9s %s\n" "$bus" "$dev" "$vidpid" "$desc"
+    done
+  fi
 }
 
 #detect_pcie_eth() {
@@ -650,6 +756,185 @@ detect_storage() {
 	done < <(lsblk -dn -o NAME,TRAN,MODEL | sed 's/ \+/ /g' | awk '$1!=""{print $1"|" $2 "|" substr($0,index($0,$3))}')
 }
 
+# ---------- Per-component scalars (contract-alignment-plan Layer 2) ----------
+# Each reduces a detect_* category to one normalized comparison string, the
+# same granularity dev_detect.ps1's Get-*Scalar functions already use. The
+# free-text detect_* output above stays in the human-readable snapshot/log;
+# only these scalars feed the per-component Pass/Fail verdict and the JSON
+# sidecar's "components" map.
+
+cpu_model_scalar() {
+  command -v lscpu >/dev/null 2>&1 || { echo "unknown"; return; }
+  local _model _cores _sockets
+  _model="$(lscpu | awk -F': +' '/Model name/{print $2; exit}')"
+  _cores="$(lscpu | awk -F': +' '/^CPU\(s\)/{print $2; exit}')"
+  _sockets="$(lscpu | awk -F': +' '/Socket\(s\)/{print $2; exit}')"
+  printf '%s | cores=%s | sockets=%s' "${_model:-unknown}" "${_cores:-unknown}" "${_sockets:-unknown}"
+}
+
+memory_total_gb_scalar() {
+  command -v free >/dev/null 2>&1 || { echo "unknown"; return; }
+  free -b | awk '/^Mem:/{printf "%d", $2/1024/1024/1024}'
+}
+
+nic_model_counts_scalar() {
+  command -v lspci >/dev/null 2>&1 || { echo "unknown"; return; }
+  LANG=C lspci -Dnn | grep -i 'Ethernet controller' \
+    | sed -n 's/^[^]]*]:[[:space:]]*\(.*\)$/\1/p' \
+    | sed -E 's/ \[[0-9a-fA-F]{4}:[0-9a-fA-F]{4}\]//; s/ \(rev [^)]*\)//' \
+    | sort | uniq -c \
+    | awk '{c=$1; $1=""; sub(/^ /,""); printf "%s x%s | ", $0, c}' \
+    | sed 's/ | $//'
+}
+
+usb_passmark_count_scalar() {
+  command -v lsusb >/dev/null 2>&1 || { echo "0"; return; }
+  LANG=C lsusb | grep -ci "passmark" || true
+}
+
+storage_model_bus_counts_scalar() {
+  command -v lsblk >/dev/null 2>&1 || { echo "unknown"; return; }
+  lsblk -dn -o TRAN,MODEL \
+    | awk '{tran=$1; $1=""; sub(/^ /,""); if ($0=="") $0="?"; printf "%s|%s\n", tran, $0}' \
+    | sort | uniq -c \
+    | awk '{c=$1; $1=""; sub(/^ /,""); printf "%s x%s | ", $0, c}' \
+    | sed 's/ | $//'
+}
+
+# bash-only extra component (no Windows counterpart) -- allowed under the
+# Layer 2 "component sets may differ" rule.
+pcie_gpu_scalar() {
+  command -v lspci >/dev/null 2>&1 || { echo "none"; return; }
+  LANG=C lspci -Dnn | grep -Ei 'VGA compatible controller|3D controller' \
+    | sed -n 's/^[^]]*]:[[:space:]]*\(.*\)$/\1/p' \
+    | sed -E 's/ \[[0-9a-fA-F]{4}:[0-9a-fA-F]{4}\]//; s/ \(rev [^)]*\)//' \
+    | sort | paste -sd '|' -
+}
+
+# Common-core component names, in the fixed order they appear in the JSON
+# sidecar -- bash-only extras (pcie_gpu) go last.
+_DEV_DETECT_COMPONENTS=(
+  cpu_model
+  memory_total_gb
+  memory_usable
+  nic_model_counts
+  usb_passmark_count
+  storage_model_bus_counts
+  pcie_gpu
+)
+
+declare -A _component_result=()
+declare -A _component_current=()
+declare -A _component_golden=()
+
+# Per-component golden init + compare, mirroring dev_detect.ps1's
+# Initialize-Golden / Get-DevDetectResultTag. $1=name $2=current_scalar.
+dev_detect_component_check() {
+  local name="$1" current="$2"
+  local golden_file="${golden_dir}/${name}.golden.txt"
+  local golden="" result
+  if [[ -s "${golden_file}" ]]; then
+    golden="$(cat "${golden_file}")"
+    if [[ "${current}" == "${golden}" ]]; then result="Pass"; else result="Fail"; fi
+  else
+    printf '%s' "${current}" > "${golden_file}"
+    golden=""
+    result="INIT"
+  fi
+  _component_result["${name}"]="${result}"
+  _component_current["${name}"]="${current}"
+  _component_golden["${name}"]="${golden}"
+}
+
+# DET002/BUG0039: an INTRINSIC component verdict -- decided by the check itself,
+# not by comparing against a golden. A populated-but-untrained DIMM must FAIL on
+# the very first run, and would be invisible to golden comparison if the golden
+# were captured while already faulty.
+dev_detect_component_set() {
+  local name="$1" result="$2" current="$3"
+  _component_result["${name}"]="${result}"
+  _component_current["${name}"]="${current}"
+  _component_golden["${name}"]=""
+}
+
+# DET002: cross-check DMI-populated memory against OS-usable memory.
+memory_usable_check() {
+  local chk res reason inst use cnt
+  chk="$(mem_usability_check)"
+  res="${chk%%|*}"
+  inst="$(printf '%s' "${chk}" | cut -d'|' -f2)"
+  use="$(printf '%s'  "${chk}" | cut -d'|' -f3)"
+  cnt="$(printf '%s'  "${chk}" | cut -d'|' -f4)"
+  reason="$(printf '%s' "${chk}" | cut -d'|' -f7-)"
+
+  local inst_h="?" use_h="?"
+  [[ -n "${inst}" ]] && inst_h="$(mem_bytes_to_gib "${inst}")"
+  [[ -n "${use}"  ]] && use_h="$(mem_bytes_to_gib "${use}")"
+
+  echo "[RAM] usability: ${res} — ${reason}"
+  # The scalar is the observable configuration, so it is also comparable/loggable.
+  dev_detect_component_set memory_usable "${res}" \
+    "installed=${inst_h}GiB usable=${use_h}GiB dimms=${cnt:-?}"
+}
+
+collect_component_scalars() {
+  _component_result=(); _component_current=(); _component_golden=()
+  dev_detect_component_check cpu_model               "$(cpu_model_scalar)"
+  dev_detect_component_check memory_total_gb          "$(memory_total_gb_scalar)"
+  memory_usable_check
+  dev_detect_component_check nic_model_counts         "$(nic_model_counts_scalar)"
+  dev_detect_component_check usb_passmark_count       "$(usb_passmark_count_scalar)"
+  dev_detect_component_check storage_model_bus_counts "$(storage_model_bus_counts_scalar)"
+  dev_detect_component_check pcie_gpu                 "$(pcie_gpu_scalar)"
+}
+
+# DET013: precedence is Fail > INIT > Pass, same rule as the overall verdict.
+# UNKNOWN (DET002: the usability check could not run because dmidecode was
+# unavailable) rolls up like INIT -- it must never be reported as a silent Pass.
+component_rollup_result() {
+  local has_fail=0 has_init=0 name
+  for name in "${_DEV_DETECT_COMPONENTS[@]}"; do
+    case "${_component_result[${name}]:-}" in
+      Fail)            has_fail=1 ;;
+      INIT|UNKNOWN)    has_init=1 ;;
+    esac
+  done
+  if   [[ "${has_fail}" -eq 1 ]]; then echo "Fail"
+  elif [[ "${has_init}" -eq 1 ]]; then echo "INIT"
+  else echo "Pass"
+  fi
+}
+
+_json_escape() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/ }"
+  printf '%s' "${s}"
+}
+
+# Builds the JSON sidecar's "components" object from the maps
+# collect_component_scalars populated. Empty ("{}") if detection never ran
+# (the Error path).
+build_components_json() {
+  local out="{" first=1 name r cur gold gold_json
+  for name in "${_DEV_DETECT_COMPONENTS[@]}"; do
+    [[ -v _component_result[${name}] ]] || continue
+    r="${_component_result[${name}]}"
+    cur="$(_json_escape "${_component_current[${name}]}")"
+    gold="${_component_golden[${name}]}"
+    if [[ "${r}" == "INIT" || -z "${gold}" ]]; then
+      gold_json="null"
+    else
+      gold_json="\"$(_json_escape "${gold}")\""
+    fi
+    [[ "${first}" -eq 1 ]] && first=0 || out+=","
+    out+="\"${name}\":{\"result\":\"${r}\",\"current\":\"${cur}\",\"golden\":${gold_json}}"
+  done
+  out+="}"
+  printf '%s' "${out}"
+}
+
 # 收集「一次完整快照」
 collect_inventory_snapshot() {
   local out="$1"
@@ -660,6 +945,10 @@ collect_inventory_snapshot() {
     printf 'Host: %s\n'   "$(hostname)"
     printf 'Kernel: %s\n' "$(uname -r)"
   } | tee -a "$out"
+
+  # FWK037: system configuration inventory, so the snapshot/report is
+  # self-describing (which CPU / how much RAM produced these results).
+  collect_system_info | tee -a "$out"
 
   # 每個 detect_* 都鏡寫到檔案 + 螢幕
   detect_cpu           | tee -a "$out"
@@ -679,6 +968,43 @@ compare_with_golden() {
     return 1
   fi
 }
+
+# DET013 / contract-alignment-plan Layer 2: JSON sidecar, canonical
+# machine-readable record for one pass. Written alongside (never replacing)
+# the existing .log/.txt/.diff files. "components" carries the
+# { result, current, golden } triple per common-core check (see
+# build_components_json), matching dev_detect.ps1's shape.
+emit_dev_detect_sidecar() {
+  local out_json="$1" k="$2" m="$3" result="$4" snapshot="$5" golden="$6" diffout="$7" components_json="$8"
+  local ts diff_json="null"
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  [[ -n "${diffout}" && -f "${diffout}" ]] && diff_json="\"${diffout}\""
+  cat > "${out_json}" <<JSONEOF
+{
+  "schema_version": "2.0",
+  "session_id": "${_session_id}",
+  "k": ${k},
+  "m": ${m},
+  "result": "${result}",
+  "timestamp": "${ts}",
+  "snapshot_path": "${snapshot}",
+  "golden_path": "${golden}",
+  "diff_path": ${diff_json},
+  "components": ${components_json}
+}
+JSONEOF
+}
+
+# DET013: map a pass result string to the standardised exit code.
+dev_detect_exit_code_for() {
+  case "$1" in
+    Pass) echo 0 ;;
+    Fail) echo 1 ;;
+    Error) echo 2 ;;
+    INIT) echo 3 ;;
+    *) echo 2 ;;
+  esac
+}
 # =============================================================================
 # ---- Loops (持久化) ----
 parse_common_cli "$@"
@@ -694,6 +1020,10 @@ fi
 log_dir "" 1
 log_root="${_session_log_dir}"
 
+# FWK038: liveness heartbeat — periodic proof the run has not hung.
+test_heartbeat_start "dev_detect"
+
+
 # --- single instance lock ---
 LOCK_DIR="${_log_dir}/runlocks"
 mkdir -p -- "${LOCK_DIR}"
@@ -703,17 +1033,40 @@ if ! flock -n 9; then
   exit 0
 fi
 
-# 第一次手動執行時，若沒裝過 systemd autorun，幫自己裝起來
-# 讓它在每次開機自動再跑一次，直到達到 m 次為止。
 _entry_full="$(readlink -f "${BASH_SOURCE[0]:-$0}")"
-autorun_setup "dev" "${_m}" "${_entry_full}" "${REM_ARGS[@]:-}"
+
+# DET013: snapshot mode hands the persistent loop to an external
+# orchestrator -- do not install autorun (it would race with the
+# orchestrator's own reboot/power-cycle control).
+#
+# Only install boot persistence for a MULTI-loop campaign (_m > 1): a single run
+# (_m == 1, the default) completes in one foreground pass and needs no boot
+# service. autorun_setup exists to guard against the operator starting an N-boot
+# campaign without persistence — that risk does not exist for a one-shot run, so
+# a plain `dev_detect.sh` stays purely foreground and touches no systemd unit.
+if [[ "${_snapshot_only}" -eq 0 && "${_m}" -gt 1 ]]; then
+  # 讓它在每次開機自動再跑一次，直到達到 m 次為止（僅多次 campaign 需要）。
+  autorun_setup "dev" "${_m}" "${_entry_full}" "${REM_ARGS[@]:-}"
+fi
 
 : "${_session_ts:=$(now_ts)}"
 _run_ts="${_session_ts}"
 
 # 測試名 & golden 路徑
+#
+# DET013: in --snapshot-only mode each invocation is a separate process with
+# its own fresh session (the orchestrator calls us once per power cycle), so
+# a session-scoped golden would never survive between calls -- every pass
+# would see no golden and report INIT forever, verifying nothing. Snapshot
+# mode therefore keeps the golden under the stable top-level log dir instead
+# of the per-session dir, so it persists across the whole orchestrated run.
+# Standalone mode is unchanged: golden stays session-scoped, as today.
 : "${_dev_detect_test_name:=dev_detect}"
-golden_dir="${log_root}/golden"
+if [[ "${_snapshot_only}" -eq 1 ]]; then
+  golden_dir="${_log_dir}/golden"
+else
+  golden_dir="${log_root}/golden"
+fi
 golden_tpl="${golden_dir}/${_dev_detect_test_name}.golden.txt"
 mkdir -p -- "${golden_dir}"
 
@@ -744,25 +1097,30 @@ for (( dev_loop=1; dev_loop<=_loops_this_run; dev_loop++ )); do
   tag="$(counter_next_tag)"; k="${tag%%/*}"; m="${tag##*/}"
   echo "[DEBUG] next_tag=${tag} (k=${k} m=${m})  session=${_session_id}"
   test_progress_set "dev_detect" "$k" "$m"
+  test_heartbeat_phase "loop ${k}/${m}"
   echo "[$tag] Device detect..." | tee -a "${_devlog}"
 
   now_snapshot="${log_root}/${_dev_detect_test_name}_snapshot_${k}_of_${m}_${_run_ts}.txt"
   diffout="${log_root}/${_dev_detect_test_name}_diff_${k}_of_${m}_${_run_ts}.diff"
 
-  if [[ ! -f "${golden_tpl}" ]]; then
-    collect_inventory_snapshot "${now_snapshot}"
-    cp -f -- "${now_snapshot}" "${golden_tpl}"
-    loop_result="INIT"
-	  { echo "--- Snapshot ${k}/${m} ---"; cat "${now_snapshot}"; } | tee -a "${_devlog}"
-  else
-    collect_inventory_snapshot "${now_snapshot}"
-    if compare_with_golden "${now_snapshot}" "${golden_tpl}" "${diffout}"; then
-      loop_result="Pass"
-    else
-      loop_result="Fail"
+  # DET013 / contract-alignment-plan Layer 2: the Pass/Fail/INIT verdict
+  # comes from the per-component scalar comparison (collect_component_scalars
+  # / component_rollup_result), the same granularity dev_detect.ps1 already
+  # uses -- not from the whole-file diff below, which is kept only as a
+  # human-readable artefact (snapshot_path/golden_path/diff_path stay in the
+  # sidecar, but no longer drive the verdict).
+  if collect_inventory_snapshot "${now_snapshot}"; then
+    collect_component_scalars
+    loop_result="$(component_rollup_result)"
+    if [[ ! -f "${golden_tpl}" ]]; then
+      cp -f -- "${now_snapshot}" "${golden_tpl}"
+    elif ! compare_with_golden "${now_snapshot}" "${golden_tpl}" "${diffout}"; then
       echo "[DIFF] -> ${diffout}" | tee -a "${_devlog}"
     fi
-		{ echo "--- Snapshot ${k}/${m} ---"; cat "${now_snapshot}"; } | tee -a "${_devlog}"
+    { echo "--- Snapshot ${k}/${m} ---"; cat "${now_snapshot}"; } | tee -a "${_devlog}"
+  else
+    loop_result="Error"
+    echo "[ERROR] collect_inventory_snapshot failed" | tee -a "${_devlog}"
   fi
 
 
@@ -791,11 +1149,29 @@ fi
     [[ -f "${diffout}" ]] && echo "Diff: ${diffout}"
   } > "${log_root}/${final_name}"
 
+  # DET013: machine-readable sidecar, additive to the text log above.
+  emit_dev_detect_sidecar \
+    "${log_root}/${_dev_detect_test_name}_${_session_id}_${k}_of_${m}_${loop_result}.json" \
+    "${k}" "${m}" "${loop_result}" "${now_snapshot}" "${golden_tpl}" \
+    "$( [[ -f "${diffout}" ]] && echo "${diffout}" )" \
+    "$(build_components_json)"
+  _last_loop_result="${loop_result}"
+
   counter_tick
 done
 
 echo "" | tee -a "${_devlog}"
 elp_time | tee -a "${_devlog}"
+
+_dev_detect_exit_code="$(dev_detect_exit_code_for "${_last_loop_result:-Error}")"
+
+# DET013: snapshot mode never installs autorun and never reboots/powers off --
+# loop count and power cycling belong to the external orchestrator.
+if [[ "${_snapshot_only}" -eq 1 ]]; then
+  echo "[INFO] --snapshot-only: pass complete (${_last_loop_result}). No autorun, no reboot."
+  test_progress_clear "dev_detect snapshot complete (${_last_loop_result})."
+  exit "${_dev_detect_exit_code}"
+fi
 
 # 是否已達成目標?
 if (( $(counter_is_done) == 1 )); then
@@ -804,7 +1180,7 @@ if (( $(counter_is_done) == 1 )); then
   echo "[INFO] Completed ${_m}/${_m}. Service disabled. No reboot."
   test_progress_clear "dev_detect completed ${_m}/${_m}. Safe to power off."
   generate_dev_detect_report "${log_root}" | tee -a "${_devlog}"
-  exit 0
+  exit "${_dev_detect_exit_code}"
 else
   # 未完成：等一會兒再重開，讓下一回合接續
   if [[ "${_reset_mode}" == "power-cycle" ]]; then

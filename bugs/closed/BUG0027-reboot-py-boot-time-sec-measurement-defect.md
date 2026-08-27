@@ -1,6 +1,6 @@
 ---
 id: BUG0027
-status: open
+status: resolved
 created: 2026-06-08
 os:
   - Windows 11
@@ -72,27 +72,36 @@ empirically (see PWR012 Implications #6).
 
 ## Fix
 
-Not yet implemented. Two compatible directions, either of which restores a
-metric consistent with PWR011's round-trip definition:
+Implemented 2026-06-25, doing both compatible directions from the original
+analysis:
 
-1. Stop using a fixed pre-poll sleep on the "wait for alive" path. Call
-   `wait_until_alive()` immediately after `wait_until_dead()` returns
-   (mirroring `power_cycle.py`'s immediate `wait_until_alive` call right after
-   the power-on action), and keep `--off` / `OFF_TIME_SEC` strictly as an
-   *inter-cycle* delay (as `power_cycle.py` already uses `args.off_time` at
-   `power_cycle.py:240`, after the cycle's verdict is recorded) — not as a
-   pre-measurement sleep.
-2. Independently of (1), redefine `boot_time_sec` as
-   `t_online - t_reboot_cmd` (both timestamps are already recorded in the
-   cycle record). This matches PWR011's canonical definition verbatim and
-   stays correct regardless of internal polling structure or sleep placement.
+1. **Removed the fixed pre-poll sleep.** `run_one_cycle()` no longer does
+   `time.sleep(args.off_time)` between `wait_until_dead()` and
+   `wait_until_alive()`. `wait_until_alive()` is now called immediately after
+   `wait_until_dead()` returns, mirroring `power_cycle.py`'s immediate
+   `wait_until_alive` call right after its power-on action.
+2. **`--off` / `OFF_TIME_SEC` is now strictly an inter-cycle delay.** It runs
+   *after* the cycle's verdict is recorded, at the end of `run_one_cycle()` —
+   the same placement `power_cycle.py` uses at `power_cycle.py:240` — instead
+   of before the boot-time poll. It no longer affects the measurement.
+3. **`boot_time_sec` is now `t_online - t_reboot_cmd`** in practice: tracked
+   via a `time.monotonic()` pair captured right when the SSH reboot command
+   is issued and right when `wait_until_alive()` returns, rather than trusting
+   that call's own internally-measured elapsed time. This matches PWR011's
+   round-trip definition verbatim and stays correct regardless of internal
+   polling structure or sleep placement, by construction.
 
-Doing both gives the most robust result: (1) removes the structural flaw, (2)
-makes the stored metric self-evidently equal to the spec's definition.
+Verified in-sandbox with a fake `LivenessChecker` that simulates a
+`wait_until_dead` + `wait_until_alive` sequence with non-trivial delays at
+each step: `boot_time_sec` reflects the sum of all elapsed phases (settle +
+offline-detect + boot-poll), not just the final poll call's own elapsed time
+as before. End-to-end `--dry-run --no-check` run still completes and renders
+an HTML report via `report.py`.
 
 ## Verification
 
-Re-run `reboot.py --cycles N --ssh-user … --host …` after the fix and confirm:
+Still pending: re-run `reboot.py --cycles N --ssh-user … --host …` against
+real Windows hardware and confirm:
 - `boot_time_sec` values show realistic variance (tens of seconds), comparable
   in order of magnitude to `power_cycle.py`'s boot-time statistics on the same
   hardware (here: median ~45.6 s, std-dev ~2.0 s) — not a near-constant ~1 s.

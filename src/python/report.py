@@ -40,6 +40,7 @@ import logging
 import math
 import statistics
 import sys
+from datetime import datetime
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -71,6 +72,19 @@ _FAIL_ORDER = ["NO_BOOT", "CRASH", "HANG_SHUTDOWN", "RELAY_ERROR", "SSH_ERROR"]
 
 def _verdict_colour(v: str) -> str:
     return _COLOUR.get(v, "#999")
+
+
+def _format_duration(started: str, ended: str) -> str:
+    """'Hh Mm Ss' between two LOG022-style timestamps ('-' if either is missing)."""
+    try:
+        delta_sec = (datetime.fromisoformat(ended) - datetime.fromisoformat(started)).total_seconds()
+    except (TypeError, ValueError):
+        return "-"
+    if delta_sec < 0:
+        return "-"
+    h, rem = divmod(int(delta_sec), 3600)
+    m, s   = divmod(rem, 60)
+    return f"{h}h {m}m {s}s" if h else f"{m}m {s}s"
 
 
 def generate_report(result: dict, output_path: str) -> None:
@@ -114,6 +128,24 @@ def _shutdown_method_counts(cycles: list) -> dict:
         if m:
             counts[m] = counts.get(m, 0) + 1
     return counts
+
+
+def _firmware_summary(cycles: list) -> dict:
+    """Latest BIOS/BMC version seen, plus whether either value changed mid-run
+    (PWR015) — a flip usually means a firmware update happened during the test,
+    not a detection glitch, and is worth flagging rather than just reporting
+    the last value silently.
+    """
+    bios_seen = [c["bios_version"] for c in cycles if c.get("bios_version")]
+    bmc_seen  = [c["bmc_version"]  for c in cycles if c.get("bmc_version")]
+    bmc_method = next((c["bmc_method"] for c in reversed(cycles) if c.get("bmc_method")), None)
+    return {
+        "bios_version":  bios_seen[-1] if bios_seen else "N/A",
+        "bmc_version":   bmc_seen[-1]  if bmc_seen  else "N/A",
+        "bmc_method":    bmc_method,
+        "bios_changed":  len(set(bios_seen)) > 1,
+        "bmc_changed":   len(set(bmc_seen)) > 1,
+    }
 
 
 def _boot_stats(values: list) -> dict:
@@ -216,9 +248,9 @@ def _streaks(cycles: list) -> dict:
 
 # -- chart data builders (Chart.js JS literals) --------------------------------
 
-def _boot_datasets(series: list, stats: dict) -> str:
-    """Datasets JS for the boot-time chart: raw points (normal/outlier),
-    moving average, and flat mean / +-3 sigma reference lines."""
+def _boot_datasets(series: list, stats: dict, value_label: str = "Boot time (s)") -> str:
+    """Datasets JS for a time-series chart (boot or shutdown): raw points
+    (normal/outlier), moving average, and flat mean / +-3 sigma reference lines."""
     if not series:
         return "[]"
 
@@ -245,7 +277,7 @@ def _boot_datasets(series: list, stats: dict) -> str:
 
     green = _verdict_colour("PASS")
     parts = [
-        f'{{label:"Boot time (s)",type:"scatter",data:{json.dumps(normal)},'
+        f'{{label:"{value_label}",type:"scatter",data:{json.dumps(normal)},'
         f'backgroundColor:"{green}",pointRadius:3,pointHoverRadius:5,order:3}}',
         f'{{label:"Moving avg (w={window})",type:"line",data:{json.dumps(ma)},'
         f'borderColor:"#2196f3",borderWidth:2,pointRadius:0,fill:false,'
@@ -315,11 +347,15 @@ def _render(result: dict) -> str:
     overall_col  = _verdict_colour(overall)
     started      = result.get("started_at", "-")
     ended        = result.get("ended_at", "-")
+    duration     = _format_duration(result.get("started_at"), result.get("ended_at"))
     total_ran    = summary.get("total_ran", len(cycles))
     total_target = summary.get("cycles_target", cfg.get("cycles_target", "-"))
     n_pass       = summary.get("pass", 0)
     n_fail       = summary.get("fail", 0)
     fb           = summary.get("fail_breakdown", {})
+
+    # Firmware versions (PWR015)
+    fw = _firmware_summary(cycles)
 
     # Analysis — boot time
     series   = _pass_boot_series(cycles)
@@ -336,11 +372,127 @@ def _render(result: dict) -> str:
     sd_series  = _shutdown_series(cycles)
     sd_values  = [y for _, y in sd_series]
     sd_stats   = _boot_stats(sd_values) if sd_values else {}
-    sd_ds      = _boot_datasets(sd_series, sd_stats) if sd_values else "[]"
+    sd_ds      = _boot_datasets(sd_series, sd_stats, "Shutdown time (s)") if sd_values else "[]"
     sd_fail_mk = _failure_markers(cycles)   # same failure positions
     method_counts = _shutdown_method_counts(cycles)
     has_shutdown  = bool(sd_series)
     has_methods   = bool(method_counts)
+
+    # Warning banners — surfaced ABOVE the summary cards so they can't be missed.
+    warnings = []
+    ssh_user = cfg.get("ssh_user")
+    if ssh_user and has_methods and method_counts.get("ssh", 0) == 0:
+        warnings.append(
+            f'--ssh-user "{ssh_user}" was configured, but the SSH shutdown command '
+            f'never succeeded in {sum(method_counts.values())} cycle(s) with a recorded '
+            f'shutdown — every cycle fell back to the ATX power button instead. '
+            f'Check the SSH username/credentials and that SSH is reachable on the DUT.'
+        )
+    if cfg.get("dut_os_source") == "assumed":
+        warnings.append(
+            f'DUT OS was not confirmed (no working --ssh-user/--dut-os probe) — '
+            f'"{cfg.get("dut_os", "-")}" is an unverified assumption from config.DUT_OS, '
+            f'used only for selecting the SSH shutdown command.'
+        )
+    if fw["bios_changed"]:
+        warnings.append(
+            'BIOS version changed during this run — if unexpected, check whether '
+            'a firmware update happened mid-test rather than treating boot-time '
+            'statistics as a single homogeneous population.'
+        )
+    if fw["bmc_changed"]:
+        warnings.append(
+            'BMC version changed during this run — if unexpected, check whether '
+            'a firmware update happened mid-test.'
+        )
+    debug_stop = result.get("debug_stop")
+    if debug_stop:
+        warnings.append(
+            f'--debug stopped this run immediately at cycle {debug_stop.get("n")} '
+            f'(verdict: {debug_stop.get("verdict") or "n/a"}) — the run is incomplete '
+            f'by design; relay/DUT state was left untouched for inspection.'
+        )
+    # Near-miss boots: PASSed but boot time was close to the timeout (the timeout
+    # may have been auto-raised). Surfacing them warns that the timeout was tight.
+    near_miss = [c for c in cycles if c.get("near_miss")]
+    if near_miss:
+        nm_cycles = ", ".join(str(c.get("n")) for c in near_miss[:20])
+        more = "" if len(near_miss) <= 20 else f" (+{len(near_miss) - 20} more)"
+        warnings.append(
+            f'{len(near_miss)} cycle(s) booted close to the boot timeout '
+            f'(cycles {nm_cycles}{more}). The boot timeout was raised automatically '
+            f'as this happened, but the DUT boot time is near the limit — consider a '
+            f'higher --boot-timeout / more --calibrate cycles, or investigate why some '
+            f'boots are slow.'
+        )
+    # FWK037/DET002: a populated-but-unusable DIMM is a hardware fault worth
+    # shouting about — it is easy to miss that "192 GB installed" is only
+    # "128 GB usable".
+    _si  = result.get("system_info") or {}
+    _mem = _si.get("memory") or {}
+    if _mem.get("result") == "Fail":
+        warnings.append(
+            f'Memory fault: {_mem.get("reason")}. The test results below are still '
+            f'valid for what they measured, but this DUT is not running with all of '
+            f'its installed memory.'
+        )
+    # NO_BOOT that never even pinged: either the DUT did not power on, or it
+    # powered on into something that never brings the network up. Both look
+    # identical over the wire, so the report must not assert the first (BUG0064:
+    # the original wording sent the operator to check the relay while the DUT
+    # was actually sitting at the Windows Startup Repair screen).
+    no_power = [c for c in cycles if c.get("no_boot_kind") == "no_power_on"]
+    if no_power:
+        np_cycles = ", ".join(str(c.get("n")) for c in no_power[:20])
+        more = "" if len(no_power) <= 20 else f" (+{len(no_power) - 20} more)"
+        warnings.append(
+            f'{len(no_power)} NO_BOOT cycle(s) never responded to ping at all '
+            f'(cycles {np_cycles}{more}) — the DUT either did not power on, or '
+            f'powered on into a state with no network (a boot menu or recovery '
+            f'screen). Either way this is NOT a boot-time timeout: raising '
+            f'--boot-timeout will not help these.'
+        )
+        # A power-on fault is random; a boot-blocking screen is sticky, because
+        # the force-off after each NO_BOOT is itself another interrupted boot.
+        # A long unbroken run therefore points at the screen, not the relay.
+        run = best = 0
+        last_np = None
+        for c in cycles:
+            if c.get("no_boot_kind") != "no_power_on":
+                continue
+            n = c.get("n")
+            run = run + 1 if last_np is not None and n == last_np + 1 else 1
+            last_np = n
+            best = max(best, run)
+        if best >= 3:
+            _os = str(cfg.get("dut_os", "")).lower()
+            screen = ("the Windows Startup Repair / Automatic Repair screen"
+                      if "win" in _os else
+                      "a boot menu or recovery shell (GRUB, initramfs, fsck prompt)")
+            holds = sorted({c.get("force_off_sec") for c in no_power
+                            if c.get("force_off_sec")})
+            escalated = (f' The force-off after these was held for '
+                         f'{", ".join(f"{h:g}" for h in holds)} s.' if holds else '')
+            warnings.append(
+                f'{best} of those NO_BOOT cycles are consecutive. A power-on or '
+                f'relay fault is random; a DUT stopped at {screen} is not — it has '
+                f'no network, so the cycle force-offs it, and that force-off is one '
+                f'more interrupted boot, which is what put it there. Check what is '
+                f'on the DUT\'s display before suspecting the relay, and see '
+                f'BUG0064 for the setup_dut settings that prevent it.'
+            )
+            warnings.append(
+                f'Note that the force-off between these cycles is commanded, not '
+                f'confirmed: the relay is an output only, so a force-off that the '
+                f'DUT ignored is indistinguishable here from one that worked, and '
+                f'the regular cycle timing above reflects the script\'s schedule '
+                f'rather than the DUT\'s behaviour (BUG0066).{escalated} Watching '
+                f'the DUT\'s display or power LED through one such cycle is '
+                f'currently the only way to tell.'
+            )
+    warning_banners = "".join(
+        f'<div class="warning-banner">{w}</div>' for w in warnings
+    )
 
     # Donut (pass + each failure type actually present)
     donut_labels  = ["PASS"] + [k for k in _FAIL_ORDER if fb.get(k, 0) > 0]
@@ -356,7 +508,9 @@ def _render(result: dict) -> str:
     first_fail   = streaks["first_fail"]
     first_fail_s = str(first_fail) if first_fail is not None else "none"
 
-    # Per-failure-type cards (only those present)
+    # Per-failure-type cards (only those present), shown as a clearly separate
+    # "breakdown of Fail" section so it's never mistaken for additional cycles.
+    fail_breakdown_section = ""
     fail_cards = ""
     for k in _FAIL_ORDER:
         if fb.get(k, 0) > 0:
@@ -364,6 +518,12 @@ def _render(result: dict) -> str:
                 f'<div class="card"><div class="label">{k}</div>'
                 f'<div class="value" style="color:{_verdict_colour(k)}">{fb[k]}</div></div>'
             )
+    if fail_cards:
+        fail_breakdown_section = f"""
+<div class="section-title">Fail breakdown (sums to Fail = {n_fail} above)</div>
+<div class="cards">
+  {fail_cards}
+</div>"""
 
     # Shutdown-time statistics cards (power_cycle only)
     def sdstat(key, unit="s"):
@@ -371,10 +531,22 @@ def _render(result: dict) -> str:
             return "-"
         return f"{sd_stats[key]:.1f}{unit}"
 
+    # BUG0067: a time measured by polling is quantised to the poll interval, and
+    # "offline" is the network's death, not the DUT's power-down. Both belong
+    # beside the figures, not in the reader's head.
+    _poll = cfg.get("liveness_poll_sec")
+    _poll_note = (f'Probed every {_poll:g} s, so each figure carries up to '
+                  f'{_poll:g} s of positive error and differences smaller than '
+                  f'that are not visible. ' if _poll else '')
+
     shutdown_stats_section = ""
     if has_shutdown:
         shutdown_stats_section = f"""
 <div class="section-title">Shutdown-time statistics (all cycles with confirmed shutdown)</div>
+<div class="subtitle">Time from the shutdown request until the DUT left the network.
+{_poll_note}The DUT keeps working for some seconds after its network stack goes
+down; that tail is not measurable from the control node and is what the off-time
+wait absorbs (BUG0067).</div>
 <div class="cards">
   <div class="card"><div class="label">Min</div><div class="value">{sdstat("min")}</div></div>
   <div class="card"><div class="label">Median</div><div class="value">{sdstat("median")}</div></div>
@@ -384,6 +556,102 @@ def _render(result: dict) -> str:
   <div class="card"><div class="label">Max</div><div class="value">{sdstat("max")}</div></div>
   <div class="card"><div class="label">Std-dev</div><div class="value">{sdstat("stddev")}</div></div>
 </div>"""
+
+    # Shutdown-method count cards (power_cycle only) -- explicit counts to
+    # complement the donut chart below, which shows proportion but not n.
+    method_order = ["ssh", "atx", "force", "time"]
+    method_breakdown_section = ""
+    if has_methods:
+        method_cards = "".join(
+            f'<div class="card"><div class="label">{m}</div>'
+            f'<div class="value">{method_counts.get(m, 0)}</div></div>'
+            for m in method_order if method_counts.get(m, 0) > 0
+        )
+        method_breakdown_section = f"""
+<div class="section-title">Shutdown method (force = DUT failed to shut down gracefully)</div>
+<div class="cards">
+  {method_cards}
+</div>"""
+
+    # System configuration inventory (FWK037) — what hardware produced these
+    # results. Informational: CPUs/DIMMs get swapped between runs, so a report
+    # that cannot say which configuration it measured is hard to compare later.
+    sysinfo_section = ""
+    if _si:
+        def _sv(v):
+            return "N/A" if v in (None, "") else str(v)
+
+        def _gib(b):
+            return f"{b / 1024 ** 3:.1f} GiB" if isinstance(b, (int, float)) and b else "N/A"
+
+        _mem_col = _verdict_colour("PASS") if _mem.get("result") == "Pass" else (
+            _verdict_colour("NO_BOOT") if _mem.get("result") == "Fail" else "#888")
+        _cpu_topo = (f'sockets {_sv(_si.get("cpu_sockets"))} · '
+                     f'logical {_sv(_si.get("cpu_logical"))}')
+        _mem_detail = (f'{_gib(_mem.get("installed_bytes"))} installed across '
+                       f'{_sv(_mem.get("dimm_populated_count"))} DIMM(s) · '
+                       f'{_gib(_mem.get("usable_bytes"))} usable')
+        _mem_reason = _mem.get("reason") or ""
+        sysinfo_section = f"""
+<div class="section-title">System configuration (what this run was measured on)</div>
+<table>
+  <tbody>
+    <tr><th style="width:20%">Host / OS</th><td>{_sv(_si.get("hostname"))} &nbsp;·&nbsp; {_sv(_si.get("os"))} ({_sv(_si.get("kernel"))})</td></tr>
+    <tr><th>Product / board</th><td>{_sv(_si.get("product"))} &nbsp;·&nbsp; {_sv(_si.get("baseboard"))} &nbsp;·&nbsp; S/N {_sv(_si.get("serial"))}</td></tr>
+    <tr><th>CPU</th><td>{_sv(_si.get("cpu_model"))} &nbsp;·&nbsp; {_cpu_topo}</td></tr>
+    <tr><th>Memory</th><td>{_mem_detail}
+        &nbsp; <span class="b" style="color:{_mem_col};font-weight:600">[{_sv(_mem.get("result"))}]</span>
+        <div style="color:#888;font-size:.8rem;margin-top:2px">{_mem_reason}</div></td></tr>
+  </tbody>
+</table>"""
+
+    # Calibration section — auto-measured boot time → boot timeout (BUG0036).
+    # Rendered for any test that ran a calibrate phase (power_cycle and reboot),
+    # so each DUT's measured boot time is visible and comparable across DUTs.
+    calibrate_section = ""
+    cal        = result.get("calibrate") or {}
+    cal_cycles = cal.get("cycles", [])
+    if cal_cycles:
+        cal_boots = [c["boot_time_sec"] for c in cal_cycles
+                     if c.get("boot_time_sec") is not None and c.get("verdict") == "PASS"]
+        cal_set   = cal.get("boot_timeout_sec")
+        sf        = cal.get("safety_factor")
+        cal_min   = f"{min(cal_boots):.1f}s" if cal_boots else "-"
+        cal_max   = f"{max(cal_boots):.1f}s" if cal_boots else "-"
+        cal_set_s = f"{cal_set}s" if cal_set is not None else "not set"
+        sf_s      = f"×{sf}" if sf is not None else "-"
+        def _cal_boot_str(c):
+            # A failed calibrate cycle has no boot time. Its boot_time_sec is the
+            # ceiling it gave up waiting at, so rendering it as "360.0s" presents
+            # a timeout as a measurement -- and contradicts the log, which prints
+            # "—" for the same cycle (BUG0045). Anything but PASS shows no number.
+            bt = c.get("boot_time_sec")
+            if bt is None or c.get("verdict") != "PASS":
+                return "—"
+            return f"{bt:.1f}s"
+        cal_rows  = "".join(
+            f'<tr><td>{c.get("n")}</td>'
+            f'<td style="color:{_verdict_colour(c.get("verdict","-"))};font-weight:600">'
+            f'{c.get("verdict","-")}</td>'
+            f'<td>{_cal_boot_str(c)}</td>'
+            f'</tr>'
+            for c in cal_cycles
+        )
+        calibrate_section = f"""
+<div class="section-title">Calibration (auto-measured boot time → boot timeout)</div>
+<div class="cards">
+  <div class="card"><div class="label">Calibrate cycles</div><div class="value">{len(cal_cycles)}</div></div>
+  <div class="card"><div class="label">Measured min</div><div class="value">{cal_min}</div></div>
+  <div class="card"><div class="label">Measured max</div><div class="value">{cal_max}</div></div>
+  <div class="card"><div class="label">Safety factor</div><div class="value">{sf_s}</div></div>
+  <div class="card"><div class="label">Boot timeout set</div><div class="value">{cal_set_s}</div></div>
+</div>
+<table>
+  <thead><tr><th>Calibrate cycle</th><th>Verdict</th><th>Boot time</th></tr></thead>
+  <tbody>
+    {cal_rows}
+  </tbody>
+</table>"""
 
     # Shutdown time chart + method distribution chart HTML (power_cycle only)
     shutdown_chart_html = ""
@@ -481,6 +749,8 @@ def _render(result: dict) -> str:
   tr:last-child td{{border-bottom:none}}
   tr:hover td{{background:#fafafa}}
   .meta{{color:#888;font-size:.8rem;margin-top:20px}}
+  .warning-banner{{background:#fff3e0;border:1px solid #ff9800;border-radius:6px;
+                   padding:10px 14px;margin-bottom:10px;font-size:.85rem;color:#7a4a00}}
 </style>
 </head>
 <body>
@@ -489,8 +759,14 @@ def _render(result: dict) -> str:
 <p class="subtitle">
   {cfg.get("power_type", test_name)} &nbsp;|&nbsp;
   DUT: {cfg.get("dut_host") or "(liveness disabled)"} &nbsp;|&nbsp;
-  Started: {started} &nbsp;|&nbsp; Ended: {ended}
+  OS: {cfg.get("dut_os", "-")} ({cfg.get("dut_os_source", "-")}) &nbsp;|&nbsp;
+  SSH user: {cfg.get("ssh_user") or "(none)"} &nbsp;|&nbsp;
+  BIOS: {fw["bios_version"]} &nbsp;|&nbsp;
+  BMC: {fw["bmc_version"]}{f' ({fw["bmc_method"]})' if fw["bmc_method"] else ''} &nbsp;|&nbsp;
+  Started: {started} &nbsp;|&nbsp; Ended: {ended} &nbsp;|&nbsp; Duration: {duration}
 </p>
+
+{warning_banners}
 
 <!-- Summary + verdict cards -->
 <div class="cards">
@@ -504,11 +780,14 @@ def _render(result: dict) -> str:
     <div class="value" style="color:{_verdict_colour("PASS")}">{n_pass}</div></div>
   <div class="card"><div class="label">Fail</div>
     <div class="value" style="color:{_verdict_colour("NO_BOOT")}">{n_fail}</div></div>
-  {fail_cards}
 </div>
+
+{fail_breakdown_section}
 
 <!-- Boot-time statistics cards -->
 <div class="section-title">Boot-time statistics (passing cycles with recorded boot time)</div>
+<div class="subtitle">Time from power-on until the DUT answered both ping and SSH.
+{_poll_note}</div>
 <div class="cards">
   <div class="card"><div class="label">Min</div><div class="value">{stat("min")}</div></div>
   <div class="card"><div class="label">Median</div><div class="value">{stat("median")}</div></div>
@@ -545,6 +824,9 @@ def _render(result: dict) -> str:
 </div>
 
 {shutdown_stats_section}
+{method_breakdown_section}
+{sysinfo_section}
+{calibrate_section}
 
 <!-- Failure table -->
 <div class="section-title">Failed cycles detail</div>
@@ -558,7 +840,8 @@ def _render(result: dict) -> str:
 <div class="meta">
   Generated from: {test_name} &nbsp;|&nbsp;
   Boot timeout: {cfg.get("boot_timeout_sec", "-")}s &nbsp;|&nbsp;
-  Off-time: {cfg.get("off_time_sec", "-")}s
+  Off-time: {cfg.get("off_time_sec", "-")}s{
+      ' (auto)' if cfg.get("off_time_mode") == "auto" else ''}
 </div>
 
 <script>

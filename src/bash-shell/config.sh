@@ -18,6 +18,19 @@ export _config_api_version
 : "${_log_timestamp_format:=%Y%m%dT%H%M%S}"
 export _human_timestamp_format _log_timestamp_format
 
+# ---------- Liveness heartbeat (FWK038) ----------
+# How often the console is told the test is still alive, in seconds. This is the
+# operator's evidence that a long silent step is slow rather than hung; it is NOT
+# the "do not power off" broadcast to other users, which stays on its per-loop
+# cadence so it does not become spam.
+#
+# The value bounds how long the console may sit unchanged. Keep it well under the
+# time an operator would wait before concluding the run has died. 0 disables the
+# heartbeat entirely (e.g. when the output is being captured to a file that
+# should not carry it).
+: "${_heartbeat_interval_sec:=30}"
+export _heartbeat_interval_sec
+
 setup_session() {
   log_dir "" 1 || return 1   # 1 = ?? session 摮??冗
   : "${_pwd:="adlink"}"
@@ -76,9 +89,135 @@ setup_session() {
 #  fi
 #}
 
-# ---------- iPerf3 Parameters ----------
-# :
-# 
+# ---------- Network test parameters (net_test.sh, NET001-NET018) ----------
+# SET001: every tunable lives here, not scattered in net_test.sh.  Command-line
+# flags still win; these are the defaults.
+: "${_net_iperf_time_sec:=60}"   # NET007: iperf3 duration per direction (seconds).
+: "${_net_iperf_omit_sec:=3}"    # NET007: seconds omitted at start (ramp-up exclusion).
+: "${_net_iperf_overhead_sec:=5}"
+                                 # FWK038: allowance, in seconds, for connection setup
+                                 #   and the closing statistics exchange. Used ONLY to
+                                 #   size the progress bar, never to bound the transfer.
+                                 #   The bar's denominator is time + omit + this, so it
+                                 #   reaches 100% about when a healthy step ends and
+                                 #   "(still running)" keeps meaning "this one is
+                                 #   unusual" rather than appearing on every transfer.
+: "${_net_iperf_overrun_grace_sec:=30}"
+                                 # FWK038: how far past the estimate a step may run
+                                 #   before the bar raises "(still running)". The bar
+                                 #   showing "88s / 68s" already says it is slower than
+                                 #   predicted; this is the point at which that stops
+                                 #   being normal variation and becomes worth flagging.
+                                 #   Sized above the worst legitimate overrun seen (UDP
+                                 #   teardown at 400G, ~20s) and well below a TCP connect
+                                 #   timeout (~2 min), which is what the marker is for.
+# NET009/BUG0061: the TCP threshold is a percentage of ACHIEVABLE goodput, not of
+# the raw line rate. iperf3 measures TCP payload; the link speed is wire rate, and
+# every frame also carries 38 bytes the payload never sees (preamble+SFD 8, header
+# 14, FCS 4, inter-frame gap 12) plus IP/TCP headers inside the MTU.
+#
+# At MTU 1500 that ceiling is (1500-52)/(1500+38) = 94.15%, so comparing against
+# 95% of line rate demanded more than the wire can carry. A NIC measured at 94.2%
+# was at 100% of the achievable rate and was being failed.
+: "${_net_frame_overhead_bytes:=38}"   # preamble+SFD 8, eth header 14, FCS 4, IFG 12
+: "${_net_l3l4_overhead_bytes:=52}"    # IP 20 + TCP 20 + timestamps 12 (Linux default)
+: "${_net_mtu_for_thr:=1500}"          # MTU the throughput runs use
+
+: "${_net_tcp_pass_pct:=95}"     # NET009: TCP PASS threshold as a % of ACHIEVABLE
+                                 #   goodput (see the efficiency block above), not of the
+                                 #   raw line rate. Uniform across every speed.
+: "${_net_tcp_pass_pct_tiers:=}"
+                                 # NET009: optional per-speed override "speedMbps:pct,...".
+                                 #   EMPTY BY DEFAULT.
+                                 #
+                                 #   It used to read 10:90,100:90,1000:95,... — the 90%
+                                 #   entries were hand-compensating for framing overhead
+                                 #   that the threshold did not model. Now that the
+                                 #   efficiency term is explicit and is itself
+                                 #   speed-independent (it depends only on MTU), the same
+                                 #   percentage is correct at 10 Mb/s and at 800 Gb/s, and
+                                 #   the tiers have nothing left to correct for.
+                                 #
+                                 #   Use this only to record a real, measured PLATFORM
+                                 #   limit -- e.g. "400G on a PCIe 4.0 host cannot exceed
+                                 #   90% of achievable" -- and say why in the commit.
+: "${_net_err_counter_check:=1}" # NET016: 1 = diff ethtool -S error/discard counters
+                                 #   around the runs at each speed and record the delta.
+: "${_net_err_fail_on_delta:=0}" # NET016: 1 = a non-zero rx/tx error delta downgrades an
+                                 #   otherwise-PASS speed verdict to FAIL; 0 = warn only.
+
+# NET017: UDP datagram-loss reporting and optional gating.
+# iperf3 UDP is offered at the full link rate with no flow control, so some loss
+# is the expected outcome, not a defect -- double-digit percentages at 100G are
+# normal. Loss is therefore REPORTED by default and only judged if you opt in.
+: "${_net_udp_loss_max_pct:=1}"  # highlight (and, if gating is on, fail) above this %
+: "${_net_udp_loss_fail:=0}"     # 1 = a UDP loss above the cap downgrades the verdict
+
+# NET004/BUG0056: how long to wait for carrier after setting a link speed.
+# `ethtool -s` returns as soon as the driver accepts the request; the link comes
+# up asynchronously, and a high-speed DAC link with RS-FEC can take far longer
+# than the 4-second blind sleep this replaced. Too short a wait makes a healthy
+# NIC look like a dead cable.
+: "${_net_link_up_timeout_sec:=30}"
+
+# NET007/NET009: parallel iperf3 streams (-P). Default 1 = single stream.
+#
+# A single TCP stream is bounded by one CPU core's ability to drive the stack,
+# not by the link: on this class of hardware it plateaus around 75-85 Gbit/s
+# whatever the link is set to. At 100G and above the NET009 threshold of 95% of
+# link speed is therefore unreachable by construction, and every such row fails
+# for a reason that says nothing about the NIC.
+#
+# "auto" (default) uses 1 stream below _net_parallel_auto_from_mbps and
+# _net_parallel_auto_streams at or above it. An explicit integer overrides.
+#
+# The threshold is set from _net_parallel_auto_from_mbps=25000 because that is
+# where the measured evidence put the single-stream wall: on the reference DUT a
+# single stream plateaued at 75-85 Gbit/s regardless of link speed, so 100G and
+# 200G both measured ~80 Gbit/s. With 8 streams the same hardware reached 99.8%,
+# 100.1% and 100.1% of achievable at 25G, 50G and 100G. Below 25G a single stream
+# saturates the link, so nothing is gained by adding more.
+: "${_net_iperf_parallel:=auto}"
+: "${_net_parallel_auto_from_mbps:=25000}"   # at/above this speed, auto uses several streams
+: "${_net_parallel_auto_streams:=8}"
+
+: "${_net_test_bidir:=1}"        # NET017: 1 = also run a simultaneous bidirectional
+                                 #   (full-duplex) iperf3 pass at each speed.
+: "${_net_test_jumbo:=1}"        # NET018: 1 = at each >=1000M speed verify a DF jumbo
+                                 #   ping crosses the link, then restore the MTU.
+: "${_net_jumbo_mtu:=9000}"      # NET018: jumbo MTU to test (bytes); DF payload = MTU-28.
+
+# NET019: which interface NAMES are even considered for testing. Linux predictable
+# names: enp* = PCI/onboard Ethernet (Intel etc.), enx* = USB Ethernet (name carries
+# the MAC), eno* = onboard, eth* = legacy. The default tests only enp* — this both
+# matches the usual Intel-NIC target and conveniently skips USB management NICs.
+# Broaden it to also test USB NICs, e.g. ^(enp|enx), or everything: ^(enp|enx|eno|eth).
+# Extended regex (grep -E). MAC include/exclude below applies to whatever this matches,
+# so when you broaden this, ALSO pin the management/SSH NIC via _net_exclude_macs (or
+# use _net_include_macs to whitelist only the NICs you want) to avoid testing it.
+# NOTE: do NOT wrap the value in quotes here — in the `: "${var:=...}"` form the inner
+# quotes become part of the value. Write it bare, e.g.  _net_nic_name_regex:=^(enp|enx)
+# (surrounding quotes are stripped defensively, but bare is the intended form).
+: "${_net_nic_name_regex:=^enp}"
+
+# NET019: select which NICs participate, by MAC address. A MAC is the most
+# stable, OS-independent NIC identity (unlike enpXsY names). Both lists accept
+# multiple entries separated by comma, semicolon, or whitespace; matching is
+# case-insensitive and both ':' and '-' separators are accepted. CLI overrides:
+# --include-mac / --exclude-mac (each overrides the matching list for that run).
+# As above, write the value BARE (no surrounding quotes) in the `: "${var:=...}"`
+# form, e.g.  _net_include_macs:=00-E0-4C-68-00-56,00-E0-4C-68-00-2D
+# (stray surrounding/embedded quotes are stripped defensively, but bare is intended).
+: "${_net_include_macs:=}"       # NET019: whitelist. When non-empty, ONLY NICs whose
+                                 #   MAC matches an entry are tested; all others become
+                                 #   SKIPPED. Empty = every NIC is a candidate.
+                                 #   Example (two): 00-E0-4C-68-00-56,00-E0-4C-68-00-2D
+: "${_net_exclude_macs:=}"       # NET019 / NET012: blacklist. NICs whose MAC matches an
+                                 #   entry are never tested — use it to pin the management
+                                 #   / SSH-lifeline NIC so net_test never reconfigures it.
+                                 #   Exclude wins over include. Example (single):
+                                 #   00-E0-4C-68-00-56   Example (two):
+                                 #   00-E0-4C-68-00-56,AA-BB-CC-DD-EE-FF
 
 # ---------- fio Parameters ----------
 # ===== Basis =====

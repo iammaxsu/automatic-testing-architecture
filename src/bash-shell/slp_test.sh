@@ -58,7 +58,7 @@ parse_common_cli "$@"
 set -- "${REM_ARGS[@]}"
 
 # ---------- Cleanup on exit (FWK026) ----------
-trap 'fix_log_permissions "${_log_dir:-}" deep' EXIT
+trap 'test_heartbeat_stop; fix_log_permissions "${_log_dir:-}" deep' EXIT
 
 # ---------- Tools ----------
 ensure_tools rtcwake ping || true
@@ -71,6 +71,10 @@ _SLEEP_DUR="${_sleep_wake_after_sec:-60}"
 
 # ---------- Log folder (sticky session enables S5 resume across reboots) ----------
 log_dir "" 1
+
+# FWK038: liveness heartbeat — periodic proof the run has not hung.
+test_heartbeat_start "slp_test"
+
 log_root="${_session_log_dir}"
 
 # ---------- S5 state file (persists across reboots within the same sticky session) ----------
@@ -244,6 +248,7 @@ if (( _s3s4_remain > 0 )); then
   for (( i=1; i<=_s3s4_remain; i++ )); do
     _n_abs=$(( _done_so_far + i ))
     test_progress_set "slp_test" "${_n_abs}" "${_LOOPS}"
+    test_heartbeat_phase "S3 loop ${_n_abs}/${_LOOPS}"
     printf '[%s] [INFO] S3/S4 round %d/%d\n' "$(date '+%F %T')" "${_n_abs}" "${_LOOPS}" \
       | tee -a "${_slplog}"
 
@@ -265,6 +270,7 @@ if (( _s5_remain > 0 )) && printf '%s\n' "${_MODES[@]}" | grep -q '^S5$'; then
   printf '[%s] [INFO] S5 round %d/%d\n' "$(date '+%F %T')" "${_s5_n}" "${_LOOPS}" \
     | tee -a "${_slplog}"
   test_progress_set "slp_test" "${_s5_n}" "${_LOOPS}"
+  test_heartbeat_phase "S5 loop ${_s5_n}/${_LOOPS}"
 
   if ! _run_s5_cycle "${_s5_n}" "${_LOOPS}"; then
     _FAIL=1

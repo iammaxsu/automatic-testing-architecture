@@ -1,0 +1,1890 @@
+<#
+.SYNOPSIS
+  Windows network loopback endurance test (NET001-NET018).
+
+.DESCRIPTION
+  Enumerates physical Ethernet NICs, pairs them sequentially (NIC[0]<->NIC[1],
+  NIC[2]<->NIC[3], ...), then for each pair, at EVERY link speed both NICs
+  support (NET004), runs:
+    - IPv4 and IPv6 ICMP ping (NET005)
+    - iperf3 TCP forward, TCP reverse, UDP forward, UDP reverse (NET006)
+    - Max link speed reporting per NIC (NET015)
+    - NIC error/discard counter deltas around the run (NET016)
+    - iperf3 quality metrics: TCP retransmits, UDP jitter/loss (NET017)
+    - Simultaneous bidirectional (full-duplex) TCP throughput (NET017)
+    - Jumbo-frame (9000 MTU) DF-ping verification at >=1000M (NET018)
+    - Verdict: PASS when both TCP directions >= threshold% of link speed (NET009)
+  All pairs run in parallel (NET010).
+
+  MULTI-SPEED (NET004)
+    Each NIC advertises a set of speeds via the *SpeedDuplex advanced property
+    (10 / 100 / 1000 / 2500 / 10000 Mbps, ...).  For each pair the test runs at
+    every speed BOTH NICs support, forcing the speed with
+    Set-NetAdapterAdvancedProperty and waiting for the link to re-establish
+    before measuring.  NICs are restored to Auto Negotiation on exit.
+    Currently scoped to Intel controllers/PHYs (-VendorFilter), which expose a
+    predictable *SpeedDuplex enumeration.
+
+  ISOLATION MODEL (Windows equivalent of Linux network namespaces, NET002)
+    Windows has no network namespaces.  Isolation is achieved by assigning each
+    pair a unique private subnet -- 192.247.{idx}.0/24 and fd00:2470::{idx}:0/64
+    -- with no default gateway on those IPs.  iperf3 server and client are both
+    bound to those addresses, so traffic follows the physical cable path and not
+    the OS default route.  Addresses are cleaned up on exit.
+
+    Because BOTH NICs of a pair sit on the same host in the same /24 (no kernel
+    namespace to separate them), the *weak host model* is enabled on both
+    interfaces (Set-NetIPInterface -WeakHostSend/-WeakHostReceive Enabled).
+    Without it, Windows' default strong host model only accepts a packet for a
+    local IP on the exact interface that owns it; after repeated adapter
+    Disable/Enable cycles the duplicate on-link route and the neighbor cache
+    drift and the iperf3 control SYN starts being dropped -- the link still
+    pings but every iperf3 connect "times out", progressively across loops.
+    The pair's neighbor (ARP/ND) cache is also flushed after each adapter bounce
+    so a stale entry cannot shadow the re-linked interface.
+
+  PREREQUISITES
+    - Administrator rights (IP + speed changes require elevation).
+    - iperf3.exe -- auto-installed if missing (winget / choco / scoop, then a
+      portable-zip download), mirroring net_test.sh's iperf3_install.  Override
+      via the $_net_iperf3_* keys in config.ps1.
+      OFFLINE DUTs: if the DUT has no internet access, all of the above fail.
+      Copy a working iperf3.exe (and its DLLs) into the script folder's
+      tools\iperf3\ directory once (e.g. via USB); every subsequent run finds
+      it there with no network access required.
+    - NICs physically cabled in pairs for loopback.
+
+  CONFIGURATION (two methods, parameters win) - SET001
+    1. Config file : config.ps1 beside this script (or -ConfigFile PATH).
+    2. Parameters  : -Loops, -Skip, -Speeds, -VendorFilter, ... (override config).
+
+  ARTEFACTS (in logs\) - FWK028: result.json is the canonical source of truth
+    net_test_<ts>.result.json              canonical machine-readable result
+    net_test_<ts>.log                      main log (pair START/DONE events)
+    net_test_pair<N>_<ts>.log              per-pair detail log (all loops, appended)
+    iPerf3_<ev>_n_<od>_<n>of<m>_<type>_spd<spd>_<ts>.log         per-run client (NET013)
+    iPerf3_<ev>_n_<od>_<n>of<m>_<type>_spd<spd>_<ts>_server.log  per-run server (NET013)
+
+  NIC SELECTION BY MAC (NET019)
+    -ExcludeMac / $_net_exclude_macs : NICs with these MAC(s) are never tested
+      (management / SSH-lifeline NIC). -IncludeMac / $_net_include_macs : when
+      non-empty, ONLY NICs with these MAC(s) are tested; all others are SKIPPED.
+      Exclude wins over include, and the session/management lifeline (NET012) is
+      always excluded even if its MAC is listed in the include set. MAC matching
+      is case-insensitive and accepts ':' or '-' separators.
+
+.EXAMPLE
+  .\net_test.ps1
+  .\net_test.ps1 -Loops 3 -Speeds "1000,10000"
+  .\net_test.ps1 -Lifeline "Ethernet 4"
+  .\net_test.ps1 -IncludeMac "00-50-56-C0-00-09"
+  .\net_test.ps1 -ExcludeMac "00-E0-4C-68-00-56"
+  .\net_test.ps1 -DryRun
+#>
+
+[CmdletBinding()]
+param(
+    [int]    $Loops        = 0,    # loop count (0 = use config/default)
+    [string] $Skip         = '',   # comma-separated NIC names to exclude (NET011)
+    [string] $Speeds       = '',   # 'auto' or e.g. '100,1000' (NET004); '' = config
+    [string] $VendorFilter = '',   # only test NICs matching this string ('' = config)
+    [int]    $IperfTimeSec = 0,    # iperf3 duration per direction in sec (0 = config)
+    [int]    $IperfOmitSec = -1,   # iperf3 ramp-up omit in sec (-1 = config)
+    [int]    $TcpPassPct   = 0,    # TCP pass threshold % of link speed (0 = config)
+    [int]    $LinkWaitSec  = 0,    # max wait for link after a speed change (0 = config)
+    [string] $Lifeline    = '',    # NIC name(s) to exclude, comma-separated (CLI override; prefer $_net_exclude_macs in config, NET012)
+    [string] $IncludeMac  = '',    # NET019 whitelist: only test NICs with these MAC(s); '' = config _net_include_macs
+    [string] $ExcludeMac  = '',    # NET019 blacklist: never test NICs with these MAC(s); '' = config _net_exclude_macs
+    [switch] $DryRun,              # skip actual IP/speed changes and iperf3 runs
+    [string] $ConfigFile   = ''    # path to config.ps1 (default: beside this script)
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+# Surface the exact failing location for any otherwise-unhandled terminating
+# error.  Without this, a deep .NET exception (e.g. ArgumentOutOfRangeException)
+# bubbles to the top and PowerShell reports only "At line:1 char:1 .\net_test.ps1",
+# which hides where it actually came from.  The trap prints the message, the
+# script line/position, and the PowerShell call stack, then stops.
+trap {
+    Write-Host ''
+    Write-Host '==== net_test.ps1 : unhandled error ====' -ForegroundColor Red
+    Write-Host ("  Type    : " + $_.Exception.GetType().FullName) -ForegroundColor Red
+    Write-Host ("  Message : " + $_.Exception.Message) -ForegroundColor Red
+    if ($null -ne $_.InvocationInfo) {
+        Write-Host ("  At      : " + $_.InvocationInfo.PositionMessage) -ForegroundColor Yellow
+    }
+    if ($_.ScriptStackTrace) {
+        Write-Host "  Stack   :" -ForegroundColor DarkYellow
+        foreach ($_line in ($_.ScriptStackTrace -split "`n")) {
+            Write-Host ("            " + $_line) -ForegroundColor DarkYellow
+        }
+    }
+    Write-Host '========================================' -ForegroundColor Red
+    break
+}
+
+$_script_ver                = '00.00.32'
+$_requires_function_ps1_api = '00.00.02'
+$_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
+Write-Host "net_test.ps1 v$_script_ver" -ForegroundColor Cyan
+
+# -- Shared library (function.ps1) ---------------------------------------------
+$_fn = Join-Path $_script_root 'function.ps1'
+if (-not (Test-Path $_fn)) {
+    Write-Error "function.ps1 not found at $_fn  -  cannot continue"
+    exit 1
+}
+. $_fn
+if ($script:_function_ps1_api -lt $_requires_function_ps1_api) {
+    Write-Error "function.ps1 API '$($script:_function_ps1_api)' is too old; need '$_requires_function_ps1_api'"
+    exit 1
+}
+
+# -- Config file (SET001) ------------------------------------------------------
+if ($ConfigFile -eq '') { $ConfigFile = Join-Path $_script_root 'config.ps1' }
+if (Test-Path $ConfigFile) {
+    try {
+        . $ConfigFile
+        Write-Host ("         Loaded config : $ConfigFile") -ForegroundColor DarkGray
+    } catch {
+        Write-Warning "Could not load config file '$ConfigFile': $($_.Exception.Message)"
+    }
+}
+
+function Get-CfgVal {
+    param([string]$Name, $Fallback)
+    $v = Get-Variable -Name $Name -Scope Script -ErrorAction SilentlyContinue
+    if ($null -ne $v -and $null -ne $v.Value -and "$($v.Value)" -ne '') { return $v.Value }
+    return $Fallback
+}
+
+$cfgLoops        = [int]   (Get-CfgVal '_net_loops'           1)
+$cfgIperfTimeSec = [int]   (Get-CfgVal '_net_iperf_time_sec'  60)
+$cfgIperfOmitSec = [int]   (Get-CfgVal '_net_iperf_omit_sec'  3)
+$cfgTcpPassPct   = [int]   (Get-CfgVal '_net_tcp_pass_pct'    95)
+$cfgTcpPassPctTiers = [string](Get-CfgVal '_net_tcp_pass_pct_tiers' '10:90,100:90,1000:95,2500:95,5000:95,10000:95')
+$cfgSpeeds       = [string](Get-CfgVal '_net_speeds'          'auto')
+$cfgVendor       = [string](Get-CfgVal '_net_vendor_filter'   'Intel')
+$cfgLinkWaitSec  = [int]   (Get-CfgVal '_net_link_wait_sec'   30)
+$cfgAutonegWaitSec = [int] (Get-CfgVal '_net_link_wait_autoneg_sec' 90)
+$StrictLifeline  = [int]   (Get-CfgVal '_net_strict_lifeline' 1)
+$cfgExcludeMacs  = [string](Get-CfgVal '_net_exclude_macs'    '')
+$cfgIncludeMacs  = [string](Get-CfgVal '_net_include_macs'    '')   # NET019
+# CLI overrides config for this run (NET019).
+if ($ExcludeMac -ne '') { $cfgExcludeMacs = $ExcludeMac }
+if ($IncludeMac -ne '') { $cfgIncludeMacs = $IncludeMac }
+$Iperf3AutoInst  = [int]   (Get-CfgVal '_net_iperf3_auto_install' 1)
+$Iperf3WingetId  = [string](Get-CfgVal '_net_iperf3_winget_id' 'ar51an.iPerf3')
+$Iperf3ChocoPkg  = [string](Get-CfgVal '_net_iperf3_choco_pkg' 'iperf3')
+$Iperf3ScoopPkg  = [string](Get-CfgVal '_net_iperf3_scoop_pkg' 'iperf3')
+$Iperf3GhRepo    = [string](Get-CfgVal '_net_iperf3_gh_repo'   'ar51an/iperf3-win-builds')
+$Iperf3ZipPat    = [string](Get-CfgVal '_net_iperf3_zip_pattern' 'win64.zip')
+$ErrCounterChk   = [int]   (Get-CfgVal '_net_err_counter_check' 1)   # NET016
+$ErrFailOnDelta  = [int]   (Get-CfgVal '_net_err_fail_on_delta'  0)   # NET016
+$TestBidir       = [int]   (Get-CfgVal '_net_test_bidir'         1)   # NET017
+$TestJumbo       = [int]   (Get-CfgVal '_net_test_jumbo'         1)   # NET018
+$JumboMtu        = [int]   (Get-CfgVal '_net_jumbo_mtu'          9000) # NET018
+
+# Parse "speedMbps:pct,..." into a speed->pct lookup; Get-TcpPassPct below picks
+# the tier whose speed equals the link speed, falling back to $TcpPassPct (NET009).
+# NOTE: a plain @{} hashtable, NOT [ordered]@{}.  An OrderedDictionary's indexer
+# treats an [int] as a POSITIONAL index, so $od[[int]10]=90 means "set element at
+# position 10" (which does not exist) and throws ArgumentOutOfRangeException.  A
+# hashtable indexes by key, so integer speed keys work correctly; ordering is
+# irrelevant here since this is only ever used for .Contains()/[key] lookups.
+$_tcpPassPctTiers = @{}
+foreach ($pair in ($cfgTcpPassPctTiers -split '[,;]+')) {
+    if ($pair.Trim() -match '^(\d+)\s*:\s*(\d+)$') {
+        $_tcpPassPctTiers[[int]$Matches[1]] = [int]$Matches[2]
+    }
+}
+function Get-TcpPassPct {
+    param([int]$Mbps, [int]$Default)
+    if ($_tcpPassPctTiers.Contains($Mbps)) { return [int]$_tcpPassPctTiers[$Mbps] }
+    return $Default
+}
+
+$Loops        = if ($PSBoundParameters.ContainsKey('Loops')        -and $Loops -gt 0)        { $Loops }        else { $cfgLoops }
+$IperfTimeSec = if ($PSBoundParameters.ContainsKey('IperfTimeSec') -and $IperfTimeSec -gt 0) { $IperfTimeSec } else { $cfgIperfTimeSec }
+$IperfOmitSec = if ($PSBoundParameters.ContainsKey('IperfOmitSec') -and $IperfOmitSec -ge 0) { $IperfOmitSec } else { $cfgIperfOmitSec }
+# An explicit -TcpPassPct on the command line overrides the per-speed-tier table
+# entirely (NET009): every speed uses that one flat percentage.
+$_tcpPassPctExplicit = $PSBoundParameters.ContainsKey('TcpPassPct') -and $TcpPassPct -gt 0
+$TcpPassPct   = if ($_tcpPassPctExplicit) { $TcpPassPct }   else { $cfgTcpPassPct }
+$LinkWaitSec  = if ($PSBoundParameters.ContainsKey('LinkWaitSec')  -and $LinkWaitSec -gt 0)  { $LinkWaitSec }  else { $cfgLinkWaitSec }
+$AutonegWaitSec = $cfgAutonegWaitSec
+$Speeds       = if ($PSBoundParameters.ContainsKey('Speeds')       -and $Speeds -ne '')      { $Speeds }       else { $cfgSpeeds }
+$VendorFilter = if ($PSBoundParameters.ContainsKey('VendorFilter'))                          { $VendorFilter } else { $cfgVendor }
+if ($Loops -le 0) { $Loops = 1 }
+
+# Parse explicit speed allow-list (empty / 'auto' = no restriction).
+$_speedAllow = @()
+if ($Speeds -ne '' -and $Speeds -ne 'auto') {
+    $_speedAllow = @($Speeds -split '[,;]+' | Where-Object { $_ -match '^\d+$' } | ForEach-Object { [int]$_ })
+}
+
+# -- Paths & small helpers -----------------------------------------------------
+$_log_path = Join-Path $_script_root 'logs'
+if (-not (Test-Path $_log_path)) { New-Item -Path $_log_path -ItemType Directory | Out-Null }
+
+function Now-Iso { Get-Date -Format 'yyyy-MM-ddTHH:mm:ss' }
+function Now-Ts  { Get-Date -Format 'yyyyMMddTHHmmss' }
+
+function Write-Utf8NoBom {
+    param([string]$Path, [string]$Text)
+    $enc = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Text, $enc)
+}
+
+# Render a self-contained HTML report from the PSCustomObject parsed out of
+# result.json.  FWK028: result.json is canonical; HTML is a derived view only.
+# ConvertFrom-Json's PSCustomObject does not have every key on every object
+# (e.g. "skip_reason" only exists on skipped pairs, "na_reason"/"note" only on
+# some speed entries).  Under Set-StrictMode -Version Latest, $obj.missingProp
+# throws PropertyNotFoundException, so all optional-field reads must go through
+# this helper.
+function Get-JsonProp {
+    param($Obj, [string]$Name)
+    if ($null -ne $Obj -and $Obj.PSObject.Properties.Name -contains $Name) { return $Obj.$Name }
+    return $null
+}
+
+# Render a fwd/rev metric pair as "a/b", or "-" when both sides are null (e.g.
+# TCP retransmit count is unavailable on Windows iperf3 builds -- NET017).
+function Format-MetricPair {
+    param($A, $B)
+    if ($null -eq $A -and $null -eq $B) { return '-' }
+    $sa = if ($null -ne $A) { "$A" } else { '-' }
+    $sb = if ($null -ne $B) { "$B" } else { '-' }
+    return "$sa/$sb"
+}
+
+function Write-HtmlReport {
+    param($Result, [string]$OutPath)
+    $ov  = [string]$Result.overall_verdict
+    $ovc = switch ($ov) { 'PASS' { '#2ea043' } 'FAIL' { '#da3633' } default { '#e3b341' } }
+    $s   = $Result.summary
+    $cfg = $Result.config
+    $css = 'body{font-family:Consolas,monospace;background:#0d1117;color:#c9d1d9;margin:24px 32px}' +
+           'h1,h2,h3{color:#58a6ff}h2{border-bottom:1px solid #30363d;padding-bottom:4px;margin-top:28px}' +
+           'table{border-collapse:collapse;width:100%;margin-bottom:12px}' +
+           'th{background:#161b22;color:#8b949e;padding:6px 10px;text-align:left;border:1px solid #30363d}' +
+           'td{padding:5px 10px;border:1px solid #21262d}tr:nth-child(even) td{background:#161b22}' +
+           '.pass{color:#2ea043;font-weight:bold}.fail{color:#da3633;font-weight:bold}' +
+           '.unknown{color:#e3b341;font-weight:bold}.na{color:#6e7681}.skip{color:#6e7681}' +
+           '.badge{display:inline-block;padding:3px 14px;border-radius:4px;color:#fff;font-weight:bold}'
+    $sb = [System.Text.StringBuilder]::new(8192)
+    [void]$sb.Append('<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">')
+    [void]$sb.Append('<title>net_test ' + $Result.session_id + '</title>')
+    [void]$sb.Append('<style>' + $css + '</style></head><body>')
+    [void]$sb.Append('<h1>Network Test Report</h1>')
+    [void]$sb.Append('<p>Host: <b>' + $cfg.dut_host + '</b> &nbsp;|&nbsp; Session: ' + $Result.session_id + '</p>')
+    [void]$sb.Append('<p>Vendor filter: <b>' + $cfg.vendor_filter + '</b> &nbsp;|&nbsp; Loops: ' + $cfg.loops +
+                     ' &nbsp;|&nbsp; iperf3 time: ' + $cfg.iperf_time_sec + 's &nbsp;|&nbsp; omit: ' +
+                     $cfg.iperf_omit_sec + 's &nbsp;|&nbsp; TCP pass (default): ' + $cfg.tcp_pass_pct + '%</p>')
+    $tiers = Get-JsonProp $cfg 'tcp_pass_pct_tiers'
+    if ($tiers) {
+        [void]$sb.Append('<p><small>TCP PASS threshold (NET009) is per-speed: each row below shows ' +
+                         '<b>thr</b>, the link-speed-specific threshold actually applied (e.g. lower-speed ' +
+                         'links carry proportionally more TCP/IP overhead, so 100M defaults to a lower % than ' +
+                         '1000M+). Configured tiers ("speedMbps:pct"): <code>' + $tiers + '</code>; any speed ' +
+                         'not listed uses the default ' + $cfg.tcp_pass_pct + '% above.</small></p>')
+    }
+    [void]$sb.Append('<p><small>Column legend: <b>Full-duplex sum</b> (NET017) is simultaneous ' +
+                     'bidirectional TCP throughput (fwd+rev at once) -- a healthy link sustains both ' +
+                     'directions together. <b>Quality</b> (NET017) is iperf3 TCP retransmits / UDP jitter ' +
+                     '/ UDP loss (fwd/rev). <b>NIC errors</b> (NET016) is the rx+tx error counter delta ' +
+                     'across both NICs during the run; a non-zero <span class="fail">err</span> means the ' +
+                     'link is erroring frames even if throughput looks fine (discards shown separately). ' +
+                     '<b>Jumbo</b> (NET018) is a 9000-MTU DF-ping check at &gt;=1000M.</small></p>')
+    [void]$sb.Append('<p>Overall: <span class="badge" style="background:' + $ovc + '">' + $ov + '</span></p>')
+    $diag = Get-JsonProp $Result 'diagnostics'
+    if ($diag -and -not $diag.firewall_program_rule_added -and -not $diag.firewall_port_rule_added) {
+        [void]$sb.Append('<p class="fail">Firewall: no iperf3 allow rule could be added (' +
+                         $diag.firewall_status + '). iperf3 results below are likely 0 Mbps ' +
+                         'because traffic was dropped, not because the link is slow. ' +
+                         'Re-run as Administrator.</p>')
+    }
+    [void]$sb.Append('<h2>Summary</h2>')
+    [void]$sb.Append('<table><tr><th>Total</th><th>Pass</th><th>Fail</th><th>Unknown</th><th>N/A+Skipped</th></tr><tr>')
+    [void]$sb.Append('<td>'               + $s.total   + '</td>')
+    [void]$sb.Append('<td class="pass">'  + $s.passed  + '</td>')
+    [void]$sb.Append('<td class="fail">'  + $s.failed  + '</td>')
+    [void]$sb.Append('<td class="unknown">' + $s.unknown + '</td>')
+    [void]$sb.Append('<td class="na">'    + $s.skipped + '</td>')
+    [void]$sb.Append('</tr></table>')
+    [void]$sb.Append('<h2>Pairs</h2>')
+    foreach ($pair in $Result.details.pairs) {
+        [void]$sb.Append('<h3>' + $pair.name + '</h3>')
+        $skipReason = Get-JsonProp $pair 'skip_reason'
+        if ($skipReason) {
+            [void]$sb.Append('<p class="skip">Skipped: ' + $skipReason + '</p>')
+            continue
+        }
+        # Per-NIC advertised speeds (NET004): show which NIC supports what, so the
+        # N/A rows below are self-explanatory.
+        if ($pair.PSObject.Properties.Name -contains 'even_nic' -and $pair.even_nic) {
+            $evMax = Get-JsonProp $pair 'even_max_mbps'
+            $odMax = Get-JsonProp $pair 'odd_max_mbps'
+            $evMaxCell = if ($evMax) { "${evMax}M" } else { '-' }
+            $odMaxCell = if ($odMax) { "${odMax}M" } else { '-' }
+            $evCap = if ($pair.even_speeds) { (@($pair.even_speeds | ForEach-Object { "${_}M" }) -join ' / ') } else { '(negotiated only)' }
+            $odCap = if ($pair.odd_speeds)  { (@($pair.odd_speeds  | ForEach-Object { "${_}M" }) -join ' / ') } else { '(negotiated only)' }
+            [void]$sb.Append('<table style="width:auto;margin-bottom:8px"><tr><th>NIC</th><th>Max link speed (NET015)</th><th>Advertised speeds</th></tr>')
+            [void]$sb.Append('<tr><td>' + $pair.even_nic + '</td><td>' + $evMaxCell + '</td><td>' + $evCap + '</td></tr>')
+            [void]$sb.Append('<tr><td>' + $pair.odd_nic  + '</td><td>' + $odMaxCell + '</td><td>' + $odCap + '</td></tr></table>')
+        }
+        [void]$sb.Append('<table><tr><th>Speed (Mbps)</th><th>IPv4 Ping</th><th>IPv6 Ping</th>')
+        [void]$sb.Append('<th>TCP Fwd (M)</th><th>TCP Rev (M)</th><th>UDP Fwd (M)</th><th>UDP Rev (M)</th>' +
+                         '<th>Full-duplex sum (M)<br><small>NET017</small></th>' +
+                         '<th>Quality<br><small>retr / jitter / loss</small></th>' +
+                         '<th>NIC errors<br><small>NET016</small></th>' +
+                         '<th>Jumbo<br><small>NET018</small></th>' +
+                         '<th>TCP PASS thr (NET009)</th><th>Verdict</th></tr>')
+        foreach ($spd in $pair.speeds) {
+            $vc = switch ([string]$spd.verdict) { 'PASS' { 'pass' } 'FAIL' { 'fail' } 'UNKNOWN' { 'unknown' } default { 'na' } }
+            $t  = $spd.throughput
+            $naReason = Get-JsonProp $spd 'na_reason'
+            $note     = Get-JsonProp $spd 'note'
+            $reason   = Get-JsonProp $spd 'reason'
+            $thrPct   = Get-JsonProp $spd 'tcp_pass_pct'
+            $thrMbps  = Get-JsonProp $spd 'tcp_pass_thr_mbps'
+            $thrCell  = if ($null -ne $thrPct) { "${thrMbps}M (${thrPct}%)" } else { '' }
+            # NET017 full-duplex sum, NET017 quality, NET016 errors, NET018 jumbo.
+            $bd = Get-JsonProp $spd 'bidirectional'
+            $bdCell = if ($bd -and $null -ne (Get-JsonProp $bd 'sum_mbps')) {
+                          "$($bd.sum_mbps)<br><small>$($bd.fwd_mbps)+$($bd.rev_mbps)</small>"
+                      } else { '' }
+            $ql = Get-JsonProp $spd 'quality'
+            $qlCell = ''
+            if ($ql) {
+                $retr = Format-MetricPair (Get-JsonProp $ql 'tcp_fwd_retr')      (Get-JsonProp $ql 'tcp_rev_retr')
+                $jit  = Format-MetricPair (Get-JsonProp $ql 'udp_fwd_jitter_ms') (Get-JsonProp $ql 'udp_rev_jitter_ms')
+                $loss = Format-MetricPair (Get-JsonProp $ql 'udp_fwd_lost_pct')  (Get-JsonProp $ql 'udp_rev_lost_pct')
+                $qlCell = "retr ${retr}<br><small>jit ${jit}ms loss ${loss}%</small>"
+                if ($retr -eq '-') {
+                    $qlCell += '<br><small title="iperf3 on Windows does not report TCP retransmit counts">retr N/A on Windows</small>'
+                }
+            }
+            $ec = Get-JsonProp $spd 'error_counters'
+            $ecCell = '0'
+            if ($ec) {
+                $ecTot = [int64](Get-JsonProp $ec 'even_rx_errors') + [int64](Get-JsonProp $ec 'even_tx_errors') +
+                         [int64](Get-JsonProp $ec 'odd_rx_errors')  + [int64](Get-JsonProp $ec 'odd_tx_errors')
+                $ecDisc = [int64](Get-JsonProp $ec 'even_rx_discards') + [int64](Get-JsonProp $ec 'even_tx_discards') +
+                          [int64](Get-JsonProp $ec 'odd_rx_discards')  + [int64](Get-JsonProp $ec 'odd_tx_discards')
+                $ecCls  = if ($ecTot -gt 0) { 'fail' } else { 'pass' }
+                $ecCell = '<span class="' + $ecCls + '">err ' + $ecTot + '</span><br><small>disc ' + $ecDisc + '</small>'
+            }
+            $jm = Get-JsonProp $spd 'jumbo'
+            $jmCell = ''
+            if ($jm) {
+                $jmRes = Get-JsonProp $jm 'result'
+                if ($jmRes) {
+                    $jmCls = if ($jmRes -eq 'PASS') { 'pass' } elseif ($jmRes -eq 'SKIP') { 'na' } elseif ($jmRes -like 'FAIL*') { 'fail' } else { 'unknown' }
+                    $jmCell = '<span class="' + $jmCls + '">' + $jmRes + '</span>'
+                }
+            }
+            # Show the verdict reason for FAIL/UNKNOWN so the cause is visible
+            # inline; N/A rows show na_reason; PASS rows stay clean.
+            $nr = if ($naReason) { '<br><small>' + $naReason + '</small>' }
+                  elseif (($spd.verdict -eq 'FAIL' -or $spd.verdict -eq 'UNKNOWN') -and $reason) {
+                      '<br><small>' + $reason + '</small>'
+                  }
+                  elseif ($note)  { '<br><small>' + $note + '</small>' }
+                  else { '' }
+            [void]$sb.Append('<tr>')
+            [void]$sb.Append('<td>' + $spd.speed_mbps + '</td>')
+            [void]$sb.Append('<td class="' + $vc + '">' + $spd.ipv4_ping + '</td>')
+            [void]$sb.Append('<td class="' + $vc + '">' + $spd.ipv6_ping + '</td>')
+            [void]$sb.Append('<td>' + $t.tcp_fwd_mbps + '</td>')
+            [void]$sb.Append('<td>' + $t.tcp_rev_mbps + '</td>')
+            [void]$sb.Append('<td>' + $t.udp_fwd_mbps + '</td>')
+            [void]$sb.Append('<td>' + $t.udp_rev_mbps + '</td>')
+            [void]$sb.Append('<td>' + $bdCell + '</td>')
+            [void]$sb.Append('<td>' + $qlCell + '</td>')
+            [void]$sb.Append('<td>' + $ecCell + '</td>')
+            [void]$sb.Append('<td>' + $jmCell + '</td>')
+            [void]$sb.Append('<td>' + $thrCell + '</td>')
+            [void]$sb.Append('<td class="' + $vc + '">' + $spd.verdict + $nr + '</td>')
+            [void]$sb.Append('</tr>')
+        }
+        [void]$sb.Append('</table>')
+    }
+    [void]$sb.Append('<hr style="border-color:#30363d;margin-top:32px">')
+    [void]$sb.Append('<p style="color:#6e7681;font-size:0.85em">net_test.ps1 v' +
+                     $script:_script_ver + '  |  ' + $Result.ended_at + '</p>')
+    [void]$sb.Append('</body></html>')
+    $enc = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($OutPath, $sb.ToString(), $enc)
+}
+
+# Convert a "1.0 Gbps Full Duplex" / "100 Mbps Full Duplex" display string to Mbps.
+function ConvertTo-Mbps {
+    param([string]$Disp)
+    if ($Disp -match '([\d.]+)\s*Gbps') { return [int]([double]$Matches[1] * 1000) }
+    if ($Disp -match '([\d.]+)\s*Mbps') { return [int][double]$Matches[1] }
+    return 0
+}
+
+# Robustly read an adapter's current negotiated speed in Mbps.
+# Get-NetAdapter exposes .Speed (uint64 bps) and .LinkSpeed (string "1 Gbps").
+function Get-LinkMbps {
+    param($Adapter)
+    if ($null -eq $Adapter) { return 0 }
+    try { if ($Adapter.Speed -gt 0) { return [int]($Adapter.Speed / 1e6) } } catch {}
+    return (ConvertTo-Mbps ([string]$Adapter.LinkSpeed))
+}
+
+# Enumerate the full-duplex speeds a NIC advertises via *SpeedDuplex.
+# Returns an array of @{ mbps=<int>; display=<string> } (excludes Auto/Half).
+function Get-NicSpeedOptions {
+    param([string]$Nic)
+    $out = @()
+    try {
+        $p = Get-NetAdapterAdvancedProperty -Name $Nic -RegistryKeyword '*SpeedDuplex' -ErrorAction Stop
+        $vals = @($p.ValidDisplayValues)
+    } catch { return ,$out }
+    foreach ($d in $vals) {
+        if ($null -eq $d) { continue }
+        if ($d -match 'Half') { continue }
+        if ($d -match 'Auto') { continue }
+        $m = ConvertTo-Mbps $d
+        if ($m -gt 0) { $out += @{ mbps = $m; display = $d } }
+    }
+    return ,$out
+}
+
+# -- Admin check ---------------------------------------------------------------
+$_isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+            ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $_isAdmin -and -not $DryRun) {
+    Write-Error "net_test.ps1 requires Administrator rights for IP/speed changes.`nRe-run from an elevated PowerShell prompt."
+    exit 1
+}
+
+# -- iperf3 check + auto-install (NET006) --------------------------------------
+# Like net_test.sh's iperf3_install: use it if present, otherwise install it.
+if (-not $DryRun) {
+    $i3path = Ensure-Iperf3 `
+        -AutoInstall $Iperf3AutoInst `
+        -WingetId    $Iperf3WingetId `
+        -ChocoPkg    $Iperf3ChocoPkg `
+        -ScoopPkg    $Iperf3ScoopPkg `
+        -GhRepo      $Iperf3GhRepo `
+        -ZipPattern  $Iperf3ZipPat `
+        -ToolsDir    (Join-Path $_script_root 'tools')
+    if ($null -eq $i3path) {
+        Write-Error ("iperf3 not found and auto-install failed.`n" +
+            "Install it manually (winget install --id $Iperf3WingetId) or download from`n" +
+            "https://iperf.fr/iperf-download.php and add the folder to PATH, then re-run.")
+        exit 1
+    }
+    Write-Host ("         iperf3         : " + $i3path) -ForegroundColor DarkGray
+}
+
+# -- NIC enumeration (NET001) --------------------------------------------------
+# Physical Ethernet only (MediaType '802.3'); optionally restricted by vendor.
+$_nicObjs = @(Get-NetAdapter -Physical |
+    Where-Object { $_.MediaType -eq '802.3' -and $_.Status -ne 'Not Present' })
+if ($VendorFilter -ne '') {
+    $_nicObjs = @($_nicObjs | Where-Object {
+        $_.InterfaceDescription -match [regex]::Escape($VendorFilter) -or
+        $_.DriverProvider       -match [regex]::Escape($VendorFilter)
+    })
+    Write-Host ("         Vendor filter  : '$VendorFilter'") -ForegroundColor DarkGray
+}
+$_allNics = @($_nicObjs | Sort-Object InterfaceIndex | Select-Object -ExpandProperty Name)
+
+Write-Host ("         Ethernet NICs  : " + ($_allNics -join ', ')) -ForegroundColor DarkGray
+if ($_allNics.Count -eq 0) {
+    Write-Error "No matching physical Ethernet NICs found (vendor filter: '$VendorFilter')."
+    exit 1
+}
+
+# -- Management NIC exclusion (NET012) -----------------------------------------
+# Priority: 1. MAC list from config ($_net_exclude_macs)
+#           2. -Lifeline name(s) from CLI
+#           3. Fallback: the NIC carrying the active SSH/RDP session
+# The fallback identifies the genuine lifeline by looking at which local IP the
+# inbound management connection terminates on -- far more reliable than guessing
+# from route metrics (Windows gives faster links lower metrics, so a 10G test NIC
+# can outrank the real management NIC).  When the script runs from a local console
+# there is no remote session, so nothing is excluded and every NIC is testable.
+$_excluded = [System.Collections.Generic.List[string]]::new()
+# NET019: per-NIC exclusion reason, surfaced in result.json SKIPPED entries.
+$_skipReason = @{}
+
+# Step 1: resolve MAC addresses from config to NIC names.
+foreach ($rawMac in ($cfgExcludeMacs -split '[,;\s]+' | Where-Object { $_ -ne '' })) {
+    $norm = ($rawMac -replace '[-:]', '').ToUpper()
+    $a = Get-NetAdapter -Physical -ErrorAction SilentlyContinue |
+         Where-Object { ($_.MacAddress -replace '[-:]', '') -ieq $norm } |
+         Select-Object -First 1
+    if ($null -ne $a) {
+        [void]$_excluded.Add($a.Name)
+        $_skipReason[$a.Name] = 'excluded by _net_exclude_macs (NET012/NET019)'
+        Write-Host ("         Excl MAC " + $rawMac.PadRight(17) + ": " + $a.Name) -ForegroundColor DarkGray
+    } else {
+        Write-Warning "NET012: MAC $rawMac not found on this system -- ignored."
+    }
+}
+
+# Step 2: -Lifeline CLI parameter (name-based; may be comma-separated for multiple NICs).
+foreach ($ln in ($Lifeline -split '[,;]+' | Where-Object { $_ -ne '' })) {
+    $ln = $ln.Trim()
+    if ($ln -ne '' -and -not $_excluded.Contains($ln)) {
+        [void]$_excluded.Add($ln)
+        $_skipReason[$ln] = '-Lifeline flag (NET012)'
+        Write-Host ("         Excl -Lifeline  : " + $ln) -ForegroundColor DarkGray
+    }
+}
+
+# Step 3: ALWAYS exclude the NIC carrying the active remote session (SSH 22 /
+# RDP 3389), in addition to anything specified above.  This must NOT be a
+# fallback that only runs when no MAC/-Lifeline was given: if the operator pins
+# a management MAC but their live SSH actually terminates on a different NIC
+# (e.g. an Intel test NIC, because routing chose it), skipping this detection
+# would leave that NIC testable -- the first speed change then forces a static
+# IP + adapter bounce on the wire carrying SSH and the session drops with no way
+# back until the run ends.  Detecting and excluding the genuine session NIC
+# unconditionally guarantees the lifeline is never reconfigured.  A local-console
+# run has no such session, so this correctly excludes nothing.
+try {
+    $mgmtPorts = @(22, 3389)
+    $sessionIps = @(Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
+        Where-Object { $mgmtPorts -contains $_.LocalPort -and
+                       $_.RemoteAddress -notin @('127.0.0.1', '::1') } |
+        Select-Object -ExpandProperty LocalAddress -Unique)
+    foreach ($lip in $sessionIps) {
+        $own = Get-NetIPAddress -IPAddress $lip -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($null -ne $own) {
+            $nicName = (Get-NetAdapter -InterfaceIndex $own.InterfaceIndex -ErrorAction SilentlyContinue).Name
+            if ($null -ne $nicName -and -not $_excluded.Contains($nicName)) {
+                [void]$_excluded.Add($nicName)
+                $_skipReason[$nicName] = 'carries active SSH/RDP session (NET012)'
+                Write-Host ("         Excl (session)  : $nicName  (carries active SSH/RDP session, local $lip)") -ForegroundColor DarkGray
+            }
+        }
+    }
+    if ($_excluded.Count -eq 0) {
+        Write-Host ("         Lifeline       : none detected (local console; no NIC excluded)") -ForegroundColor DarkGray
+    }
+} catch {}
+
+# -- Build skip set (NET011) ---------------------------------------------------
+$_skipSet = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+foreach ($s in ($Skip -split '[,;]+' | Where-Object { $_ -ne '' })) {
+    $_sn = $s.Trim()
+    [void]$_skipSet.Add($_sn)
+    if (-not $_skipReason.ContainsKey($_sn)) { $_skipReason[$_sn] = '-Skip flag (NET011)' }
+}
+foreach ($excl in $_excluded) {
+    if ($_skipSet.Contains($excl)) {
+        # Already in -Skip; nothing to do.
+    } elseif ($_allNics -notcontains $excl) {
+        Write-Host ("         Excl            : $excl  (not in vendor-filtered set; already protected)") -ForegroundColor DarkGray
+    } else {
+        if ($StrictLifeline) {
+            Write-Warning "NET012: '$excl' is in the exclusion list and in the test candidate set; removing."
+        }
+        [void]$_skipSet.Add($excl)
+    }
+}
+
+# -- Include whitelist by MAC (NET019) -----------------------------------------
+# When $_net_include_macs is non-empty, ONLY NICs whose MAC matches are tested;
+# every other NIC is added to the skip set. This runs AFTER the exclusion/skip
+# build above and only ever ADDS to the skip set, so an exclusion or lifeline NIC
+# is never rescued by an include entry (exclusions always win, NET012).
+$_includeMacs = @($cfgIncludeMacs -split '[,;\s]+' |
+                  Where-Object { $_ -ne '' } |
+                  ForEach-Object { ($_ -replace '[-:]', '').ToUpper() })
+if ($_includeMacs.Count -gt 0) {
+    Write-Host ("         Include MAC(s) : " + ($_includeMacs -join ', ') + "  (NET019 whitelist)") -ForegroundColor DarkGray
+    foreach ($nic in $_allNics) {
+        if ($_skipSet.Contains($nic)) { continue }   # already excluded; leave it
+        $mac = ((Get-NetAdapter -Name $nic -ErrorAction SilentlyContinue).MacAddress -replace '[-:]', '').ToUpper()
+        if ($_includeMacs -notcontains $mac) {
+            [void]$_skipSet.Add($nic)
+            $_skipReason[$nic] = 'not in _net_include_macs (NET019)'
+            Write-Host ("         Excl (not-incl) : $nic  (MAC $mac not in include list, NET019)") -ForegroundColor DarkGray
+        }
+    }
+}
+
+$_testNics    = @($_allNics | Where-Object { -not $_skipSet.Contains($_) })
+$_skippedNics = @($_allNics | Where-Object {      $_skipSet.Contains($_) })
+
+if ($_testNics.Count -lt 2) {
+    Write-Error "Need at least 2 testable NICs; found $($_testNics.Count) after exclusions."
+    exit 1
+}
+
+# -- Pair NICs: [0]<->[1], [2]<->[3], ... -------------------------------------
+$_evenNics     = @()
+$_oddNics      = @()
+$_unpairedNics = @()
+$_pairCount    = [Math]::Floor($_testNics.Count / 2)
+for ($i = 0; $i -lt $_pairCount; $i++) {
+    $_evenNics += $_testNics[$i * 2]
+    $_oddNics  += $_testNics[$i * 2 + 1]
+}
+if ($_testNics.Count % 2 -eq 1) {
+    $_unpairedNics += $_testNics[-1]
+    Write-Warning "Odd NIC count -- '$($_testNics[-1])' has no pair and will be skipped (N/A in report)."
+}
+
+# -- Per-pair speed plan (NET004) ----------------------------------------------
+# A pair is tested at every speed BOTH NICs support, optionally restricted by
+# -Speeds.  If neither NIC exposes *SpeedDuplex, fall back to the single
+# negotiated speed so the test still runs.
+$_pairPlans = @()   # index-aligned with $_evenNics: array of speed-step hashtables
+$_pairCaps  = @{}   # pairKey -> @{ even; odd; even_speeds=@(); odd_speeds=@() } (NET004 display)
+Write-Host ""
+for ($i = 0; $i -lt $_evenNics.Count; $i++) {
+    $evenOpts = Get-NicSpeedOptions $_evenNics[$i]
+    $oddOpts  = Get-NicSpeedOptions $_oddNics[$i]
+    $evenMap  = @{}; foreach ($o in $evenOpts) { $evenMap[[int]$o.mbps] = $o.display }
+    $oddMap   = @{}; foreach ($o in $oddOpts)  { $oddMap[[int]$o.mbps]  = $o.display }
+    $evenMax  = if ($evenMap.Count -gt 0) { [int]($evenMap.Keys | Measure-Object -Maximum).Maximum } else { 0 }
+    $oddMax   = if ($oddMap.Count  -gt 0) { [int]($oddMap.Keys  | Measure-Object -Maximum).Maximum } else { 0 }
+    $pairKey  = "$($_evenNics[$i])<->$($_oddNics[$i])"
+    $_pairCaps[$pairKey] = @{
+        even        = $_evenNics[$i]
+        odd         = $_oddNics[$i]
+        even_speeds = @($evenMap.Keys | Sort-Object)
+        odd_speeds  = @($oddMap.Keys  | Sort-Object)
+        even_max    = $evenMax          # NET015: NIC's top advertised speed
+        odd_max     = $oddMax
+        pair_max    = if ($evenMax -gt 0 -and $oddMax -gt 0) { [Math]::Min($evenMax, $oddMax) } else { [Math]::Max($evenMax, $oddMax) }
+    }
+    $plan = @()
+    if ($evenOpts.Count -gt 0 -or $oddOpts.Count -gt 0) {
+        # Union of both NICs' advertised speeds. Speeds only one NIC supports are
+        # included but marked testable=false; the job records them as N/A so the
+        # user can see which speeds were considered but skipped.
+        $allSpeeds = @(($evenMap.Keys + $oddMap.Keys) | Sort-Object -Unique)
+        if ($_speedAllow.Count -gt 0) {
+            $allSpeeds = @($allSpeeds | Where-Object { $_speedAllow -contains $_ })
+        }
+        foreach ($m in $allSpeeds) {
+            $testable = $evenMap.ContainsKey($m) -and $oddMap.ContainsKey($m)
+            $naReason = $null
+            if (-not $testable) {
+                if (-not $evenMap.ContainsKey($m)) { $naReason = "$($_evenNics[$i]) does not support ${m}M" }
+                else                               { $naReason = "$($_oddNics[$i]) does not support ${m}M" }
+            }
+            # 1000BASE-T+ on copper requires autonegotiation (IEEE 802.3 clause 40).
+            # On some PHYs (e.g. Intel I219-V) selecting a fixed ">=1000 Full Duplex"
+            # value disables autoneg, so the link will NOT come up -- the NIC goes
+            # Disconnected.  When the target speed IS that NIC's top advertised
+            # speed, use Auto Negotiation instead (autoneg stays on and naturally
+            # tops out at that speed).  When the target is BELOW the NIC's top speed,
+            # force the value: for 10/100 no autoneg is needed, and a multi-gig NIC
+            # (e.g. X550) keeps autoneg on while advertising only the forced speed,
+            # so a "force 1000" on a 10G NIC still negotiates cleanly to 1000M.
+            $evenAuto = ($evenMap.ContainsKey($m) -and [int]$m -ge 1000 -and [int]$m -eq $evenMax)
+            $oddAuto  = ($oddMap.ContainsKey($m)  -and [int]$m -ge 1000 -and [int]$m -eq $oddMax)
+            # Per-speed-tier TCP PASS threshold (NET009): lower link speeds carry
+            # proportionally more TCP/IP overhead, so e.g. 100M defaults to 90%
+            # while 1000M+ keeps 95%. -TcpPassPct on the CLI overrides per-speed.
+            $tcpPassPct = if ($_tcpPassPctExplicit) { $TcpPassPct } else { Get-TcpPassPct -Mbps ([int]$m) -Default $TcpPassPct }
+            $plan += @{
+                mbps        = [int]$m
+                testable    = $testable
+                evenDisplay = if ($evenMap.ContainsKey($m)) { $evenMap[[int]$m] } else { $null }
+                oddDisplay  = if ($oddMap.ContainsKey($m))  { $oddMap[[int]$m]  } else { $null }
+                evenAuto    = [bool]$evenAuto
+                oddAuto     = [bool]$oddAuto
+                na_reason   = $naReason
+                tcp_pass_pct = [int]$tcpPassPct
+            }
+        }
+    }
+    if ($plan.Count -eq 0) {
+        # Fallback: single negotiated speed, no speed change.
+        $neg = Get-LinkMbps (Get-NetAdapter -Name $_evenNics[$i] -ErrorAction SilentlyContinue)
+        if ($neg -le 0) { $neg = 1000 }
+        if ($_speedAllow.Count -eq 0 -or $_speedAllow -contains $neg) {
+            $tcpPassPct = if ($_tcpPassPctExplicit) { $TcpPassPct } else { Get-TcpPassPct -Mbps ([int]$neg) -Default $TcpPassPct }
+            $plan += @{ mbps = $neg; testable = $true; evenDisplay = $null; oddDisplay = $null; evenAuto = $false; oddAuto = $false; na_reason = $null; tcp_pass_pct = [int]$tcpPassPct }
+        }
+    }
+    $_pairPlans += ,$plan
+    $spdList = @($plan | ForEach-Object {
+        if ($_.testable) { "$($_.mbps)M" } else { "$($_.mbps)M(N/A)" }
+    }) -join ', '
+    $evenCap = @($_pairCaps[$pairKey].even_speeds | ForEach-Object { "${_}M" }) -join '/'
+    $oddCap  = @($_pairCaps[$pairKey].odd_speeds  | ForEach-Object { "${_}M" }) -join '/'
+    if ($evenCap -eq '') { $evenCap = '(negotiated only)' }
+    if ($oddCap  -eq '') { $oddCap  = '(negotiated only)' }
+    Write-Host ("  Pair $i : " + $_evenNics[$i] + " <-> " + $_oddNics[$i]) -ForegroundColor Green
+    Write-Host ("           " + $_evenNics[$i].PadRight(12) + " supports: $evenCap") -ForegroundColor DarkGray
+    Write-Host ("           " + $_oddNics[$i].PadRight(12)  + " supports: $oddCap")  -ForegroundColor DarkGray
+    Write-Host ("           tested speeds (union): [$spdList]") -ForegroundColor Green
+}
+foreach ($u in $_unpairedNics) { Write-Host ("  Unpaired : $u") -ForegroundColor Yellow }
+Write-Host ""
+Write-Host ("  Loops: $Loops   iperf3 time: ${IperfTimeSec}s   omit: ${IperfOmitSec}s   TCP pass (default): ${TcpPassPct}%   link wait: ${LinkWaitSec}s")
+Write-Host ""
+
+# -- Main log setup ------------------------------------------------------------
+$_runTs   = Now-Ts
+$_mainLog = Join-Path $_log_path "net_test_$_runTs.log"
+
+function Write-MainLog { param([string]$Msg)
+    "[$(Now-Iso)] $Msg" | Add-Content -Path $_mainLog -Encoding UTF8
+}
+
+@(
+    "============= Network Test ($_runTs) ============="
+    "Host: $($env:COMPUTERNAME)   User: $($env:USERNAME)"
+    "Vendor filter: '$VendorFilter'   Loops: $Loops"
+    "iperf3 time: ${IperfTimeSec}s   omit: ${IperfOmitSec}s   TCP pass (default): ${TcpPassPct}%"
+    if ($_tcpPassPctExplicit) {
+        "TCP pass thresholds: -TcpPassPct=${TcpPassPct}% applied to ALL speeds (overrides per-speed tiers)"
+    } else {
+        "TCP pass thresholds (NET009, per speed tier): ${cfgTcpPassPctTiers}  (any speed not listed uses ${TcpPassPct}%)"
+    }
+    "Mode: parallel pairs ($($_evenNics.Count) pair(s)), multi-speed"
+    "======================================================="
+) | Out-File -FilePath $_mainLog -Encoding UTF8
+
+# -- Per-pair job scriptblock --------------------------------------------------
+# Runs in a separate (elevated) PS process; fully self-contained.
+$_pairJobBlock = {
+    param(
+        [int]    $PairIdx,
+        [string] $EvenNic,
+        [string] $OddNic,
+        [string] $SpeedPlanJson,
+        [string] $LogRoot,
+        [string] $RunTs,
+        [int]    $LoopN,
+        [int]    $TotalLoops,
+        [int]    $IperfTime,
+        [int]    $IperfOmit,
+        [int]    $TcpPct,
+        [int]    $LinkWait,
+        [int]    $AutonegWait,
+        [bool]   $Dry,
+        [int]    $ErrCounterChk,
+        [int]    $ErrFailOnDelta,
+        [int]    $TestBidir,
+        [int]    $TestJumbo,
+        [int]    $JumboMtu
+    )
+
+    function Now-Iso { Get-Date -Format 'yyyy-MM-ddTHH:mm:ss' }
+
+    # SpeedPlan is passed as JSON to avoid Start-Job -ArgumentList flattening.
+    # In PS 5.1, ConvertFrom-Json emits the entire JSON array as ONE pipeline item
+    # (Object[]).  Wrapping in @() would therefore create a nested array -- do NOT
+    # use @() here.  foreach works on both Object[] and a single PSCustomObject.
+    $SpeedPlan = $SpeedPlanJson | ConvertFrom-Json
+    if ($null -eq $SpeedPlan) { $SpeedPlan = @() }
+
+    function Get-LinkMbpsJob {
+        param($Adapter)
+        if ($null -eq $Adapter) { return 0 }
+        try { if ($Adapter.Speed -gt 0) { return [int]($Adapter.Speed / 1e6) } } catch {}
+        $s = [string]$Adapter.LinkSpeed
+        if ($s -match '([\d.]+)\s*Gbps') { return [int]([double]$Matches[1] * 1000) }
+        if ($s -match '([\d.]+)\s*Mbps') { return [int][double]$Matches[1] }
+        return 0
+    }
+
+    function Set-NicSpeed {
+        param([string]$Nic, [string]$Display, [bool]$Dry, [string]$LogPath)
+        if ($Dry -or [string]::IsNullOrEmpty($Display)) { return $true }
+
+        try {
+            $prop = Get-NetAdapterAdvancedProperty -Name $Nic -RegistryKeyword '*SpeedDuplex' -ErrorAction Stop
+        } catch {
+            if ($LogPath) { "  [speed] $Nic : cannot read *SpeedDuplex ($($_.Exception.Message))" | Add-Content $LogPath }
+            return $false
+        }
+
+        # Resolve the requested DisplayValue to its RegistryValue (the numeric enum
+        # the driver actually stores) and set by RegistryValue.  This is far more
+        # robust than setting by DisplayValue: the visible strings drift across
+        # Intel driver releases ("Auto Negotiation" / "Auto-Negotiation" / "Auto"),
+        # but the enum index is stable and is exactly what Device Manager writes.
+        $disps  = @($prop.ValidDisplayValues)
+        $regs   = @($prop.ValidRegistryValues)
+        $want   = $Display.Trim()
+        $regVal = $null
+        if ($regs.Count -gt 0 -and $regs.Count -eq $disps.Count) {
+            for ($k = 0; $k -lt $disps.Count; $k++) {
+                if ([string]$disps[$k] -eq $want) { $regVal = [string]$regs[$k]; break }
+            }
+            if ($null -eq $regVal -and $want -match 'Auto') {
+                # Tolerant autoneg match: any display string containing "Auto".
+                for ($k = 0; $k -lt $disps.Count; $k++) {
+                    if ([string]$disps[$k] -match 'Auto') { $regVal = [string]$regs[$k]; break }
+                }
+            }
+        }
+
+        try {
+            if ($null -ne $regVal) {
+                Set-NetAdapterAdvancedProperty -Name $Nic -RegistryKeyword '*SpeedDuplex' -RegistryValue $regVal -ErrorAction Stop
+            } else {
+                Set-NetAdapterAdvancedProperty -Name $Nic -RegistryKeyword '*SpeedDuplex' -DisplayValue $want -ErrorAction Stop
+            }
+        } catch {
+            if ($LogPath) { "  [speed] $Nic : set '$want' FAILED ($($_.Exception.Message))" | Add-Content $LogPath }
+            return $false
+        }
+
+        # Read back so the log shows whether the driver actually accepted the change.
+        Start-Sleep -Milliseconds 400
+        $now = '?'
+        try { $now = [string](Get-NetAdapterAdvancedProperty -Name $Nic -RegistryKeyword '*SpeedDuplex' -ErrorAction Stop).DisplayValue } catch {}
+        if ($LogPath) { "  [speed] $Nic : set '$want' (reg=$regVal) -> now '$now'" | Add-Content $LogPath }
+        return $true
+    }
+
+    # Wait until both NICs are Up at the requested Mbps.  Logs a status/speed
+    # snapshot every ~5s so a stuck or mismatched link is visible in the pair log.
+    function Wait-PairLink {
+        param([string]$A, [string]$B, [int]$Mbps, [int]$TimeoutSec, [bool]$Dry, [string]$LogPath)
+        if ($Dry) { return $true }
+        $deadline = (Get-Date).AddSeconds($TimeoutSec)
+        $lastLog  = Get-Date
+        while ((Get-Date) -lt $deadline) {
+            $na = Get-NetAdapter -Name $A -ErrorAction SilentlyContinue
+            $nb = Get-NetAdapter -Name $B -ErrorAction SilentlyContinue
+            $sa = Get-LinkMbpsJob $na
+            $sb = Get-LinkMbpsJob $nb
+            if ($na -and $nb -and $na.Status -eq 'Up' -and $nb.Status -eq 'Up' -and
+                $sa -eq $Mbps -and $sb -eq $Mbps) {
+                return $true
+            }
+            if ($LogPath -and ((Get-Date) - $lastLog).TotalSeconds -ge 5) {
+                $stA = if ($na) { [string]$na.Status } else { '?' }
+                $stB = if ($nb) { [string]$nb.Status } else { '?' }
+                "  [wait]  $A : $stA / ${sa}M   |   $B : $stB / ${sb}M  (target ${Mbps}M)" | Add-Content $LogPath
+                $lastLog = Get-Date
+            }
+            Start-Sleep -Milliseconds 800
+        }
+        return $false
+    }
+
+    function Add-PairIPs {
+        param([int]$Idx, [string]$Even, [string]$Odd, [bool]$Dry)
+        if ($Dry) { return }
+        $set = @(
+            @{ Alias=$Even; IP="192.247.$Idx.1";    PL=24 },
+            @{ Alias=$Odd;  IP="192.247.$Idx.11";   PL=24 },
+            @{ Alias=$Even; IP="fd00:2470::${Idx}:1";  PL=64 },
+            @{ Alias=$Odd;  IP="fd00:2470::${Idx}:11"; PL=64 }
+        )
+        foreach ($x in $set) {
+            try { New-NetIPAddress -InterfaceAlias $x.Alias -IPAddress $x.IP `
+                    -PrefixLength $x.PL -ErrorAction Stop | Out-Null } catch {}
+        }
+
+        # CRITICAL for single-host back-to-back testing.  Both NICs of the pair
+        # live on the SAME host in the SAME /24 -- there is no network-namespace
+        # isolation like the Linux side has.  Under Windows' DEFAULT *strong host
+        # model*, a TCP SYN sent to 192.247.$Idx.11 (a LOCAL address) is only
+        # accepted if it arrives on the exact interface that owns that address;
+        # after repeated adapter Disable/Enable cycles the duplicate on-link route
+        # and the neighbor (ARP/ND) cache drift, so the SYN starts being dropped
+        # while ICMP -- which re-resolves ARP on every ping -- still succeeds.
+        # That is exactly the "ping PASS but iperf3 Connection timed out, getting
+        # worse every loop" failure.  Enabling the *weak host model* on both
+        # interfaces makes each NIC send/accept packets for the pair regardless of
+        # which interface they traverse, which is what actually forces the traffic
+        # across the physical cable and keeps it stable across bounces.
+        foreach ($n in @($Even, $Odd)) {
+            foreach ($af in @('IPv4','IPv6')) {
+                try {
+                    Set-NetIPInterface -InterfaceAlias $n -AddressFamily $af `
+                        -WeakHostSend Enabled -WeakHostReceive Enabled -ErrorAction Stop
+                } catch {}
+            }
+        }
+    }
+
+    # Flush the neighbor (ARP / ND) cache entries for this pair's test IPs.  After
+    # an adapter Disable/Enable the cached entry can go stale or "Unreachable",
+    # and a fresh TCP connect (unlike ping) will not always force re-resolution
+    # before its connect timeout -- so a stale entry is one of the things that
+    # makes iperf3 time out on an otherwise-up link.  Called right after every
+    # bounce, before the priming ping re-resolves the addresses cleanly.
+    function Clear-PairNeighbors {
+        param([int]$Idx, [string]$Even, [string]$Odd, [bool]$Dry)
+        if ($Dry) { return }
+        foreach ($ip in @("192.247.$Idx.1","192.247.$Idx.11","fd00:2470::${Idx}:1","fd00:2470::${Idx}:11")) {
+            try { Remove-NetNeighbor -IPAddress $ip -Confirm:$false -ErrorAction SilentlyContinue } catch {}
+        }
+    }
+
+    # Restore a NIC to DHCP / automatic addressing.  Assigning a static test IP
+    # with New-NetIPAddress flips the interface from DHCP to manual; just removing
+    # the static IP afterwards would leave it stranded in manual mode with NO
+    # address.  Re-enable DHCP for IPv4+IPv6 and reset DNS so the NIC is returned
+    # to the state it had before the test.
+    function Restore-NicDhcp {
+        param([string]$Nic, [bool]$Dry, [string]$LogPath)
+        if ($Dry) { return }
+        try {
+            # Restore the strong host model (Windows default) we changed in
+            # Add-PairIPs, so the NIC is returned to its pre-test state.
+            foreach ($af in @('IPv4','IPv6')) {
+                Set-NetIPInterface -InterfaceAlias $Nic -AddressFamily $af `
+                    -WeakHostSend Disabled -WeakHostReceive Disabled -ErrorAction SilentlyContinue
+            }
+            Set-NetIPInterface -InterfaceAlias $Nic -AddressFamily IPv4 -Dhcp Enabled -ErrorAction SilentlyContinue
+            Set-NetIPInterface -InterfaceAlias $Nic -AddressFamily IPv6 -Dhcp Enabled -ErrorAction SilentlyContinue
+            Set-DnsClientServerAddress -InterfaceAlias $Nic -ResetServerAddresses -ErrorAction SilentlyContinue
+            if ($LogPath) { "  [ip]    $Nic : restored to DHCP / automatic" | Add-Content $LogPath }
+        } catch {
+            if ($LogPath) { "  [ip]    $Nic : DHCP restore failed: $($_.Exception.Message)" | Add-Content $LogPath }
+        }
+    }
+
+    function Invoke-PingCheck {
+        param([string]$SrcIp, [string]$DstIp, [bool]$IsV6, [bool]$Dry)
+        if ($Dry) { return 'PASS' }
+        $a = @('-n','4','-S',$SrcIp)
+        if ($IsV6) { $a += '-6' }
+        $a += $DstIp
+        & ping @a 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) { return 'PASS' } else { return 'FAIL' }
+    }
+
+    # Start-Process -ArgumentList does not reliably quote array elements that
+    # contain spaces (PS 5.1): an unquoted "C:\...\Ethernet 2..." path gets split
+    # into multiple arguments by the child process, silently truncating
+    # iperf3's --logfile value (e.g. to "...iPerf3_Ethernet").  Build a single
+    # pre-quoted command-line string instead.
+    function ConvertTo-ArgString {
+        param([string[]]$ArgList)
+        ($ArgList | ForEach-Object {
+            if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { "$_" }
+        }) -join ' '
+    }
+
+    # NET017 robustness: probe whether something is actually accepting TCP
+    # connections on $IpAddr:$Port.  iperf3 always uses a TCP control channel
+    # (even for UDP tests), so this confirms the server is ready before we
+    # launch the client -- replacing a blind fixed sleep that loses the race
+    # after an adapter restart.
+    function Test-IperfPortReady {
+        param([string]$IpAddr, [int]$Port, [int]$TimeoutMs = 300)
+        $client = $null
+        try {
+            $client = [System.Net.Sockets.TcpClient]::new()
+            $iar = $client.BeginConnect($IpAddr, $Port, $null, $null)
+            if ($iar.AsyncWaitHandle.WaitOne($TimeoutMs) -and $client.Connected) {
+                $client.EndConnect($iar)
+                return $true
+            }
+            return $false
+        } catch {
+            return $false
+        } finally {
+            if ($client) { $client.Close() }
+        }
+    }
+
+    function Start-IperfServer {
+        param([string]$BindIp, [int]$Port, [bool]$Dry, [string]$LogFile = '', [string]$PairLog = '')
+        if ($Dry) { return 0 }
+        $a = @('--server','--bind',$BindIp,'--port',$Port)
+        if ($LogFile) { $a += @('--logfile',$LogFile,'--forceflush') }
+        $p = Start-Process iperf3 -ArgumentList (ConvertTo-ArgString $a) `
+             -PassThru -WindowStyle Hidden
+        # Poll the control port until the server is actually listening (up to
+        # ~5s) instead of assuming 1s is enough.  After an adapter Disable/Enable
+        # the bind sometimes needs a moment, and a blind sleep was producing
+        # spurious "Connection timed out" / UNKNOWN verdicts (NET008).
+        $ready = $false
+        for ($i = 0; $i -lt 25; $i++) {
+            if (Test-IperfPortReady -IpAddr $BindIp -Port $Port) { $ready = $true; break }
+            Start-Sleep -Milliseconds 200
+        }
+        if (-not $ready -and $PairLog) {
+            # The server never came up -- record WHY.  From the client side this
+            # is indistinguishable from a firewall drop (stealth mode swallows
+            # the SYN either way -> "Connection timed out"), so the server's exit
+            # state and own log are the only place the real cause shows up
+            # (e.g. "Address already in use" from a ghost listener, or
+            # "Cannot assign requested address" when the bind IP is not ready).
+            $st = 'process still running but not accepting (probe failed)'
+            try { if ($p.HasExited) { $st = "process exited rc=$($p.ExitCode)" } } catch {}
+            "  [server] iperf3 server on ${BindIp}:${Port} NOT ready after 5s -- $st" | Add-Content $PairLog
+            if ($LogFile -and (Test-Path $LogFile)) {
+                $tl = (Get-Content $LogFile -Tail 3 -ErrorAction SilentlyContinue) -join ' | '
+                "  [server] server log tail: $tl" | Add-Content $PairLog
+            }
+        }
+        return $p.Id
+    }
+
+    function Stop-IperfServer {
+        param([int]$ServerPid)
+        if ($ServerPid -le 0) { return }
+        Stop-Process -Id $ServerPid -Force -ErrorAction SilentlyContinue
+    }
+
+    # NET017 robustness: run one iperf3 measurement (start server, run client,
+    # stop server) and, if it still comes back with no data (0 Mbps -- server
+    # died, or the link/bind was not ready), restart the server and retry up to
+    # $MaxTries times before giving up.  This turns the transient post-adapter-
+    # restart race into a self-healing retry instead of a spurious UNKNOWN.
+    function Invoke-IperfMeasured {
+        param([string]$ClientIp, [string]$ServerIp, [int]$Port, [int]$SpeedM,
+              [int]$TimeSec, [int]$Omit, [bool]$Reverse, [bool]$Udp,
+              [string]$LogFile, [bool]$Dry, [string]$PairLog, [int]$MaxTries = 3)
+        # The server gets its own log artefact beside the client one (NET013):
+        # a client "Connection timed out" alone cannot distinguish firewall drop /
+        # bind failure / server crash -- the server log can.
+        $srvLog = $LogFile -replace '\.log$', '_server.log'
+        if (-not $Dry) { Remove-Item $srvLog -Force -ErrorAction SilentlyContinue }
+        for ($attempt = 1; $attempt -le $MaxTries; $attempt++) {
+            $srv = Start-IperfServer -BindIp $ServerIp -Port $Port -Dry $Dry -LogFile $srvLog -PairLog $PairLog
+            Invoke-IperfClient -ClientIp $ClientIp -ServerIp $ServerIp -Port $Port -SpeedM $SpeedM `
+                -TimeSec $TimeSec -Omit $Omit -Reverse $Reverse -Udp $Udp -LogFile $LogFile -Dry $Dry
+            Stop-IperfServer -ServerPid $srv
+            if ($Dry) { return }
+            if ((Get-IperfStats $LogFile).mbps -gt 0) { return }
+            if ($attempt -lt $MaxTries -and $PairLog) {
+                "  [retry] iperf3 no data (attempt $attempt/$MaxTries) -- restarting server and retrying" |
+                    Add-Content $PairLog
+            }
+            Start-Sleep -Seconds 2
+        }
+    }
+
+    function Invoke-IperfClient {
+        param([string]$ClientIp, [string]$ServerIp, [int]$Port, [int]$SpeedM,
+              [int]$TimeSec, [int]$Omit, [bool]$Reverse, [bool]$Udp,
+              [string]$LogFile, [bool]$Dry)
+        if ($Dry) {
+            "DRY-RUN iperf3 $ClientIp->$ServerIp tcp=$(-not $Udp) rev=$Reverse ${TimeSec}s" |
+                Set-Content $LogFile
+            return
+        }
+        $a = @('--client',$ServerIp,'--bind',$ClientIp,'--port',$Port,
+               '--bitrate',"${SpeedM}M",'--time',$TimeSec,
+               '--interval','3','--omit',$Omit,'--logfile',$LogFile,'--forceflush')
+        if ($Reverse) { $a += '--reverse' }
+        if ($Udp)     { $a += '--udp' }
+        $p = Start-Process iperf3 -ArgumentList (ConvertTo-ArgString $a) -Wait -PassThru -WindowStyle Hidden
+        if ($p.ExitCode -ne 0) { "iperf3 client exit $($p.ExitCode)" | Add-Content $LogFile }
+    }
+
+    # Parse an iperf3 text log into the receiver throughput plus the quality
+    # metrics iperf3 already reports (NET017): TCP retransmits (from the sender
+    # summary line) and UDP jitter / loss (from the receiver summary line).  These
+    # cost nothing extra to collect -- iperf3 prints them on every run -- but turn
+    # a bare Mbps number into a real link-quality verdict.
+    function Get-IperfStats {
+        param([string]$LogFile)
+        $r = @{ mbps = 0.0; retransmits = $null; jitter_ms = $null; lost_pct = $null; lost_pkts = $null }
+        if (-not (Test-Path $LogFile)) { return $r }
+        $raw = Get-Content $LogFile -Raw -ErrorAction SilentlyContinue
+        if (-not $raw) { return $r }
+        $lines  = $raw -split "`n"
+        $rxLine = ($lines | Where-Object { $_ -match '\breceiver\b' } | Select-Object -Last 1)
+        $txLine = ($lines | Where-Object { $_ -match '\bsender\b'   } | Select-Object -Last 1)
+        if ($rxLine -and $rxLine -match '([\d.]+)\s+([KMG]?)bits/sec') {
+            $n = [double]$Matches[1]
+            $r.mbps = switch ($Matches[2]) {
+                'K' { [Math]::Round($n / 1000, 2) }
+                'G' { [Math]::Round($n * 1000, 2) }
+                default { [Math]::Round($n, 2) }
+            }
+        }
+        # TCP: the sender summary line ends "... <bitrate>  <Retr>   sender".
+        if ($txLine -and $txLine -match 'bits/sec\s+(\d+)\s+sender') { $r.retransmits = [int]$Matches[1] }
+        # UDP: the receiver summary line ends "... <jitter> ms  <lost>/<total> (<pct>%)".
+        if ($rxLine -and $rxLine -match '([\d.]+)\s+ms\s+(\d+)/(\d+)\s+\(([\d.]+)%\)') {
+            $r.jitter_ms = [double]$Matches[1]
+            $r.lost_pkts = [int]$Matches[2]
+            $r.lost_pct  = [double]$Matches[4]
+        }
+        return $r
+    }
+
+    # NET017: simultaneous bidirectional (full-duplex) throughput.  Rather than rely
+    # on iperf3 --bidir text output (which varies by version), run two independent
+    # unidirectional TCP sessions AT THE SAME TIME on two ports -- one even->odd, one
+    # odd->even -- so the link carries traffic both ways concurrently.  Returns the
+    # two directions and their sum; a healthy full-duplex link sustains near line
+    # rate in BOTH directions at once.
+    function Invoke-IperfBidir {
+        param([string]$EvenIp, [string]$OddIp, [int]$PortA, [int]$PortB, [int]$SpeedM,
+              [int]$TimeSec, [int]$Omit, [string]$LogFwd, [string]$LogRev, [bool]$Dry,
+              [string]$PairLog = '')
+        if ($Dry) {
+            "DRY-RUN iperf3 bidir $EvenIp<->$OddIp ${TimeSec}s" | Set-Content $LogFwd
+            "DRY-RUN iperf3 bidir $EvenIp<->$OddIp ${TimeSec}s" | Set-Content $LogRev
+            return
+        }
+        # Two servers: PortA on odd (receives even->odd), PortB on even (receives odd->even).
+        # Each gets its own log artefact so a start failure is diagnosable (NET013).
+        $srvLogA = $LogFwd -replace '\.log$', '_server.log'
+        $srvLogB = $LogRev -replace '\.log$', '_server.log'
+        Remove-Item $srvLogA, $srvLogB -Force -ErrorAction SilentlyContinue
+        $srvA = Start-Process iperf3 -ArgumentList (ConvertTo-ArgString @('--server','--bind',$OddIp,'--port',$PortA,'--logfile',$srvLogA,'--forceflush'))  -PassThru -WindowStyle Hidden
+        $srvB = Start-Process iperf3 -ArgumentList (ConvertTo-ArgString @('--server','--bind',$EvenIp,'--port',$PortB,'--logfile',$srvLogB,'--forceflush')) -PassThru -WindowStyle Hidden
+        # Wait until both servers are actually accepting connections (NET017),
+        # rather than assuming 1s is enough after an adapter restart.
+        $ready = $false
+        for ($i = 0; $i -lt 25; $i++) {
+            if ((Test-IperfPortReady -IpAddr $OddIp -Port $PortA) -and
+                (Test-IperfPortReady -IpAddr $EvenIp -Port $PortB)) { $ready = $true; break }
+            Start-Sleep -Milliseconds 200
+        }
+        if (-not $ready -and $PairLog) {
+            "  [server] bidir servers not both ready after 5s (${OddIp}:${PortA}=$(Test-IperfPortReady -IpAddr $OddIp -Port $PortA) ${EvenIp}:${PortB}=$(Test-IperfPortReady -IpAddr $EvenIp -Port $PortB))" |
+                Add-Content $PairLog
+            foreach ($sl in @($srvLogA, $srvLogB)) {
+                if (Test-Path $sl) {
+                    $tl = (Get-Content $sl -Tail 2 -ErrorAction SilentlyContinue) -join ' | '
+                    "  [server] $(Split-Path -Leaf $sl): $tl" | Add-Content $PairLog
+                }
+            }
+        }
+        # Each direction is capped at the full link rate (a direct back-to-back link
+        # is non-blocking, so full-duplex should sustain both at once).
+        $argFwd = @('--client',$OddIp, '--bind',$EvenIp,'--port',$PortA,'--bitrate',"${SpeedM}M",'--time',$TimeSec,'--interval','3','--omit',$Omit,'--logfile',$LogFwd,'--forceflush')
+        $argRev = @('--client',$EvenIp,'--bind',$OddIp, '--port',$PortB,'--bitrate',"${SpeedM}M",'--time',$TimeSec,'--interval','3','--omit',$Omit,'--logfile',$LogRev,'--forceflush')
+        $cF = Start-Process iperf3 -ArgumentList (ConvertTo-ArgString $argFwd) -PassThru -WindowStyle Hidden
+        $cR = Start-Process iperf3 -ArgumentList (ConvertTo-ArgString $argRev) -PassThru -WindowStyle Hidden
+        Wait-Process -Id $cF.Id -ErrorAction SilentlyContinue
+        Wait-Process -Id $cR.Id -ErrorAction SilentlyContinue
+        foreach ($s in @($srvA,$srvB)) { Stop-Process -Id $s.Id -Force -ErrorAction SilentlyContinue }
+    }
+
+    # NET016: snapshot a NIC's error / discard counters.  A frame can be counted as
+    # delivered for throughput yet still be erroring/dropping on a marginal link, so
+    # we diff these around the iperf3 runs.
+    function Get-NicErrCounters {
+        param([string]$Nic)
+        try {
+            $s = Get-NetAdapterStatistics -Name $Nic -ErrorAction Stop
+            return @{
+                rx_errors   = [int64]$s.ReceivedPacketErrors
+                tx_errors   = [int64]$s.OutboundPacketErrors
+                rx_discards = [int64]$s.ReceivedDiscardedPackets
+                tx_discards = [int64]$s.OutboundDiscardedPackets
+            }
+        } catch {
+            return $null
+        }
+    }
+
+    # NET018: verify a DF-bit jumbo frame crosses the link unfragmented.  Payload is
+    # MTU - 28 (IPv4 + ICMP headers); a reply proves end-to-end jumbo support.
+    function Test-JumboPing {
+        param([string]$SrcIp, [string]$DstIp, [int]$Mtu, [bool]$Dry)
+        if ($Dry) { return 'PASS' }
+        $payload = $Mtu - 28
+        try {
+            $out = & ping -n 2 -f -l $payload -w 1500 -S $SrcIp $DstIp 2>&1 | Out-String
+            if ($out -match 'TTL=' -and $out -notmatch 'fragmented|needs to be fragmented|General failure|timed out') {
+                return 'PASS'
+            }
+            if ($out -match 'fragmented') { return 'FAIL-FRAG' }
+            return 'FAIL'
+        } catch {
+            return 'FAIL'
+        }
+    }
+
+    # NET018: on Windows, raising the IP-layer MTU via Set-NetIPInterface alone does
+    # NOT enable jumbo frames -- the NIC driver still caps the Ethernet frame size at
+    # whatever its '*JumboPacket' advanced property says (default ~1514, i.e. no
+    # jumbo), so a DF jumbo ping fails with FAIL-FRAG even though the IP MTU "looks"
+    # right.  (Linux has no equivalent split: `ip link set mtu` controls the L2 frame
+    # size directly, so net_test.sh does not need this step.)  This returns the
+    # largest '*JumboPacket' option the NIC offers, plus its current setting so the
+    # caller can restore it afterwards.
+    function Get-NicMaxJumboBytes {
+        param([string]$Nic)
+        try {
+            $p = Get-NetAdapterAdvancedProperty -Name $Nic -RegistryKeyword '*JumboPacket' -ErrorAction Stop
+        } catch {
+            return @{ supported = $false; maxBytes = 0 }
+        }
+        $vals    = @($p.ValidDisplayValues)
+        $regVals = @($p.ValidRegistryValues)
+        $maxBytes = 0; $maxRegValue = $null
+        for ($vi = 0; $vi -lt $vals.Count; $vi++) {
+            $n = 0
+            if ($vals[$vi] -match '(\d+)') { $n = [int]$Matches[1] }
+            if ($n -gt $maxBytes) { $maxBytes = $n; $maxRegValue = $regVals[$vi] }
+        }
+        return @{
+            supported    = ($maxBytes -gt 1514)
+            maxBytes     = $maxBytes
+            maxRegValue  = $maxRegValue
+            origRegValue = $p.RegistryValue
+        }
+    }
+
+    # ---- pair setup ----------------------------------------------------------
+    $pair    = "$EvenNic<->$OddNic"
+    $v4even  = "192.247.$PairIdx.1";    $v4odd = "192.247.$PairIdx.11"
+    $v6even  = "fd00:2470::${PairIdx}:1"; $v6odd = "fd00:2470::${PairIdx}:11"
+    # The iperf3 port rotates per loop (loop1: 5201/5202, loop2: 5203/5204, ...)
+    # so a loop can never collide with a socket the previous loop left behind
+    # (TIME_WAIT, or a ghost server whose bound IP was since removed/re-added).
+    # Wraps after 10 loops; the firewall allow rule covers all of 5201-5220.
+    $port    = 5201 + ((($LoopN - 1) % 10) * 2)
+    $pairLog = Join-Path $LogRoot "net_test_pair${PairIdx}_${RunTs}.log"
+
+    # Append across loops (one pair log per run) -- overwriting per loop threw
+    # away the earlier iterations, which is exactly the part needed to diagnose
+    # a failure that only appears in later loops.
+    if (Test-Path $pairLog) { "" | Add-Content $pairLog }
+    @(
+        "============= Pair ${PairIdx}: ${pair} ============="
+        "Start: $(Now-Iso)   Iteration: $LoopN/$TotalLoops"
+        "Speeds planned: $(@($SpeedPlan | ForEach-Object { if ($_.testable) { "$($_.mbps)M" } else { "$($_.mbps)M(N/A)" } }) -join ', ')"
+        "====================================================="
+    ) | Add-Content $pairLog
+
+    # Per-loop init/recover: terminate any iperf3 process still referencing this
+    # pair's test subnet.  A leftover server (e.g. from an aborted run or an
+    # earlier loop) silently holds the port while its socket is dead, and every
+    # later connect to it times out.  Scoped to this pair's addresses via the
+    # process command line, so parallel pairs -- and anything else on the host --
+    # are untouched.
+    function Stop-PairIperf {
+        param([string]$Tag)
+        if ($Dry) { return }
+        try {
+            $pat = "192\.247\.$PairIdx\.|fd00:2470::${PairIdx}:"
+            $stale = @(Get-CimInstance Win32_Process -Filter "Name='iperf3.exe'" -ErrorAction SilentlyContinue |
+                       Where-Object { $_.CommandLine -match $pat })
+            foreach ($pr in $stale) {
+                Stop-Process -Id $pr.ProcessId -Force -ErrorAction SilentlyContinue
+                "  [$Tag] killed leftover iperf3 pid=$($pr.ProcessId): $($pr.CommandLine)" | Add-Content $pairLog
+            }
+        } catch {}
+    }
+    Stop-PairIperf -Tag 'init'
+
+    $speedResults = @()
+
+    try {
+        foreach ($step in $SpeedPlan) {
+            $mbps = [int]$step.mbps
+            "" | Add-Content $pairLog
+
+            # Speed not testable: one NIC in the pair does not support it.
+            if (-not [bool]$step.testable) {
+                $naReason = [string]$step.na_reason
+                "### Speed = $mbps Mbps  [N/A: $naReason]" | Add-Content $pairLog
+                $speedResults += @{
+                    speed_mbps = $mbps; ipv4_ping='N/A'; ipv6_ping='N/A'
+                    throughput=@{tcp_fwd_mbps=0;tcp_rev_mbps=0;udp_fwd_mbps=0;udp_rev_mbps=0}
+                    verdict='N/A'; na_reason=$naReason
+                }
+                continue
+            }
+
+            "### Speed = $mbps Mbps" | Add-Content $pairLog
+            $autonegNote = $null
+
+            # Choose, per NIC, between forcing the target speed and Auto Negotiation
+            # (see the plan-building comment): when the target is a NIC's own top
+            # speed and >=1000M, force-mode would disable autoneg on some PHYs
+            # (I219-V) and the link drops, so that NIC uses Auto Negotiation while
+            # the other (which can go higher, e.g. X550) is pinned to the target.
+            # Both ends keep autoneg on with overlapping advertisement, so the link
+            # converges cleanly at the target speed.
+            #
+            # A registry/property change does not reliably restart the PHY, so the
+            # Disable/Enable cycle below makes the new advertisement take effect;
+            # renegotiation is slow, hence the longer $AutonegWait timeout.
+            $evenWant = if ([bool]$step.evenAuto) { 'Auto Negotiation' } else { [string]$step.evenDisplay }
+            $oddWant  = if ([bool]$step.oddAuto)  { 'Auto Negotiation' } else { [string]$step.oddDisplay }
+            "  [speed] plan: $EvenNic -> '$evenWant'   |   $OddNic -> '$oddWant'  (target ${mbps}M)" | Add-Content $pairLog
+            Set-NicSpeed -Nic $EvenNic -Display $evenWant -Dry $Dry -LogPath $pairLog | Out-Null
+            Set-NicSpeed -Nic $OddNic  -Display $oddWant  -Dry $Dry -LogPath $pairLog | Out-Null
+            if (-not $Dry) {
+                "  [speed] restarting adapters to apply ${mbps}M and renegotiate..." | Add-Content $pairLog
+                # Restart-NetAdapter is a quick "bounce" that some drivers (notably
+                # the X550) apply almost instantly without actually retraining the
+                # copper link.  A full Disable/Enable cycle forces the PHY to power
+                # down and re-link from scratch, which is what onboard NICs (I219-V)
+                # need to pick up a new *SpeedDuplex advertisement.
+                Disable-NetAdapter -Name $EvenNic -Confirm:$false -ErrorAction SilentlyContinue
+                Disable-NetAdapter -Name $OddNic  -Confirm:$false -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 3
+                Enable-NetAdapter -Name $EvenNic -Confirm:$false -ErrorAction SilentlyContinue
+                Enable-NetAdapter -Name $OddNic  -Confirm:$false -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 5
+            }
+            $linkOk = Wait-PairLink -A $EvenNic -B $OddNic -Mbps $mbps -TimeoutSec $AutonegWait -Dry $Dry -LogPath $pairLog
+
+            # (Re-)assert the test IPs; a speed change bounces the link.  Flush the
+            # pair's stale neighbor entries FIRST (the bounce can leave them
+            # Unreachable, which makes the iperf3 connect time out while ping still
+            # works), then re-add the IPs (which also re-enables the weak host
+            # model the bounce may have reset).
+            Clear-PairNeighbors -Idx $PairIdx -Even $EvenNic -Odd $OddNic -Dry $Dry
+            Add-PairIPs -Idx $PairIdx -Even $EvenNic -Odd $OddNic -Dry $Dry
+            if (-not $Dry) { Start-Sleep -Seconds 3 }   # NDP / DAD settle
+
+            if (-not $linkOk) {
+                $actEven = Get-LinkMbpsJob (Get-NetAdapter -Name $EvenNic -ErrorAction SilentlyContinue)
+                $actOdd  = Get-LinkMbpsJob (Get-NetAdapter -Name $OddNic  -ErrorAction SilentlyContinue)
+                "Link did NOT reach $mbps Mbps within ${AutonegWait}s (actual: ${EvenNic}=${actEven}M, ${OddNic}=${actOdd}M) - recording UNKNOWN." | Add-Content $pairLog
+                # Diagnostic dump: full adapter status + *SpeedDuplex setting for
+                # both NICs, so a stuck negotiation can be root-caused from the log
+                # without needing another round trip.
+                foreach ($n in @($EvenNic, $OddNic)) {
+                    try {
+                        $ad = Get-NetAdapter -Name $n -ErrorAction Stop
+                        "  [diag] ${n}: Status=$($ad.Status) MediaConnectionState=$($ad.MediaConnectionState) LinkSpeed=$($ad.LinkSpeed)" | Add-Content $pairLog
+                    } catch {
+                        "  [diag] ${n}: Get-NetAdapter failed: $($_.Exception.Message)" | Add-Content $pairLog
+                    }
+                    try {
+                        $sd = Get-NetAdapterAdvancedProperty -Name $n -RegistryKeyword '*SpeedDuplex' -ErrorAction Stop
+                        "  [diag] ${n}: *SpeedDuplex = '$($sd.DisplayValue)' (reg=$($sd.RegistryValue))" | Add-Content $pairLog
+                    } catch {
+                        "  [diag] ${n}: *SpeedDuplex read failed: $($_.Exception.Message)" | Add-Content $pairLog
+                    }
+                }
+                $speedResults += @{
+                    speed_mbps = $mbps; ipv4_ping='UNKNOWN'; ipv6_ping='UNKNOWN'
+                    throughput=@{tcp_fwd_mbps=0;tcp_rev_mbps=0;udp_fwd_mbps=0;udp_rev_mbps=0}
+                    verdict='UNKNOWN'
+                }
+                continue
+            }
+
+            $v4Res = Invoke-PingCheck -SrcIp $v4even -DstIp $v4odd -IsV6 $false -Dry $Dry
+            "[IPv4 ICMP] $v4even -> $v4odd : $v4Res" | Add-Content $pairLog
+            $v6Res = Invoke-PingCheck -SrcIp $v6even -DstIp $v6odd -IsV6 $true -Dry $Dry
+            "[IPv6 ICMP] $v6even -> $v6odd : $v6Res" | Add-Content $pairLog
+
+            function Get-Log { param([string]$Type)
+                Join-Path $LogRoot "iPerf3_${EvenNic}_n_${OddNic}_${LoopN}of${TotalLoops}_${Type}_spd${mbps}_${RunTs}.log"
+            }
+            $logTcpRev = Get-Log 'TCPRev'; $logTcpFwd = Get-Log 'TCP'
+            $logUdpRev = Get-Log 'UDPRev'; $logUdpFwd = Get-Log 'UDP'
+
+            # NET016: snapshot error/discard counters on both NICs BEFORE the runs.
+            $errBeforeEven = $null; $errBeforeOdd = $null
+            if ($ErrCounterChk -and -not $Dry) {
+                $errBeforeEven = Get-NicErrCounters -Nic $EvenNic
+                $errBeforeOdd  = Get-NicErrCounters -Nic $OddNic
+            }
+
+            "[TCP Reverse]" | Add-Content $pairLog
+            Invoke-IperfMeasured -ClientIp $v4even -ServerIp $v4odd -Port $port -SpeedM $mbps `
+                -TimeSec $IperfTime -Omit $IperfOmit -Reverse $true -Udp $false -LogFile $logTcpRev -Dry $Dry -PairLog $pairLog
+
+            "[TCP Forward]" | Add-Content $pairLog
+            Invoke-IperfMeasured -ClientIp $v4even -ServerIp $v4odd -Port $port -SpeedM $mbps `
+                -TimeSec $IperfTime -Omit $IperfOmit -Reverse $false -Udp $false -LogFile $logTcpFwd -Dry $Dry -PairLog $pairLog
+
+            "[UDP Reverse]" | Add-Content $pairLog
+            Invoke-IperfMeasured -ClientIp $v4even -ServerIp $v4odd -Port $port -SpeedM $mbps `
+                -TimeSec $IperfTime -Omit $IperfOmit -Reverse $true -Udp $true -LogFile $logUdpRev -Dry $Dry -PairLog $pairLog
+
+            "[UDP Forward]" | Add-Content $pairLog
+            Invoke-IperfMeasured -ClientIp $v4even -ServerIp $v4odd -Port $port -SpeedM $mbps `
+                -TimeSec $IperfTime -Omit $IperfOmit -Reverse $false -Udp $true -LogFile $logUdpFwd -Dry $Dry -PairLog $pairLog
+
+            $sTcpFwd = Get-IperfStats $logTcpFwd; $nTcpFwd = $sTcpFwd.mbps
+            $sTcpRev = Get-IperfStats $logTcpRev; $nTcpRev = $sTcpRev.mbps
+            $sUdpFwd = Get-IperfStats $logUdpFwd; $nUdpFwd = $sUdpFwd.mbps
+            $sUdpRev = Get-IperfStats $logUdpRev; $nUdpRev = $sUdpRev.mbps
+
+            # NET017: simultaneous bidirectional (full-duplex) TCP pass.
+            $bidirFwd = $null; $bidirRev = $null; $bidirSum = $null
+            if ($TestBidir -and -not $Dry) {
+                "[Bidirectional full-duplex (TCP, both directions at once)]" | Add-Content $pairLog
+                $logBiFwd = Get-Log 'BIDIRfwd'; $logBiRev = Get-Log 'BIDIRrev'
+                Invoke-IperfBidir -EvenIp $v4even -OddIp $v4odd -PortA $port -PortB ($port + 1) -SpeedM $mbps `
+                    -TimeSec $IperfTime -Omit $IperfOmit -LogFwd $logBiFwd -LogRev $logBiRev -Dry $Dry -PairLog $pairLog
+                $bidirFwd = (Get-IperfStats $logBiFwd).mbps
+                $bidirRev = (Get-IperfStats $logBiRev).mbps
+                $bidirSum = [Math]::Round($bidirFwd + $bidirRev, 2)
+                "  bidir fwd=${bidirFwd}M rev=${bidirRev}M sum=${bidirSum}M" | Add-Content $pairLog
+            }
+
+            # NET017: collect iperf3 quality metrics (retransmits / jitter / loss).
+            $quality = @{
+                tcp_fwd_retr = $sTcpFwd.retransmits; tcp_rev_retr = $sTcpRev.retransmits
+                udp_fwd_jitter_ms = $sUdpFwd.jitter_ms; udp_rev_jitter_ms = $sUdpRev.jitter_ms
+                udp_fwd_lost_pct  = $sUdpFwd.lost_pct;  udp_rev_lost_pct  = $sUdpRev.lost_pct
+            }
+            "[quality] TCP retr fwd=$($sTcpFwd.retransmits) rev=$($sTcpRev.retransmits)  " +
+                "UDP jitter fwd=$($sUdpFwd.jitter_ms)ms rev=$($sUdpRev.jitter_ms)ms  " +
+                "UDP loss fwd=$($sUdpFwd.lost_pct)% rev=$($sUdpRev.lost_pct)%" | Add-Content $pairLog
+
+            # NET016: snapshot error/discard counters AFTER the runs and diff.
+            $errDelta = $null
+            if ($ErrCounterChk -and -not $Dry -and $null -ne $errBeforeEven -and $null -ne $errBeforeOdd) {
+                $aEven = Get-NicErrCounters -Nic $EvenNic
+                $aOdd  = Get-NicErrCounters -Nic $OddNic
+                if ($null -ne $aEven -and $null -ne $aOdd) {
+                    $errDelta = @{
+                        even_rx_errors = $aEven.rx_errors - $errBeforeEven.rx_errors
+                        even_tx_errors = $aEven.tx_errors - $errBeforeEven.tx_errors
+                        even_rx_discards = $aEven.rx_discards - $errBeforeEven.rx_discards
+                        even_tx_discards = $aEven.tx_discards - $errBeforeEven.tx_discards
+                        odd_rx_errors  = $aOdd.rx_errors  - $errBeforeOdd.rx_errors
+                        odd_tx_errors  = $aOdd.tx_errors  - $errBeforeOdd.tx_errors
+                        odd_rx_discards = $aOdd.rx_discards - $errBeforeOdd.rx_discards
+                        odd_tx_discards = $aOdd.tx_discards - $errBeforeOdd.tx_discards
+                    }
+                    "[counters] even rx_err=$($errDelta.even_rx_errors) tx_err=$($errDelta.even_tx_errors) " +
+                        "rx_disc=$($errDelta.even_rx_discards) tx_disc=$($errDelta.even_tx_discards) | " +
+                        "odd rx_err=$($errDelta.odd_rx_errors) tx_err=$($errDelta.odd_tx_errors) " +
+                        "rx_disc=$($errDelta.odd_rx_discards) tx_disc=$($errDelta.odd_tx_discards)" | Add-Content $pairLog
+                }
+            }
+
+            # NET018: jumbo-frame (MTU) verification at >=1000M.
+            $jumbo = $null
+            if ($TestJumbo -and -not $Dry -and $mbps -ge 1000) {
+                $needBytes = $JumboMtu + 14   # Ethernet header (no FCS)
+                $jpEven = Get-NicMaxJumboBytes -Nic $EvenNic
+                $jpOdd  = Get-NicMaxJumboBytes -Nic $OddNic
+                if (-not $jpEven.supported -or -not $jpOdd.supported) {
+                    $jumbo = 'SKIP'
+                    "[jumbo] skipped -- '*JumboPacket' not supported on " +
+                        "$(if (-not $jpEven.supported) {$EvenNic}) $(if (-not $jpOdd.supported) {$OddNic})" |
+                        Add-Content $pairLog
+                } elseif ($jpEven.maxBytes -lt $needBytes -or $jpOdd.maxBytes -lt $needBytes) {
+                    $jumbo = 'SKIP'
+                    "[jumbo] skipped -- max Jumbo Packet size ($($jpEven.maxBytes)/$($jpOdd.maxBytes) bytes) " +
+                        "< required $needBytes bytes for MTU $JumboMtu" | Add-Content $pairLog
+                } else {
+                    "[jumbo] enabling Jumbo Packet ($($jpEven.maxBytes)/$($jpOdd.maxBytes) bytes) " +
+                        "and MTU $JumboMtu on both NICs..." | Add-Content $pairLog
+                    try {
+                        # Windows splits "IP MTU" from "NIC frame size": Set-NetIPInterface
+                        # alone does not change the Ethernet frame size the driver will
+                        # actually send/accept, which is governed by '*JumboPacket'. Both
+                        # must be raised, and (mirroring the *SpeedDuplex change above) the
+                        # adapters must be bounced for the driver to re-init at the new
+                        # frame size.
+                        Set-NetAdapterAdvancedProperty -Name $EvenNic -RegistryKeyword '*JumboPacket' -RegistryValue $jpEven.maxRegValue -ErrorAction Stop
+                        Set-NetAdapterAdvancedProperty -Name $OddNic  -RegistryKeyword '*JumboPacket' -RegistryValue $jpOdd.maxRegValue  -ErrorAction Stop
+                        Disable-NetAdapter -Name $EvenNic -Confirm:$false -ErrorAction SilentlyContinue
+                        Disable-NetAdapter -Name $OddNic  -Confirm:$false -ErrorAction SilentlyContinue
+                        Start-Sleep -Seconds 3
+                        Enable-NetAdapter -Name $EvenNic -Confirm:$false -ErrorAction SilentlyContinue
+                        Enable-NetAdapter -Name $OddNic  -Confirm:$false -ErrorAction SilentlyContinue
+                        Start-Sleep -Seconds 5
+                        Set-NetIPInterface -InterfaceAlias $EvenNic -NlMtuBytes $JumboMtu -ErrorAction Stop
+                        Set-NetIPInterface -InterfaceAlias $OddNic  -NlMtuBytes $JumboMtu -ErrorAction Stop
+                        Start-Sleep -Seconds 2
+                        $jumbo = Test-JumboPing -SrcIp $v4even -DstIp $v4odd -Mtu $JumboMtu -Dry $Dry
+                    } catch {
+                        $jumbo = 'UNKNOWN'
+                        "  [jumbo] setup failed: $($_.Exception.Message)" | Add-Content $pairLog
+                    }
+                    "  [jumbo] MTU=$JumboMtu result=$jumbo" | Add-Content $pairLog
+                    # Restore: IP MTU back to 1500, '*JumboPacket' back to its original
+                    # setting, then bounce again so the driver re-inits at 1500.
+                    foreach ($n in @($EvenNic, $OddNic)) {
+                        Set-NetIPInterface -InterfaceAlias $n -NlMtuBytes 1500 -ErrorAction SilentlyContinue
+                    }
+                    Set-NetAdapterAdvancedProperty -Name $EvenNic -RegistryKeyword '*JumboPacket' -RegistryValue $jpEven.origRegValue -ErrorAction SilentlyContinue
+                    Set-NetAdapterAdvancedProperty -Name $OddNic  -RegistryKeyword '*JumboPacket' -RegistryValue $jpOdd.origRegValue  -ErrorAction SilentlyContinue
+                    Disable-NetAdapter -Name $EvenNic -Confirm:$false -ErrorAction SilentlyContinue
+                    Disable-NetAdapter -Name $OddNic  -Confirm:$false -ErrorAction SilentlyContinue
+                    Start-Sleep -Seconds 3
+                    Enable-NetAdapter -Name $EvenNic -Confirm:$false -ErrorAction SilentlyContinue
+                    Enable-NetAdapter -Name $OddNic  -Confirm:$false -ErrorAction SilentlyContinue
+                    Start-Sleep -Seconds 5
+                }
+            }
+
+            # Diagnostics: 0 Mbps usually means iperf3 could not connect (commonly
+            # the Windows Firewall dropping inbound TCP/UDP 5201).  Dump the tails so
+            # the cause is visible without opening every per-run log.
+            if ($nTcpFwd -eq 0.0 -or $nTcpRev -eq 0.0 -or $nUdpFwd -eq 0.0 -or $nUdpRev -eq 0.0) {
+                "[diag] iperf3 reported 0 Mbps for >=1 direction; per-run log tails:" | Add-Content $pairLog
+                foreach ($lf in @($logTcpFwd, $logTcpRev, $logUdpFwd, $logUdpRev)) {
+                    foreach ($f in @($lf, ($lf -replace '\.log$', '_server.log'))) {
+                        if (Test-Path $f) {
+                            $tl = (Get-Content $f -Tail 3 -ErrorAction SilentlyContinue) -join ' | '
+                            ("  " + (Split-Path -Leaf $f) + ": " + $tl) | Add-Content $pairLog
+                        }
+                    }
+                }
+                # Snapshot the environment at failure time: who (if anyone) is
+                # listening on the test port, whether the run's firewall rules
+                # still exist, and the NICs' network profile -- the three things
+                # that make a connect silently time out while ping still passes.
+                try {
+                    $lsn = @(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)
+                    $lsnTxt = if ($lsn.Count -gt 0) {
+                        (@($lsn | ForEach-Object { "$($_.LocalAddress) pid=$($_.OwningProcess)" }) -join ', ')
+                    } else { 'none' }
+                    "  [diag] listeners on :${port}: $lsnTxt" | Add-Content $pairLog
+                    $fw = @(Get-NetFirewallRule -DisplayName 'net_test_iperf3*' -ErrorAction SilentlyContinue)
+                    "  [diag] net_test firewall rules present: $($fw.Count)" | Add-Content $pairLog
+                    foreach ($n in @($EvenNic, $OddNic)) {
+                        $prof = Get-NetConnectionProfile -InterfaceAlias $n -ErrorAction SilentlyContinue
+                        if ($prof) { "  [diag] ${n}: network profile = $($prof.NetworkCategory)" | Add-Content $pairLog }
+                    }
+                    # The single-host / shared-subnet root cause shows up here: the
+                    # route to the peer test IP, the neighbor (ARP) state, and the
+                    # weak-host-model flag.  A peer neighbor in 'Unreachable', or a
+                    # route pointing at the wrong/disabled interface, is the actual
+                    # reason a connect times out while ping still passes.
+                    foreach ($ip in @("192.247.$PairIdx.1","192.247.$PairIdx.11")) {
+                        $nb = Get-NetNeighbor -IPAddress $ip -ErrorAction SilentlyContinue | Select-Object -First 1
+                        if ($nb) { "  [diag] neighbor $ip -> $($nb.LinkLayerAddress) state=$($nb.State) if=$($nb.InterfaceAlias)" | Add-Content $pairLog }
+                        $rt = Get-NetRoute -DestinationPrefix "$ip/32" -ErrorAction SilentlyContinue | Select-Object -First 1
+                        if ($rt) { "  [diag] route $ip via if=$($rt.InterfaceAlias) metric=$($rt.RouteMetric)" | Add-Content $pairLog }
+                    }
+                    foreach ($n in @($EvenNic, $OddNic)) {
+                        $wh = Get-NetIPInterface -InterfaceAlias $n -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
+                        if ($wh) { "  [diag] ${n}: WeakHostSend=$($wh.WeakHostSend) WeakHostReceive=$($wh.WeakHostReceive)" | Add-Content $pairLog }
+                    }
+                } catch {}
+            }
+
+            # Per-speed-tier TCP PASS threshold (NET009): each plan step carries its
+            # own tcp_pass_pct, computed from $_net_tcp_pass_pct_tiers in config.ps1.
+            $stepPct = [int]$step.tcp_pass_pct
+            $thr = [Math]::Round($mbps * $stepPct / 100.0, 2)
+            $verdict = 'FAIL'
+            if ($v4Res -ne 'PASS' -or $v6Res -ne 'PASS') { $verdict = 'FAIL' }
+            elseif ($nTcpFwd -eq 0.0 -or $nTcpRev -eq 0.0) { $verdict = 'UNKNOWN' }
+            elseif ($nTcpFwd -ge $thr -and $nTcpRev -ge $thr) { $verdict = 'PASS' }
+            else { $verdict = 'FAIL' }
+
+            # Human-readable verdict reason (NET008): explain WHY, not just the
+            # label, so the report localises a failure to its cause.
+            $reason = $null
+            if ($verdict -eq 'PASS') {
+                $reason = "TCP fwd ${nTcpFwd}M and rev ${nTcpRev}M both >= ${thr}M (${stepPct}% of ${mbps}M)"
+            } elseif ($verdict -eq 'UNKNOWN') {
+                $zeros = @()
+                if ($nTcpFwd -eq 0.0) { $zeros += 'TCP fwd' }
+                if ($nTcpRev -eq 0.0) { $zeros += 'TCP rev' }
+                if ($nUdpFwd -eq 0.0) { $zeros += 'UDP fwd' }
+                if ($nUdpRev -eq 0.0) { $zeros += 'UDP rev' }
+                $reason = "iperf3 returned no data (0 Mbps) for: $($zeros -join ', ') -- " +
+                          'possible firewall block, connection timeout, or link not ready'
+            } else {
+                # FAIL: list every contributing cause.
+                $causes = @()
+                if ($v4Res -ne 'PASS') { $causes += "IPv4 ICMP $v4Res" }
+                if ($v6Res -ne 'PASS') { $causes += "IPv6 ICMP $v6Res" }
+                if ($nTcpFwd -lt $thr) { $causes += "TCP fwd ${nTcpFwd}M < ${thr}M threshold" }
+                if ($nTcpRev -lt $thr) { $causes += "TCP rev ${nTcpRev}M < ${thr}M threshold" }
+                if ($causes.Count -eq 0) { $causes += 'see throughput values' }
+                $reason = "FAIL: " + ($causes -join '; ') + " (threshold ${stepPct}% of ${mbps}M = ${thr}M)"
+            }
+
+            # NET016: a link can hit its throughput target while still erroring frames.
+            # Total rx/tx errors across both NICs (discards are softer -- reported but
+            # not failed by default).  Fail or annotate per $ErrFailOnDelta.
+            $errTotal = 0
+            if ($null -ne $errDelta) {
+                $errTotal = [int64]$errDelta.even_rx_errors + [int64]$errDelta.even_tx_errors +
+                            [int64]$errDelta.odd_rx_errors  + [int64]$errDelta.odd_tx_errors
+                if ($errTotal -gt 0) {
+                    $errMsg = "NIC error counters incremented during the run (rx/tx errors total=$errTotal)"
+                    if ($ErrFailOnDelta -and $verdict -eq 'PASS') {
+                        $verdict = 'FAIL'
+                        $reason  = "FAIL: $errMsg -- throughput met threshold but the link is erroring frames"
+                    } else {
+                        $reason  = "$reason  [warning: $errMsg]"
+                    }
+                }
+            }
+            # NET018: a failed jumbo-frame test annotates the reason (does not fail the
+            # speed verdict on its own -- jumbo support is informational here).
+            if ($jumbo -and $jumbo -ne 'PASS' -and $jumbo -ne 'SKIP') {
+                $reason = "$reason  [jumbo MTU ${JumboMtu}: $jumbo]"
+            }
+
+            "Verdict: $verdict  tcpFwd=${nTcpFwd}M tcpRev=${nTcpRev}M udpFwd=${nUdpFwd}M udpRev=${nUdpRev}M thr=${thr}M (${stepPct}% of ${mbps}M)" |
+                Add-Content $pairLog
+            "  Reason: $reason" | Add-Content $pairLog
+
+            $speedResults += @{
+                speed_mbps = $mbps; ipv4_ping=$v4Res; ipv6_ping=$v6Res
+                throughput=@{ tcp_fwd_mbps=$nTcpFwd; tcp_rev_mbps=$nTcpRev
+                              udp_fwd_mbps=$nUdpFwd; udp_rev_mbps=$nUdpRev }
+                bidirectional=@{ fwd_mbps=$bidirFwd; rev_mbps=$bidirRev; sum_mbps=$bidirSum }
+                quality=$quality
+                error_counters=$errDelta
+                jumbo=@{ mtu=$JumboMtu; result=$jumbo }
+                tcp_pass_pct=$stepPct; tcp_pass_thr_mbps=$thr
+                verdict=$verdict; reason=$reason; note=$autonegNote
+            }
+        }
+    } finally {
+        # Per-loop recover: reap this pair's iperf3 processes, then restore Auto
+        # Negotiation and DHCP so the NICs are usable after the test and the next
+        # loop starts from a clean state.
+        Stop-PairIperf -Tag 'recover'
+        if (-not $Dry) {
+            Set-NicSpeed -Nic $EvenNic -Display 'Auto Negotiation' -Dry $Dry -LogPath $pairLog | Out-Null
+            Set-NicSpeed -Nic $OddNic  -Display 'Auto Negotiation' -Dry $Dry -LogPath $pairLog | Out-Null
+            foreach ($ip in @($v4even,$v4odd,$v6even,$v6odd)) {
+                Remove-NetIPAddress -IPAddress $ip -Confirm:$false -ErrorAction SilentlyContinue
+            }
+            Restore-NicDhcp -Nic $EvenNic -Dry $Dry -LogPath $pairLog
+            Restore-NicDhcp -Nic $OddNic  -Dry $Dry -LogPath $pairLog
+        }
+    }
+
+    "End: $(Now-Iso)" | Add-Content $pairLog
+    return @{ name = $pair; speeds = $speedResults }
+}
+
+# -- Firewall allow rules for iperf3 (NET006) -----------------------------------
+# Back-to-back traffic crosses physical interfaces, so the Defender Firewall
+# applies to iperf3's inbound TCP/UDP 5201.  ICMP (ping) often passes while the
+# iperf3 sockets are silently dropped -- showing up as 0 Mbps with a PASS ping.
+# The bash side runs inside a network namespace with no firewall; here we add
+# scoped allow rules and remove them on exit.
+#
+# Two rules are added, since either can fail independently:
+#   - Program rule: scoped to the resolved iperf3.exe.
+#   - Port rule: TCP+UDP 5201 inbound, in case the Program rule does not match
+#     the binary actually launched (e.g. a different shim/path resolution).
+# Both require an elevated (Administrator) process; New-NetFirewallRule throws
+# if not elevated, in which case iperf3 traffic is silently dropped while ICMP
+# still passes. Status is recorded in the main log and result.json so this is
+# diagnosable without re-running.
+$_fwRuleName     = "net_test_iperf3_$_runTs"
+$_fwRuleNamePort = "net_test_iperf3_port_$_runTs"
+$_fwRuleAdded     = $false
+$_fwRulePortAdded = $false
+$_fwStatus        = 'not attempted'
+if (-not $DryRun) {
+    if ($i3path) {
+        try {
+            New-NetFirewallRule -DisplayName $_fwRuleName -Direction Inbound -Action Allow `
+                -Program $i3path -Profile Any -ErrorAction Stop | Out-Null
+            $_fwRuleAdded = $true
+            Write-Host ("         Firewall       : allow rule added for iperf3 ($_fwRuleName)") -ForegroundColor DarkGray
+        } catch {
+            Write-Warning "Could not add firewall allow rule for iperf3 (program): $($_.Exception.Message)"
+        }
+    }
+    try {
+        # The pair job rotates ports per loop (loop1: 5201/5202, loop2: 5203/5204,
+        # ..., wrapping after 10 loops), so allow the whole rotation range.
+        New-NetFirewallRule -DisplayName $_fwRuleNamePort -Direction Inbound -Action Allow `
+            -Protocol TCP -LocalPort '5201-5220' -Profile Any -ErrorAction Stop | Out-Null
+        New-NetFirewallRule -DisplayName "${_fwRuleNamePort}_udp" -Direction Inbound -Action Allow `
+            -Protocol UDP -LocalPort '5201-5220' -Profile Any -ErrorAction Stop | Out-Null
+        $_fwRulePortAdded = $true
+        Write-Host ("         Firewall       : allow rule added for TCP/UDP 5201-5220 ($_fwRuleNamePort)") -ForegroundColor DarkGray
+    } catch {
+        Write-Warning "Could not add firewall allow rule for iperf3 (ports 5201-5220): $($_.Exception.Message)"
+    }
+    $_fwStatus = if ($_fwRuleAdded -or $_fwRulePortAdded) { 'added' } else { 'FAILED (not elevated?)' }
+    Write-MainLog "[firewall] program-rule=$_fwRuleAdded  port-rule=$_fwRulePortAdded  status=$_fwStatus"
+    if (-not $_fwRuleAdded -and -not $_fwRulePortAdded) {
+        Write-Warning ("No iperf3 firewall allow rule could be added -- iperf3 traffic will likely be " +
+            "dropped (0 Mbps) while ICMP still passes. Re-run as Administrator.")
+    }
+}
+
+# -- Main run loop -------------------------------------------------------------
+$_pairResults = @{}   # name -> @{ name; speeds=[] }
+
+try {
+    for ($loop = 1; $loop -le $Loops; $loop++) {
+        Write-Host "--- Loop $loop / $Loops ---" -ForegroundColor Cyan
+        Write-MainLog "=== Loop $loop/$Loops START - $($_evenNics.Count) pair(s) ==="
+
+        $jobs = @()
+        for ($i = 0; $i -lt $_evenNics.Count; $i++) {
+            $planJson = ConvertTo-Json -InputObject @($_pairPlans[$i]) -Depth 5 -Compress
+            $j = Start-Job -ScriptBlock $_pairJobBlock -ArgumentList @(
+                $i, $_evenNics[$i], $_oddNics[$i], $planJson,
+                $_log_path, $_runTs, $loop, $Loops,
+                $IperfTimeSec, $IperfOmitSec, $TcpPassPct, $LinkWaitSec, $AutonegWaitSec, ([bool]$DryRun),
+                $ErrCounterChk, $ErrFailOnDelta, $TestBidir, $TestJumbo, $JumboMtu
+            )
+            Write-Host ("  [Pair $i] Job $($j.Id) started  " + $_evenNics[$i] + " <-> " + $_oddNics[$i])
+            $jobs += $j
+        }
+
+        $jobs | Wait-Job | Out-Null
+
+        foreach ($j in $jobs) {
+            try {
+                $res = Receive-Job -Job $j -ErrorAction Stop
+                if ($null -ne $res) {
+                    $k = "$($res.name)"
+                    if (-not $_pairResults.ContainsKey($k)) {
+                        $cap = $_pairCaps[$k]
+                        $_pairResults[$k] = @{
+                            name        = $res.name
+                            speeds      = @()
+                            even_nic    = if ($cap) { $cap.even }        else { $null }
+                            odd_nic     = if ($cap) { $cap.odd }         else { $null }
+                            even_speeds = if ($cap) { @($cap.even_speeds) } else { @() }
+                            odd_speeds  = if ($cap) { @($cap.odd_speeds) }  else { @() }
+                            even_max_mbps = if ($cap) { $cap.even_max } else { 0 }   # NET015
+                            odd_max_mbps  = if ($cap) { $cap.odd_max }  else { 0 }
+                            pair_max_mbps = if ($cap) { $cap.pair_max } else { 0 }
+                        }
+                    }
+                    $_pairResults[$k].speeds += $res.speeds
+                    $nPass = @($res.speeds | Where-Object { $_.verdict -eq 'PASS'    }).Count
+                    $nFail = @($res.speeds | Where-Object { $_.verdict -eq 'FAIL'    }).Count
+                    $nUnk  = @($res.speeds | Where-Object { $_.verdict -eq 'UNKNOWN' }).Count
+                    $nNa   = @($res.speeds | Where-Object { $_.verdict -eq 'N/A'     }).Count
+                    $verd  = if ($nFail -gt 0) { 'FAIL' } elseif ($nPass -gt 0) { 'PASS' } elseif ($nUnk -gt 0) { 'UNKNOWN' } else { 'N/A' }
+                    $col = 'Yellow'; if ($verd -eq 'PASS') { $col = 'Green' } elseif ($verd -eq 'FAIL') { $col = 'Red' }
+                    Write-MainLog "[Pair] DONE  $($res.name)  verdict=$verd  pass=$nPass fail=$nFail unknown=$nUnk na=$nNa"
+                    Write-Host ("  [Pair] " + $res.name + "  (pass=$nPass fail=$nFail unknown=$nUnk na=$nNa)") -ForegroundColor $col
+                }
+            } catch {
+                Write-Warning "Job $($j.Id) error: $_"
+                Write-MainLog "[Job $($j.Id)] ERROR: $_"
+            } finally {
+                Remove-Job -Job $j -Force -ErrorAction SilentlyContinue
+            }
+        }
+        Write-MainLog "=== Loop $loop/$Loops DONE ==="
+    }
+} finally {
+    # Backstop: even if a job died, restore speeds + remove test IPs.
+    if (-not $DryRun) {
+        Write-Host "`nRestoring NICs (Auto Negotiation) and removing test IPs..." -ForegroundColor Cyan
+        foreach ($nic in $_testNics) {
+            # Try by DisplayValue; if the string does not match this driver's enum,
+            # fall back to RegistryValue 0 (Auto Negotiation is enum 0 for Intel
+            # *SpeedDuplex), so a NIC is never left stuck at a forced speed.
+            try {
+                Set-NetAdapterAdvancedProperty -Name $nic -RegistryKeyword '*SpeedDuplex' `
+                    -DisplayValue 'Auto Negotiation' -ErrorAction Stop
+            } catch {
+                Set-NetAdapterAdvancedProperty -Name $nic -RegistryKeyword '*SpeedDuplex' `
+                    -RegistryValue '0' -ErrorAction SilentlyContinue
+            }
+        }
+        for ($i = 0; $i -lt $_evenNics.Count; $i++) {
+            foreach ($ip in @("192.247.$i.1","192.247.$i.11","fd00:2470::${i}:1","fd00:2470::${i}:11")) {
+                Remove-NetIPAddress -IPAddress $ip -Confirm:$false -ErrorAction SilentlyContinue
+            }
+        }
+        # Re-enable DHCP / automatic addressing on every test NIC: assigning the
+        # static test IPs flipped each interface to manual, and removing those IPs
+        # would otherwise leave the NIC with no address at all.
+        foreach ($nic in $_testNics) {
+            Set-NetIPInterface -InterfaceAlias $nic -AddressFamily IPv4 -Dhcp Enabled -ErrorAction SilentlyContinue
+            Set-NetIPInterface -InterfaceAlias $nic -AddressFamily IPv6 -Dhcp Enabled -ErrorAction SilentlyContinue
+            Set-DnsClientServerAddress -InterfaceAlias $nic -ResetServerAddresses -ErrorAction SilentlyContinue
+        }
+        if ($_fwRuleAdded) {
+            Remove-NetFirewallRule -DisplayName $_fwRuleName -ErrorAction SilentlyContinue
+        }
+        if ($_fwRulePortAdded) {
+            Remove-NetFirewallRule -DisplayName $_fwRuleNamePort -ErrorAction SilentlyContinue
+            Remove-NetFirewallRule -DisplayName "${_fwRuleNamePort}_udp" -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+# -- Assemble full pairs list for result.json ----------------------------------
+$_allPairs = @([array]$_pairResults.Values)
+
+foreach ($u in $_unpairedNics) {
+    $_allPairs += @{
+        name        = $u
+        skip_reason = 'no pair (odd NIC count)'
+        speeds      = @(@{ speed_mbps=0; ipv4_ping='N/A'; ipv6_ping='N/A'
+                           throughput=@{tcp_fwd_mbps=0;tcp_rev_mbps=0;udp_fwd_mbps=0;udp_rev_mbps=0}
+                           verdict='N/A' })
+    }
+}
+
+# SKIPPED entries for every excluded candidate NIC, each with its specific reason
+# (NET011 -Skip, NET012 lifeline/management, or NET019 MAC include/exclude), so the
+# result.json and rendered report show why each NIC was not tested.
+foreach ($ex in $_skippedNics) {
+    $_reason = if ($_skipReason.ContainsKey($ex)) { $_skipReason[$ex] } else { 'excluded' }
+    $_allPairs += @{
+        name        = $ex
+        skip_reason = $_reason
+        speeds      = @(@{ speed_mbps=0; ipv4_ping='SKIPPED'; ipv6_ping='SKIPPED'
+                           throughput=@{tcp_fwd_mbps=0;tcp_rev_mbps=0;udp_fwd_mbps=0;udp_rev_mbps=0}
+                           verdict='SKIPPED' })
+    }
+}
+
+# -- Emit result.json (FWK028 / LOG015) ----------------------------------------
+$_allSpeedItems = @($_allPairs | ForEach-Object { $_.speeds } | Where-Object { $null -ne $_ })
+$_total   = $_allSpeedItems.Count
+$_pass    = @($_allSpeedItems | Where-Object { $_.verdict -eq 'PASS'             }).Count
+$_fail    = @($_allSpeedItems | Where-Object { $_.verdict -eq 'FAIL'             }).Count
+$_unknown = @($_allSpeedItems | Where-Object { $_.verdict -eq 'UNKNOWN'          }).Count
+$_skipped = @($_allSpeedItems | Where-Object { $_.verdict -in @('SKIPPED','N/A') }).Count
+
+$_verdict = if   ($_fail -gt 0) { 'FAIL' }
+            elseif ($_pass -eq ($_total - $_skipped) -and ($_total - $_skipped) -gt 0) { 'PASS' }
+            else { 'UNKNOWN' }
+
+$_result = [ordered]@{
+    schema_version  = '1.1'
+    test_name       = 'net_test'
+    test_version    = $_script_ver
+    session_id      = $_runTs
+    started_at      = $_runTs
+    ended_at        = (Now-Iso)
+    config          = [ordered]@{
+        dut_host       = $env:COMPUTERNAME
+        vendor_filter  = $VendorFilter
+        loops          = $Loops
+        iperf_time_sec = $IperfTimeSec
+        iperf_omit_sec = $IperfOmitSec
+        tcp_pass_pct   = $TcpPassPct
+        tcp_pass_pct_tiers = if ($_tcpPassPctExplicit) { $null } else { $cfgTcpPassPctTiers }
+    }
+    diagnostics     = [ordered]@{
+        firewall_program_rule_added = $_fwRuleAdded
+        firewall_port_rule_added    = $_fwRulePortAdded
+        firewall_status             = $_fwStatus
+    }
+    summary         = [ordered]@{
+        total=$_total; passed=$_pass; failed=$_fail; unknown=$_unknown; skipped=$_skipped
+    }
+    overall_verdict = $_verdict
+    details         = @{ pairs = $_allPairs }
+}
+
+$_resultFile = Join-Path $_log_path "net_test_$_runTs.result.json"
+Write-Utf8NoBom -Path $_resultFile -Text ($_result | ConvertTo-Json -Depth 9)
+
+# Generate HTML report (FWK028: render from canonical result.json)
+$_reportFile = Join-Path $_log_path "net_test_$_runTs.report.html"
+try {
+    $_resultObj = Get-Content $_resultFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    Write-HtmlReport -Result $_resultObj -OutPath $_reportFile
+} catch {
+    Write-Warning "HTML report generation failed: $_"
+    $_reportFile = $null
+}
+
+Write-Host ""
+Write-Host "[INFO] Main log    : $_mainLog"    -ForegroundColor Cyan
+Write-Host "[INFO] Result JSON : $_resultFile" -ForegroundColor Cyan
+if ($_reportFile) { Write-Host "[INFO] HTML report : $_reportFile" -ForegroundColor Cyan }
+$_col = 'Yellow'; if ($_verdict -eq 'PASS') { $_col = 'Green' } elseif ($_verdict -eq 'FAIL') { $_col = 'Red' }
+Write-Host "[INFO] Overall     : $_verdict  (pass=$_pass fail=$_fail unknown=$_unknown skipped=$_skipped)" -ForegroundColor $_col

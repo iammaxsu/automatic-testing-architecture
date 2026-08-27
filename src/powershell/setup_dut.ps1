@@ -23,11 +23,17 @@
          -RebootScript / -DevDetectScript only to override the location.
      10. (Optional) Configures PowerShell as the default SSH shell for Ansible
      11. Installs Python 3 and downloads report.py so reboot.ps1 can auto-generate HTML reports
+     12. Installs ipmiutil for BMC firmware-version reporting (PWR015)
+
+    Pass -Restore to instead revert the step-6 power-scheme changes and exit
+    (mirrors setup_dut.sh --restore on Linux); see the -Restore parameter help.
 
     SSH authentication summary:
       - Blank-password account  : steps 3 + 5 allow password-free SSH login out of the box.
-      - Password-protected account: pass -PiSshPublicKey with the Pi's public key; the key is
-        installed in administrators_authorized_keys so SSH never prompts for a password.
+      - Password-protected account: supply the Pi's public key; it is installed in
+        administrators_authorized_keys so SSH never prompts for a password. Easiest is
+        to drop the Pi's id_ed25519.pub next to these scripts (auto-detected, FWK034);
+        or pass -PiSshPublicKeyFile PATH, or -PiSshPublicKey "<inline string>".
 
     This script is intentionally idempotent: running it multiple times is safe.
 
@@ -72,18 +78,40 @@
 
 .PARAMETER PiSshPublicKey
     The SSH public key of the Raspberry Pi controller (contents of ~/.ssh/id_rsa.pub
-    or ~/.ssh/id_ed25519.pub on the Pi).
+    or ~/.ssh/id_ed25519.pub on the Pi), passed inline as a string.
     When provided, the key is appended to C:\ProgramData\ssh\administrators_authorized_keys
     so the Pi can SSH into this DUT without any password, regardless of whether the
     Windows account has a password set.
     Obtain the key on the Pi with: cat ~/.ssh/id_ed25519.pub
     (or id_rsa.pub if using RSA keys)
+    In most cases you do NOT need to paste it: see -PiSshPublicKeyFile below.
+
+.PARAMETER PiSshPublicKeyFile
+    Path to a file containing the Pi controller's public key(s), instead of
+    pasting inline with -PiSshPublicKey. Solves the chicken-and-egg problem (the
+    key lives on the Pi, but this script runs on the DUT): on the Pi, copy
+    ~/.ssh/id_ed25519.pub into the SAME folder as setup_dut.ps1 when you deploy
+    the scripts (USB / scp / Ansible).
+    Auto-detection: with NO argument, EVERY *.pub file next to setup_dut.ps1 is
+    read and ALL keys found are installed (authorized_keys is a list) - so
+    multiple Pi controllers, multiple operators, or a rotated old+new key pair
+    all work in a single '.\setup_dut.ps1' run; you do not run it once per key.
+    Pass this only to load a key file that lives elsewhere. The file itself may
+    also contain more than one key (one per line).
+    A public key is not secret, so shipping the file(s) beside the scripts is safe.
 
 .PARAMETER AnsibleSSH
     When specified, configures PowerShell as the default shell for SSH connections
     by writing to HKLM:\SOFTWARE\OpenSSH (DefaultShell + DefaultShellCommandOption).
     Required for Ansible to manage this DUT via SSH using PowerShell modules.
     In Ansible inventory set: ansible_connection=ssh ansible_shell_type=powershell
+
+.PARAMETER Restore
+    Reverts only the test-specific power-scheme changes made by step 6
+    (all timeouts, power-button action) back to Windows defaults, then exits.
+    Framework infrastructure (SSH, firewall, scheduled tasks, auto-logon) is
+    intentionally left in place. Mirrors setup_dut.sh --restore on Linux.
+    This is what the Pi calls over SSH once a test session completes.
 
 .EXAMPLE
     # Zero-argument run: SSH + firewall + power settings, AND both startup tasks
@@ -95,7 +123,16 @@
     .\setup_dut.ps1 -TestUser "testuser" -TestPassword ""
 
 .EXAMPLE
-    # Password-protected account: install Pi SSH key for passwordless login
+    # Password-protected account, key auto-detected: drop the Pi's id_ed25519.pub
+    # next to setup_dut.ps1, then just run it - the key is picked up automatically.
+    .\setup_dut.ps1 -TestUser "testuser"
+
+.EXAMPLE
+    # Password-protected account: point at the Pi key file explicitly
+    .\setup_dut.ps1 -TestUser "testuser" -PiSshPublicKeyFile "C:\TestAutomation\pi_id_ed25519.pub"
+
+.EXAMPLE
+    # Password-protected account: install Pi SSH key inline for passwordless login
     .\setup_dut.ps1 -TestUser "testuser" -PiSshPublicKey "ssh-ed25519 AAAA...key... pi@raspberrypi"
 
 .EXAMPLE
@@ -105,6 +142,11 @@
 .EXAMPLE
     # Enable Ansible management over SSH (lab environment)
     .\setup_dut.ps1 -AnsibleSSH
+
+.EXAMPLE
+    # Revert the test-specific power-scheme changes (called by the Pi over SSH
+    # once a test session completes)
+    .\setup_dut.ps1 -Restore
 
 .EXAMPLE
     # Complete lab setup: auto-logon + device detection + reboot task + Ansible SSH
@@ -118,11 +160,13 @@ param(
     [string]$TestUser                 = "",
     [string]$TestPassword             = "",
     [string]$PiSshPublicKey           = "",
+    [string]$PiSshPublicKeyFile       = "",
     [string]$DevDetectScript          = "",
     [int]   $DevDetectStartupDelaySec = 30,
     [string]$RebootScript             = "",
     [int]   $RebootStartupDelaySec    = 60,
-    [switch]$AnsibleSSH
+    [switch]$AnsibleSSH,
+    [switch]$Restore
 )
 
 Set-StrictMode -Version Latest
@@ -149,9 +193,25 @@ if (-not $_isAdmin) {
     exit 1
 }
 
+# -- Restore mode: undo test-environment changes and exit ----------------------
+# Reverts only the "temporary, for-testing" power-scheme changes from step 6
+# (all timeouts, power-button action) via powercfg -restoredefaultschemes.
+# Framework infrastructure (SSH, firewall, scheduled tasks, auto-logon) is
+# intentionally left in place. This is what the Pi calls over SSH once a test
+# session completes, mirroring setup_dut.sh --restore on Linux.
+if ($Restore) {
+    Write-Host "Restore mode: reverting DUT test-environment changes..."
+    Write-Host ""
+    powercfg -restoredefaultschemes
+    Write-Host "  Power scheme restored to Windows defaults."
+    Write-Host ""
+    Write-Host "  Restore complete. Re-apply test settings any time with: .\setup_dut.ps1"
+    exit 0
+}
+
 # -- Version & shared library --------------------------------------------------
 
-$_script_ver                = '00.00.16'
+$_script_ver                = '00.00.20'
 $_requires_function_ps1_api = '00.00.01'
 
 $_script_root = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -193,10 +253,53 @@ if ($DevDetectScript -eq "") {
     }
 }
 
+# -- Resolve the Pi public key(s) (FWK034) ------------------------------------
+# Chicken-and-egg: this script runs ON the DUT but needs the Raspberry Pi
+# controller's PUBLIC key(s), which live on the Pi.  Rather than make the operator
+# paste them, the Pi drops its public key file(s) into the SAME folder it copies
+# the scripts into (USB, scp, Ansible), and setup_dut.ps1 reads them here.
+# Precedence: 1. -PiSshPublicKey (inline string) wins (single key).
+#             2. -PiSshPublicKeyFile PATH (explicit file; may hold >1 key line).
+#             3. ALL *.pub files sitting next to this script (auto-detected).
+# authorized_keys is a LIST, so every key found is installed -- multiple Pi
+# controllers / operators / rotated keys all work in one run, no need to run the
+# script once per key. A public key is not secret, so shipping the file(s)
+# beside the scripts is safe.
+$_piKeys = @()
+if ($PiSshPublicKey -ne "") {
+    $_k = $PiSshPublicKey.Trim()
+    if ($_k -ne "") { $_piKeys += $_k }
+} else {
+    $_keyFiles = @()
+    if ($PiSshPublicKeyFile -ne "") {
+        if (Test-Path $PiSshPublicKeyFile) {
+            $_keyFiles += (Resolve-Path $PiSshPublicKeyFile).Path
+        } else {
+            Write-Warn "PiSshPublicKeyFile not found: $PiSshPublicKeyFile - SSH key install will be skipped."
+        }
+    } else {
+        $_keyFiles = @(Get-ChildItem -Path $_script_root -Filter '*.pub' -File -ErrorAction SilentlyContinue |
+                       Select-Object -ExpandProperty FullName)
+        if ($_keyFiles.Count -gt 0) {
+            Write-Host ("         Auto-detected Pi public key file(s) : " + ($_keyFiles -join ', ')) -ForegroundColor DarkGray
+        }
+    }
+    # Read every non-empty, non-comment line from each file as one key.
+    foreach ($_f in $_keyFiles) {
+        foreach ($_line in (Get-Content -Path $_f)) {
+            $_line = $_line.Trim()
+            if ($_line -ne "" -and -not $_line.StartsWith("#")) { $_piKeys += $_line }
+        }
+    }
+    if ($_keyFiles.Count -gt 0) {
+        Write-Host ("         Loaded " + $_piKeys.Count + " Pi public key(s) from file(s).") -ForegroundColor DarkGray
+    }
+}
+
 
 # -- 1. PowerShell execution policy -------------------------------------------
 
-Write-Step "1 / 11 PowerShell execution policy"
+Write-Step "1 / 12 PowerShell execution policy"
 try {
     Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope LocalMachine -Force -ErrorAction Stop
     Write-OK "Execution policy = RemoteSigned (machine-wide)"
@@ -210,7 +313,7 @@ try {
 
 # -- 2. OpenSSH Server --------------------------------------------------------
 
-Write-Step "2 / 11 OpenSSH Server"
+Write-Step "2 / 12 OpenSSH Server"
 
 $sshCap = Get-WindowsCapability -Online -Name OpenSSH.Server*
 if ($sshCap.State -eq "NotPresent") {
@@ -229,7 +332,7 @@ Write-OK "sshd running, startup = Automatic"
 
 # -- 3. SSH configuration: allow empty passwords -------------------------------
 
-Write-Step "3 / 11 SSH configuration (PermitEmptyPasswords)"
+Write-Step "3 / 12 SSH configuration (PermitEmptyPasswords)"
 
 $sshConfigPath = "C:\ProgramData\ssh\sshd_config"
 
@@ -265,21 +368,27 @@ if (-not (Test-Path $sshConfigPath)) {
 # accounts in the Administrators group.  The file needs strict ACL (SYSTEM + Admins only)
 # or sshd ignores it.
 
-if ($PiSshPublicKey -ne "") {
+if ($_piKeys.Count -gt 0) {
     $authDir  = "C:\ProgramData\ssh"
     $authFile = Join-Path $authDir "administrators_authorized_keys"
 
     if (-not (Test-Path $authDir)) { New-Item -Path $authDir -ItemType Directory -Force | Out-Null }
 
-    # Append the key only if it is not already present (idempotent).
+    # Append each key only if not already present (idempotent), so re-running is
+    # safe and additional keys can be added later without removing existing ones.
     $existing = @()
     if (Test-Path $authFile) { $existing = @(Get-Content $authFile) }
-    if ($existing -notcontains $PiSshPublicKey) {
-        Add-Content -Path $authFile -Value $PiSshPublicKey -Encoding UTF8
-        Write-OK "Pi SSH public key appended to $authFile"
-    } else {
-        Write-Skip "Pi SSH public key already present in $authFile"
+    $_added = 0; $_dup = 0
+    foreach ($_key in $_piKeys) {
+        if ($existing -notcontains $_key) {
+            Add-Content -Path $authFile -Value $_key -Encoding UTF8
+            $existing += $_key
+            $_added++
+        } else {
+            $_dup++
+        }
     }
+    Write-OK "Pi SSH public key(s): $_added added, $_dup already present -> $authFile"
 
     # Strict ACL: remove inherited permissions, grant SYSTEM and Administrators full control.
     # Without this sshd (running as SYSTEM) silently ignores the file.
@@ -287,15 +396,16 @@ if ($PiSshPublicKey -ne "") {
     Write-OK "administrators_authorized_keys ACL fixed (SYSTEM + Administrators only)"
     Write-Host "         Test from the Pi: ssh $TestUser@$($env:COMPUTERNAME)"
 } else {
-    Write-Skip "SSH key install skipped (no -PiSshPublicKey supplied)"
+    Write-Skip "SSH key install skipped (no Pi public key supplied or found)"
     Write-Host "         If the account has no password, steps 3+5 already allow passwordless SSH."
-    Write-Host "         If it has a password, pass -PiSshPublicKey `"<content of ~/.ssh/id_ed25519.pub>`""
+    Write-Host "         If it has a password, drop the Pi's id_ed25519.pub next to this script"
+    Write-Host "         (auto-detected), or pass -PiSshPublicKeyFile PATH / -PiSshPublicKey `"<string>`"."
 }
 
 
 # -- 4. Firewall: SSH (TCP 22) and ICMPv4 ping ---------------------------------
 
-Write-Step "4 / 11 Firewall rules"
+Write-Step "4 / 12 Firewall rules"
 
 if (-not (Get-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -ErrorAction SilentlyContinue)) {
     New-NetFirewallRule -Name        "OpenSSH-Server-In-TCP" `
@@ -325,7 +435,7 @@ Write-OK "Windows Firewall disabled (Domain / Private / Public)"
 
 # -- 5. Security policy: allow blank-password accounts over network ------------
 
-Write-Step "5 / 11 Security policy (LimitBlankPasswordUse)"
+Write-Step "5 / 12 Security policy (LimitBlankPasswordUse)"
 
 $tmpSec = "$env:TEMP\secpol_dut.inf"
 secedit /export /cfg $tmpSec | Out-Null
@@ -341,7 +451,7 @@ Write-OK "LimitBlankPasswordUse set to 0 (blank-password SSH logins allowed)"
 
 # -- 6. Power scheme -----------------------------------------------------------
 
-Write-Step "6 / 11 Power scheme"
+Write-Step "6 / 12 Power scheme"
 
 foreach ($type in @("monitor", "disk", "standby", "hibernate")) {
     foreach ($mode in @("ac", "dc")) {
@@ -358,7 +468,7 @@ Write-OK "All power timeouts = 0; power button = Shut down; no screen lock on re
 
 # -- 7. Windows Update: disable automatic reboot -------------------------------
 
-Write-Step "7 / 11 Windows Update (disable automatic reboot)"
+Write-Step "7 / 12 Windows Update (disable automatic reboot)"
 
 $wuPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"
 if (-not (Test-Path $wuPath)) { New-Item -Path $wuPath -Force | Out-Null }
@@ -367,9 +477,55 @@ Set-ItemProperty -Path $wuPath -Name "AUOptions"                     -Value 2 -T
 Write-OK "Windows Update will not auto-reboot during tests"
 
 
+# -- 7b. Startup Repair / boot-failure counting (BUG0064) ----------------------
+#
+# Windows counts consecutive unsuccessful boots and, after two, stops booting and
+# presents the Automatic Repair screen instead. A hard power-off applied while
+# Windows is still booting or shutting down counts as one of those.
+#
+# A power-cycle endurance test does exactly that: after a NO_BOOT the framework
+# force-offs to establish a known state, and one interrupted boot is enough to
+# arm the counter. Two make the DUT enter Startup Repair, which never brings the
+# network up, so the next cycle is also a NO_BOOT, which force-offs again -- the
+# run cannot escape, and the failure becomes permanent rather than intermittent.
+#
+# On a reference run this produced 39 NO_BOOTs out of 100 cycles: sporadic at
+# first, then 27 consecutive from cycle 74 to the end.
+#
+# This is the Windows counterpart of the GRUB menu-wait fix setup_dut.sh applies
+# to Linux DUTs (BUG0032): an unattended bench must never stop at a screen that
+# waits for an operator who is not there.
+
+Write-Step "7b / 12 Startup Repair (unattended boot)"
+
+$bcdOk = $true
+foreach ($pair in @(
+    @{ BcdArgs = @("/set", "{default}", "recoveryenabled", "No")
+       What    = "Automatic Repair disabled" },
+    @{ BcdArgs = @("/set", "{default}", "bootstatuspolicy", "IgnoreAllFailures")
+       What    = "boot-failure counting disabled" }
+)) {
+    & bcdedit.exe @($pair.BcdArgs) 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn "bcdedit $($pair.BcdArgs -join ' ') failed (exit $LASTEXITCODE)"
+        $bcdOk = $false
+    } else {
+        Write-OK $pair.What
+    }
+}
+if ($bcdOk) {
+    Write-OK "DUT boots past a failed boot instead of stopping at Startup Repair"
+} else {
+    Write-Warn "Startup Repair may still appear - run this script elevated to apply it"
+}
+# Restore with:
+#   bcdedit /set {default} recoveryenabled Yes
+#   bcdedit /deletevalue {default} bootstatuspolicy
+
+
 # -- 8. Auto-logon (optional) --------------------------------------------------
 
-Write-Step "8 / 11 Auto-logon"
+Write-Step "8 / 12 Auto-logon"
 
 if ($TestUser -ne "") {
     $regPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
@@ -387,7 +543,7 @@ if ($TestUser -ne "") {
 
 # -- 9. Task Scheduler: startup tasks (dev_detect + reboot) -------------------
 
-Write-Step "9 / 11 Task Scheduler  -  startup tasks"
+Write-Step "9 / 12 Task Scheduler  -  startup tasks"
 
 # Helper: registers a single startup task as SYSTEM with a delay.
 # ScriptPath is resolved to an absolute path: Task Scheduler runs as SYSTEM with
@@ -480,7 +636,7 @@ if ($RebootScript -ne "") {
 
 # -- 10. Ansible SSH: PowerShell as default SSH shell -------------------------
 
-Write-Step "10 / 11  Ansible SSH  -  PowerShell default shell"
+Write-Step "10 / 12  Ansible SSH  -  PowerShell default shell"
 
 if ($AnsibleSSH) {
     $regPath = "HKLM:\SOFTWARE\OpenSSH"
@@ -563,10 +719,23 @@ function Install-PythonViaDownload {
     }
 }
 
-Write-Step "11 / 11  Python 3 runtime + report.py renderer"
+# On a clean Windows install with no Python, "python" still resolves on PATH
+# to %LOCALAPPDATA%\Microsoft\WindowsApps\python.exe - a Microsoft "App
+# Execution Alias" stub, not a real interpreter. Get-Command alone cannot
+# tell the difference, and running the stub prints a Microsoft Store prompt
+# to stderr, which aborts the whole script under $ErrorActionPreference =
+# "Stop". Filter the stub out explicitly so "already installed" only fires
+# for a genuine interpreter.
+function Get-RealPythonCommand {
+    $cmd = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $cmd -or $cmd.Source -like "*\WindowsApps\python.exe") { return $null }
+    return $cmd
+}
+
+Write-Step "11 / 12  Python 3 runtime + report.py renderer"
 
 $pythonReady = $false
-$pyCmd = Get-Command python -ErrorAction SilentlyContinue
+$pyCmd = Get-RealPythonCommand
 if ($pyCmd) {
     $pythonReady = $true
     Write-Skip "Python already installed: $((& python --version 2>&1))"
@@ -577,7 +746,7 @@ if ($pyCmd) {
     # Refresh PATH for this session (installers write to the machine PATH).
     $machinePath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
     if ($machinePath) { $env:Path = "$machinePath;$env:Path" }
-    $pyCmd = Get-Command python -ErrorAction SilentlyContinue
+    $pyCmd = Get-RealPythonCommand
 
     if ($pyCmd) {
         $pythonReady = $true
@@ -622,6 +791,98 @@ function Install-ReportPy {
 $reportPyReady = Install-ReportPy -DestDir $_script_root
 
 
+# -- 12. ipmiutil (BMC firmware version reporting, PWR015) ---------------------
+# power_cycle.py / reboot.py read the BMC firmware version each cycle (PWR015).
+# On Windows the in-band tool is ipmiutil (ipmitool has no clean official Windows
+# binary); detect_firmware() runs `ipmiutil health` over SSH and parses the
+# "BMC version" line. Install path mirrors the Python step: winget first, then a
+# direct download of the official ipmiutil installer.
+#
+# A DUT with no BMC still installs ipmiutil cleanly — `ipmiutil health` then
+# finds no controller and PWR015 records "N/A", which is the expected steady
+# state, not an error. The BIOS version (Win32_BIOS) needs no extra tool.
+
+function Get-IpmiutilCommand {
+    $cmd = Get-Command ipmiutil -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd }
+    # winget/MSI installs commonly land here but may not be on this session PATH yet.
+    foreach ($p in @(
+        "$env:ProgramFiles\ipmiutil\ipmiutil.exe",
+        "${env:ProgramFiles(x86)}\ipmiutil\ipmiutil.exe")) {
+        if ($p -and (Test-Path $p)) { return $p }
+    }
+    return $null
+}
+
+function Install-IpmiutilViaWinget {
+    $wingetCmd = Get-Command winget -ErrorAction SilentlyContinue
+    if (-not $wingetCmd) { return $false }
+    Write-Host "  Installing ipmiutil via winget (silent)..."
+    try {
+        winget install --exact --id ipmiutil.ipmiutil --silent `
+            --accept-package-agreements --accept-source-agreements --scope machine
+        return $true
+    } catch {
+        Write-Warn "winget install failed: $($_.Exception.Message)  -  trying direct download"
+        return $false
+    }
+}
+
+function Install-IpmiutilViaDownload {
+    # Official ipmiutil Windows installer, hosted on SourceForge. The 'latest'
+    # redirect keeps this URL stable across releases.
+    $url  = "https://sourceforge.net/projects/ipmiutil/files/latest/download"
+    $dest = Join-Path $env:TEMP "ipmiutil-setup.exe"
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Write-Host "  Downloading ipmiutil installer..."
+        Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
+    } catch {
+        Write-Warn "Download failed: $($_.Exception.Message)"
+        return $false
+    }
+    Write-Host "  Running silent install..."
+    try {
+        $p = Start-Process -FilePath $dest -ArgumentList '/SILENT', '/NORESTART' -Wait -PassThru
+        Remove-Item $dest -Force -ErrorAction SilentlyContinue
+        return ($p.ExitCode -eq 0)
+    } catch {
+        Write-Warn "Installer launch failed: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+Write-Step "12 / 12  ipmiutil (BMC firmware version)"
+
+$ipmiutilReady = $false
+$ipmiCmd = Get-IpmiutilCommand
+if ($ipmiCmd) {
+    $ipmiutilReady = $true
+    $ipmiSrc = if ($ipmiCmd -is [System.Management.Automation.CommandInfo]) { $ipmiCmd.Source } else { $ipmiCmd }
+    Write-Skip "ipmiutil already installed: $ipmiSrc"
+} else {
+    $installed = Install-IpmiutilViaWinget
+    if (-not $installed) { $installed = Install-IpmiutilViaDownload }
+
+    $machinePath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
+    if ($machinePath) { $env:Path = "$machinePath;$env:Path" }
+    $ipmiCmd = Get-IpmiutilCommand
+
+    if ($ipmiCmd) {
+        $ipmiutilReady = $true
+        Write-OK "ipmiutil installed and ready"
+    } elseif ($installed) {
+        $ipmiutilReady = $true   # installed; PATH refresh pending - works after reboot
+        Write-Warn "ipmiutil was installed but is not on PATH in this session."
+        Write-Host "         It will be available after the reboot."
+    } else {
+        Write-Warn "Automatic ipmiutil install did not succeed."
+        Write-Host "         BMC version will report 'N/A' until ipmiutil is installed (PWR015)."
+        Write-Host "         Install manually from https://ipmiutil.sourceforge.io/ , then re-run."
+    }
+}
+
+
 # -- Summary -------------------------------------------------------------------
 
 Write-Host ""
@@ -650,10 +911,10 @@ if ($RebootScript -ne "" -and (Test-Path $RebootScript)) {
 } else {
     Write-Host "  Task Scheduler    : DUT-Reboot    not configured"
 }
-if ($PiSshPublicKey -ne "") {
-    Write-Host "  Pi SSH key        : installed (administrators_authorized_keys)"
+if ($_piKeys.Count -gt 0) {
+    Write-Host "  Pi SSH key(s)     : $($_piKeys.Count) installed (administrators_authorized_keys)"
 } else {
-    Write-Host "  Pi SSH key        : not installed (ok if account has no password)"
+    Write-Host "  Pi SSH key(s)     : none installed (ok if account has no password)"
 }
 if ($AnsibleSSH) {
     Write-Host "  Ansible SSH       : DefaultShell = PowerShell 5.1"
@@ -669,6 +930,11 @@ if ($reportPyReady) {
     Write-Host "  report.py         : present (HTML reports auto-generated after each cycle)"
 } else {
     Write-Host "  report.py         : not available - copy from src/python/report.py manually"
+}
+if ($ipmiutilReady) {
+    Write-Host "  ipmiutil          : installed (PWR015 BMC firmware reporting)"
+} else {
+    Write-Host "  ipmiutil          : install manually (PWR015 BMC firmware reporting)"
 }
 Write-Host ""
 Write-Host "  >>> Reboot required for all changes to take effect. <<<" -ForegroundColor Yellow

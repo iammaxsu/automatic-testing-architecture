@@ -8,7 +8,7 @@
 set -Eeuo pipefail
 
 export _function_api_version
-: "${_function_api_version:="00.00.04"}"
+: "${_function_api_version:="00.00.05"}"
 
 # ---------- API version utilities ----------
 _version_ge() {
@@ -216,10 +216,27 @@ log_dir() {
   fix_log_permissions "${_log_dir}" "shallow"
 
   export _log_dir _session_log_dir
-  echo "[INFO] log dir: ${_log_dir}"
-  echo "[INFO] session log dir: ${_session_log_dir}"
+
+  # Announce only when the resolved paths actually change (BUG0023). net_test.sh
+  # and slp_test.sh call log_dir() directly and then setup_session(), which calls
+  # it again with the same arguments, so an unconditional echo printed the same
+  # two lines twice per run and made the second call look like a second session.
+  if [[ "${_log_dir_announced:-}" != "${_log_dir}|${_session_log_dir}" ]]; then
+    echo "[INFO] log dir: ${_log_dir}"
+    echo "[INFO] session log dir: ${_session_log_dir}"
+    export _log_dir_announced="${_log_dir}|${_session_log_dir}"
+  fi
+
   export _now_timestamp="$(now_ts)"
-  printf '%s\n' "${_log_dir}"
+
+  # Deliberately prints nothing to stdout (BUG0023). This used to end with
+  # `printf '%s\n' "${_log_dir}"` as a return channel, but no caller ever
+  # captured it -- all five read the exported ${_log_dir} / ${_session_log_dir}
+  # instead -- so the bare path only leaked a stray line into every run's
+  # console output. Capturing it would have been broken anyway: the [INFO]
+  # lines above go to stdout too, so `x=$(log_dir …)` would have swallowed
+  # three lines, not one.
+  return 0
 }
 
 # ---------- Fix log ownership & permissions ----------
@@ -238,7 +255,10 @@ fix_log_permissions() {
   [[ -d "${_target_dir}" ]] || return 0
 
   # Identify the original invoking user. SUDO_USER is set by sudo.
-  local _real_user="${SUDO_USER:-${USER}}"
+  # USER is NOT always set: a systemd unit (the dev_detect autorun path) and
+  # `su -c` both start with it unset, and under `set -u` an unguarded ${USER}
+  # aborts the whole script here. `id -un` always answers.
+  local _real_user="${SUDO_USER:-${USER:-$(id -un 2>/dev/null || echo root)}}"
   local _real_group
   _real_group="$(id -gn "${_real_user}" 2>/dev/null || echo "${_real_user}")"
 
@@ -349,9 +369,124 @@ prepare_net_tools() {
   fi
 }
 
-# ---------- Netns (enp* only) ----------
-unset _ethArray even_ethArray odd_ethArray skipped_ethArray excluded_ethArray
-declare -ga _ethArray even_ethArray odd_ethArray skipped_ethArray excluded_ethArray
+# ---------- Netns (interface set via _net_nic_name_regex, default enp*) ----------
+unset _ethArray even_ethArray odd_ethArray skipped_ethArray excluded_ethArray excluded_reasonArray
+declare -ga _ethArray even_ethArray odd_ethArray skipped_ethArray excluded_ethArray excluded_reasonArray
+
+# NET019: MAC helpers for include/exclude-by-MAC NIC selection.
+# Strip a single pair of surrounding quotes from a value. The config idiom
+# `: "${var:='value'}"` keeps the inner quotes as literal characters (they are
+# inside the outer double quotes), so a user who writes '^enp' or '00-..-56'
+# would otherwise get quote-contaminated values. Be tolerant: strip them.
+__strip_quotes() {
+  local _s="$1"
+  _s="${_s#[\"\']}"
+  _s="${_s%[\"\']}"
+  echo "${_s}"
+}
+
+# Normalize a MAC to lowercase, colon-separated, no spaces or stray quotes.
+__norm_mac() {
+  local _m="${1,,}"
+  _m="${_m//-/:}"
+  _m="${_m//[\'\" ]/}"
+  echo "${_m}"
+}
+
+# Read a NIC's MAC (normalized). Empty string if unavailable.
+__nic_mac() {
+  local _if="$1" _mac=""
+  [[ -r "/sys/class/net/${_if}/address" ]] && _mac="$(cat "/sys/class/net/${_if}/address" 2>/dev/null)"
+  __norm_mac "${_mac}"
+}
+
+# Split a comma/semicolon/space-separated MAC list into a normalized array.
+# Usage: __mac_split <out_array_name> "<list>"
+__mac_split() {
+  local -n _out="$1"; local _raw="$2"; local _tok
+  _out=()
+  _raw="${_raw//[,;]/ }"
+  for _tok in ${_raw}; do
+    _tok="$(__norm_mac "${_tok}")"
+    [[ -n "${_tok}" ]] && _out+=("${_tok}")
+  done
+}
+
+# Report NET019 list entries that match no NIC on this machine (BUG0047).
+#
+# The per-NIC "not in _net_include_macs" lines say what was REJECTED; they never
+# say that a whitelist entry matched nothing. With two NICs whose MACs differ
+# only in the last two octets, a one-character typo is invisible: the operator
+# sees three rejections and has to diff every MAC by eye. Worse, if enough NICs
+# still match, the run proceeds and silently tests a different pair than asked
+# for. Name the unmatched entry, and point at the nearest MAC actually present.
+#
+# Usage: __mac_report_unmatched <label> <normalized-entry>...
+__mac_report_unmatched() {
+  local _label="$1"; shift
+  (( $# > 0 )) || return 0
+  local -a _sys_if=() _sys_mac=() _a _b
+  local _p _ifn _m _e _i _o _diff _best_diff _best_if _best_mac
+
+  for _p in /sys/class/net/*; do
+    _ifn="${_p##*/}"
+    [[ "${_ifn}" == "lo" ]] && continue
+    _m="$(__nic_mac "${_ifn}")"
+    [[ -n "${_m}" ]] || continue
+    _sys_if+=("${_ifn}"); _sys_mac+=("${_m}")
+  done
+  (( ${#_sys_mac[@]} > 0 )) || return 0
+
+  # A NIC already claimed by another entry in the same list is never the one the
+  # operator meant by THIS entry, so it must not be offered as the suggestion.
+  # Without this, two NICs from one card (…b4:48 and …b5:cf) are both one octet
+  # away from a typo'd …b4:cf, and the tie would be broken arbitrarily — pointing
+  # at the NIC that already works instead of the one that is missing.
+  local -a _claimed=()
+  for _i in "${!_sys_mac[@]}"; do
+    if __mac_in_list "${_sys_mac[_i]}" "$@"; then _claimed[_i]=1; else _claimed[_i]=0; fi
+  done
+
+  local _ties
+  for _e in "$@"; do
+    __mac_in_list "${_e}" "${_sys_mac[@]}" && continue
+    _best_diff=99; _ties=""
+    IFS=':' read -ra _a <<<"${_e}"
+    for _i in "${!_sys_mac[@]}"; do
+      (( _claimed[_i] )) && continue
+      IFS=':' read -ra _b <<<"${_sys_mac[_i]}"
+      _diff=0
+      for _o in 0 1 2 3 4 5; do
+        [[ "${_a[_o]:-}" == "${_b[_o]:-}" ]] || (( _diff++ ))
+      done
+      if (( _diff < _best_diff )); then
+        _best_diff=${_diff}; _ties="${_sys_if[_i]} (${_sys_mac[_i]})"
+      elif (( _diff == _best_diff )); then
+        # Still ambiguous after dropping claimed NICs — show every candidate
+        # rather than guessing which one the operator meant.
+        _ties="${_ties}, ${_sys_if[_i]} (${_sys_mac[_i]})"
+      fi
+    done
+    echo "[WARN] ${_label} entry '${_e}' matches no NIC on this machine." >&2
+    # Only suggest when it is close enough to be a plausible typo; the nearest of
+    # six unrelated MACs is noise, not a hint.
+    if (( _best_diff <= 2 )) && [[ -n "${_ties}" ]]; then
+      echo "       Closest unclaimed NIC: ${_ties} — differs in ${_best_diff} octet(s). Typo?" >&2
+    else
+      echo "       No similar MAC present — check 'ip -o link show'." >&2
+    fi
+  done
+}
+
+# Is a normalized MAC present in a list of normalized MACs?
+# Usage: __mac_in_list <needle> <mac>...
+__mac_in_list() {
+  local _needle="$1"; shift
+  local _m
+  [[ -z "${_needle}" ]] && return 1
+  for _m in "$@"; do [[ "${_needle}" == "${_m}" ]] && return 0; done
+  return 1
+}
 
 __sanitize_if() {
   # strip CR/LF and anything after '@' (e.g., vlan/master decorations)
@@ -364,7 +499,10 @@ __sanitize_if() {
 }
 
 __move_back_to_root() {
-  local ifn="$(__sanitize_if "$1")" ns="ns_${ifn}"
+  # Split the declaration: `local ifn=... ns="ns_${ifn}"` would expand ${ifn}
+  # before ifn is assigned, aborting under `set -u` (see _nic_err_snapshot).
+  local ifn; ifn="$(__sanitize_if "$1")"
+  local ns="ns_${ifn}"
   if ip netns list 2>/dev/null | grep -q -E "^${ns}\b"; then
     echo "[DEBUG] move-back ${ifn} from ${ns} -> root"
     sudo ip netns exec "${ns}" ip link set dev "${ifn}" down 2>/dev/null || true
@@ -384,16 +522,21 @@ netns_del() {
   fi
   sudo rm -f /run/netns/ns_ 2>/dev/null || true
 
+  # Clean up namespaces for any interface this test manages. The interface set is
+  # configurable (_net_nic_name_regex), so match ns_<ifn> against the same pattern
+  # rather than a hardcoded ns_enp* — otherwise ns_enx*/ns_eth* namespaces leak.
+  local _nic_re; _nic_re="$(__strip_quotes "${_net_nic_name_regex:-^enp}")"; _nic_re="${_nic_re:-^enp}"
   while read -r ns; do
     [[ -z "$ns" ]] && continue
-    [[ "$ns" != ns_enp* ]] && continue
-    found=1
+    [[ "$ns" == ns_* ]] || continue
     local ifn="${ns#ns_}"; ifn="$(__sanitize_if "$ifn")"
+    [[ "$ifn" =~ $_nic_re ]] || continue
+    found=1
     __move_back_to_root "${ifn}"
     sudo ip netns del "$ns" >/dev/null 2>&1 || true
     echo "[INFO] deleted $ns"
   done < <(ip netns list 2>/dev/null | awk '{print $1}')
-  (( found )) || echo "[INFO] no ns_enp* to delete"
+  (( found )) || echo "[INFO] no managed namespaces (${_nic_re}) to delete"
   sleep 0.2
 }
 
@@ -402,14 +545,16 @@ netns_add() {
 
   _ethArray=()
   excluded_ethArray=()
+  excluded_reasonArray=()
   # Use ip -o to get single-line per link; sanitize names
+  local _nic_re; _nic_re="$(__strip_quotes "${_net_nic_name_regex:-^enp}")"; _nic_re="${_nic_re:-^enp}"
   while IFS= read -r name; do
     name="$(__sanitize_if "$name")"
     [[ -n "$name" ]] && _ethArray+=("$name")
-  done < <(ip -o link show | awk -F': ' '{print $2}' | grep -E '^enp' | sort -n)
+  done < <(ip -o link show | awk -F': ' '{print $2}' | grep -E "${_nic_re}" | sort -n)
 
   local n=${#_ethArray[@]}
-  echo "[DEBUG] root enp*: ${_ethArray[*]}"
+  echo "[DEBUG] root NICs (${_nic_re}): ${_ethArray[*]}"
 
   # NET011: filter out NICs explicitly excluded via --skip / _net_test_skip_nics
   if [[ -v _net_test_skip_nics ]] && (( ${#_net_test_skip_nics[@]} > 0 )); then
@@ -422,6 +567,7 @@ netns_add() {
       if (( _excluded )); then
         echo "[INFO] NIC '${_ifn}' excluded by --skip (NET011) — will not be tested."
         excluded_ethArray+=("${_ifn}")
+        excluded_reasonArray+=("--skip flag (NET011)")
       else
         _filtered+=("${_ifn}")
       fi
@@ -431,8 +577,57 @@ netns_add() {
     echo "[DEBUG] After --skip filter: ${_ethArray[*]:-<none>}"
   fi
 
+  # NET019: filter by MAC address — exclude (blacklist) then include (whitelist).
+  # Precedence: _net_exclude_macs wins over _net_include_macs. Pinning the
+  # management / SSH-lifeline NIC in _net_exclude_macs is also the NET012
+  # protection mechanism, so it must never be overridden by an include entry.
+  local -a _inc_macs=() _exc_macs=()
+  local _have_inc=0 _have_exc=0
+  [[ -n "${_net_include_macs:-}" ]] && { __mac_split _inc_macs "${_net_include_macs}"; (( ${#_inc_macs[@]} > 0 )) && _have_inc=1; }
+  [[ -n "${_net_exclude_macs:-}" ]] && { __mac_split _exc_macs "${_net_exclude_macs}"; (( ${#_exc_macs[@]} > 0 )) && _have_exc=1; }
+  if (( _have_inc || _have_exc )); then
+    local _filtered2=() _mac _reason
+    for _ifn in "${_ethArray[@]}"; do
+      _mac="$(__nic_mac "${_ifn}")"
+      _reason=""
+      if (( _have_exc )) && __mac_in_list "${_mac}" "${_exc_macs[@]}"; then
+        _reason="excluded by _net_exclude_macs (NET019)"
+      elif (( _have_inc )) && ! __mac_in_list "${_mac}" "${_inc_macs[@]}"; then
+        _reason="not in _net_include_macs (NET019)"
+      fi
+      if [[ -n "${_reason}" ]]; then
+        echo "[INFO] NIC '${_ifn}' (${_mac:-no-mac}) ${_reason} — will not be tested."
+        excluded_ethArray+=("${_ifn}")
+        excluded_reasonArray+=("${_reason}")
+      else
+        _filtered2+=("${_ifn}")
+      fi
+    done
+    _ethArray=("${_filtered2[@]+"${_filtered2[@]}"}")
+    n=${#_ethArray[@]}
+    echo "[DEBUG] After MAC filter (NET019): ${_ethArray[*]:-<none>}"
+    # Warn unconditionally, not only when the run is about to abort: a typo that
+    # still leaves >= 2 matching NICs would otherwise test the wrong pair without
+    # a word (BUG0047).
+    (( _have_inc )) && __mac_report_unmatched "_net_include_macs (whitelist)" "${_inc_macs[@]}"
+    (( _have_exc )) && __mac_report_unmatched "_net_exclude_macs (blacklist)" "${_exc_macs[@]}"
+  fi
+
   if (( n < 2 )); then
-    echo "[FATAL] Need at least 2 enp* NICs in root; found $n"
+    echo "[FATAL] Need at least 2 testable NICs; found $n after filtering."
+    echo "        NIC name pattern (_net_nic_name_regex): ${_nic_re}"
+    [[ -n "${_net_include_macs:-}" ]] && echo "        _net_include_macs (whitelist): ${_net_include_macs}"
+    [[ -n "${_net_exclude_macs:-}" ]] && echo "        _net_exclude_macs (blacklist): ${_net_exclude_macs}"
+    if (( ${#excluded_ethArray[@]} > 0 )); then
+      echo "        Excluded this run:"
+      local _xi
+      for _xi in "${!excluded_ethArray[@]}"; do
+        echo "          - ${excluded_ethArray[_xi]} ($(__nic_mac "${excluded_ethArray[_xi]}")) : ${excluded_reasonArray[_xi]:-?}"
+      done
+    fi
+    echo "        Hint: check the MACs above against the NICs actually present (ip -o link show),"
+    echo "        and if your target NICs are USB (enx*) or other types, widen _net_nic_name_regex"
+    echo "        (e.g. '^(enp|enx)') in config.sh."
     even_ethArray=(); odd_ethArray=(); skipped_ethArray=()
     return 1
   fi
@@ -446,7 +641,7 @@ netns_add() {
   local _active_n=$(( n - (n % 2) ))   # round down to nearest even number
   if (( n % 2 == 1 )); then
     skipped_ethArray+=("${_ethArray[n-1]}")
-    echo "[WARN] Odd NIC count (${n} enp* interfaces found)." \
+    echo "[WARN] Odd NIC count (${n} interfaces found)." \
          "'${_ethArray[n-1]}' has no pair and will be skipped." \
          "It will appear as N/A in the summary." >&2
   fi
@@ -1127,7 +1322,13 @@ sysd_disable_boot_task() {
 autorun_disable_if_done() {
   local cname="${1:?}" svc="${2:?}"
   local base="${_log_dir:-${_tool_path:-$PWD}/logs}"
-  local cfile="${base}/session_state/counter.${cname}"
+  # Prefer the EXACT counter file that counter_init cached this run. Recomputing
+  # the path from _log_dir can point at a different file than where the counter
+  # was actually written (counter_init caches _session_state_dir, and it may run
+  # before log_dir()), so relying on the recomputed path alone silently read an
+  # empty counter → __m=0 → the service was never disabled and dev_detect re-ran
+  # every boot (BUG0038). Fall back to the recomputed path only if unset.
+  local cfile="${_counter_file:-${base}/session_state/counter.${cname}}"
   local __m=0 __n=0
   if [[ -s "$cfile" ]]; then
     # shellcheck disable=SC1090,SC1091
@@ -1221,6 +1422,121 @@ autorun_uninstall() {
   echo "[INFO] Service ${svc}.service uninstalled."
 }
 
+# ---------- DUT test-environment mutations (reversible) ----------
+#
+# 為了「測試」而對 DUT 做的環境改動，一律成對提供 apply / restore，讓
+# setup_dut.sh（套用）與 restore 入口（還原）共用同一份邏輯，不再各自
+# 手刻、不再有名稱/行為不一致的問題。
+#
+# 範圍原則：
+#   - 屬於「為單次測試而暫時改變使用者日常行為」的設定（電源鍵、合蓋、
+#     睡眠、idle）→ 納入，測完必須能完整還原。
+#   - 讓自動框架本身能運作的基礎設施（Pi SSH 公鑰、NOPASSWD sudoers、
+#     dev-detect autorun）→ 不屬於此範圍，由各自的生命週期管理，restore
+#     不會動它們。
+#
+# 這些函式假設呼叫者具 root 權限（setup_dut.sh 與 restore 入口都有
+# FWK033 root 檢查）。每個函式回傳 0；是否實際變更以 echo 訊息呈現。
+
+TEST_ENV_LOGIND_DROPIN="/etc/systemd/logind.conf.d/99-automatic-testing.conf"
+TEST_ENV_SLEEP_TARGETS="sleep.target suspend.target hibernate.target hybrid-sleep.target"
+
+# 清掉舊版本曾直接寫進 /etc/systemd/logind.conf 的測試用 key（migration）。
+# 回傳：有刪到任何一行 → 0，否則 → 1
+_test_env_logind_strip_inline() {
+  local conf="/etc/systemd/logind.conf" k changed=1
+  local keys=(HandleLidSwitch HandleLidSwitchExternalPower HandleLidSwitchDocked
+              HandleSuspendKey HandleHibernateKey IdleAction
+              HandlePowerKey HandlePowerKeyLongPress)
+  for k in "${keys[@]}"; do
+    if grep -qE "^${k}=" "$conf" 2>/dev/null; then
+      sed -i "/^${k}=/d" "$conf"; changed=0
+    fi
+  done
+  return "$changed"
+}
+
+# 套用 logind 測試設定：電源鍵直接 poweroff（繞過 GNOME 互動關機，
+# 避免 HANG_SHUTDOWN）、合蓋/睡眠/休眠鍵/idle 一律 ignore。
+# 全部寫進單一 drop-in 檔，不動主 logind.conf。
+test_env_logind_apply() {
+  local dropin="${TEST_ENV_LOGIND_DROPIN}" changed=0
+  mkdir -p "$(dirname "$dropin")"
+  _test_env_logind_strip_inline && changed=1
+
+  cat > "${dropin}.tmp" <<'LOGIND'
+# Managed by automatic-testing-architecture.
+# Apply  : test_env_logind_apply   (setup_dut.sh)
+# Restore: test_env_logind_restore  (setup_dut.sh --restore)
+[Login]
+HandleLidSwitch=ignore
+HandleLidSwitchExternalPower=ignore
+HandleLidSwitchDocked=ignore
+HandleSuspendKey=ignore
+HandleHibernateKey=ignore
+IdleAction=ignore
+HandlePowerKey=poweroff
+HandlePowerKeyLongPress=poweroff
+LOGIND
+
+  if [[ -f "$dropin" ]] && diff -q "${dropin}.tmp" "$dropin" >/dev/null 2>&1; then
+    rm -f "${dropin}.tmp"
+  else
+    mv "${dropin}.tmp" "$dropin"; changed=1
+  fi
+
+  if (( changed )); then
+    systemctl restart systemd-logind >/dev/null 2>&1 || true
+    echo "[test-env] logind: applied (HandlePowerKey=poweroff; lid/suspend/idle=ignore)"
+  else
+    echo "[test-env] logind: already current — no change"
+  fi
+  return 0
+}
+
+# 還原 logind：刪除 drop-in 並清掉任何殘留的 inline key，restart logind。
+test_env_logind_restore() {
+  local dropin="${TEST_ENV_LOGIND_DROPIN}" changed=0
+  if [[ -e "$dropin" ]]; then
+    rm -f "$dropin"; changed=1
+    echo "[test-env] logind: drop-in removed (${dropin})"
+  else
+    echo "[test-env] logind: no drop-in present"
+  fi
+  _test_env_logind_strip_inline && changed=1
+  if (( changed )); then
+    systemctl restart systemd-logind >/dev/null 2>&1 || true
+    echo "[test-env] logind: restored to system defaults"
+  fi
+  return 0
+}
+
+# mask 睡眠相關 target（避免 DUT 在 ON_TIME 進入低耗電被誤判為 CRASH）。
+test_env_sleep_mask() {
+  # shellcheck disable=SC2086
+  systemctl mask ${TEST_ENV_SLEEP_TARGETS} >/dev/null 2>&1 || true
+  echo "[test-env] sleep/suspend/hibernate/hybrid-sleep targets masked"
+  return 0
+}
+
+# unmask 睡眠相關 target。
+test_env_sleep_unmask() {
+  # shellcheck disable=SC2086
+  systemctl unmask ${TEST_ENV_SLEEP_TARGETS} >/dev/null 2>&1 || true
+  echo "[test-env] sleep/suspend/hibernate/hybrid-sleep targets unmasked"
+  return 0
+}
+
+# 聚合還原：把所有「為測試而做的暫時改動」改回來。restore 入口（setup_dut.sh
+# --restore，或測試完成後由 Pi 透過 SSH 呼叫）只需呼叫這一個函式。
+test_env_restore_all() {
+  echo "[test-env] Restoring DUT test-environment changes…"
+  test_env_logind_restore
+  test_env_sleep_unmask
+  echo "[test-env] Done. Framework infrastructure (SSH key, sudoers, dev-detect) left in place."
+  return 0
+}
+
 # ---------- Test progress notification ----------
 # 同時通知三個管道：
 #   1. terminal（進度條格式，含 ETA）
@@ -1256,6 +1572,127 @@ _adlink_eta() {
   if   (( remain >= 3600 )); then printf '%dh %02dm' $(( remain/3600 )) $(( (remain%3600)/60 ))
   elif (( remain >= 60   )); then printf '%dm %02ds' $(( remain/60 )) $(( remain%60 ))
   else printf '%ds' "$remain"; fi
+}
+
+# Broadcast to every logged-in terminal EXCEPT the one running the test.
+#
+# `wall` writes to all TTYs including our own, and the message is ~10 lines. The
+# operator's console is already showing a `\r`-redrawn progress bar, so the
+# broadcast scrolls it away and the bar keeps redrawing on a line that is no
+# longer where it was: the run looks frozen until a keypress scrolls the
+# terminal and reveals it (BUG0049). The message exists to warn OTHER users not
+# to power the machine off; the person running the test does not need telling.
+#
+# The invoking terminal is captured once at source time — by the time this runs
+# it may be called from a background subshell whose stdin/stdout are redirected,
+# where tty(1) would answer "not a tty" and the exclusion would silently stop
+# working.
+_ADLINK_SELF_TTY="$(tty 2>/dev/null || true)"
+export _ADLINK_SELF_TTY
+
+_adlink_broadcast() {
+  local msg="$1" t
+  local self="${_ADLINK_SELF_TTY:-}"
+  # `who` is the same source wall(1) uses. Missing/awkward output just means
+  # nobody is told — the status file and MOTD hook still carry the warning.
+  while read -r t; do
+    [[ -z "${t}" || ! -w "${t}" ]] && continue
+    [[ -n "${self}" && "${t}" == "${self}" ]] && continue
+    printf '%s\n' "${msg}" >> "${t}" 2>/dev/null || true
+  done < <(who 2>/dev/null | awk '{print "/dev/"$2}' | sort -u)
+}
+
+# ---------- FWK038 liveness heartbeat ----------
+#
+# Presence (the "do not power off" banner) and liveness (proof the run has not
+# hung) are different obligations. test_progress_set covers presence: it fires
+# once per loop, so on a single-iteration run it speaks once, at the start, and
+# says nothing about whether the process is still alive forty minutes later.
+#
+# This is the liveness half: a background ticker that writes one line to the
+# OPERATOR'S console at a fixed interval, for as long as the test runs. It never
+# broadcasts to other terminals -- at a 30 s cadence that would be spam, and
+# other users need presence, not liveness.
+
+# Write one line to the operator's own terminal, falling back to stderr when we
+# do not know which terminal that is (cron, systemd, a redirected run).
+_adlink_console() {
+  local line="$1"
+  if [[ -n "${_ADLINK_SELF_TTY:-}" && -w "${_ADLINK_SELF_TTY}" ]]; then
+    # Append, not truncate: identical on a TTY (a character device ignores
+    # O_TRUNC), but correct if the "terminal" is ever a regular file — a
+    # redirected run, or a test harness capturing what the operator would see.
+    printf '%s\n' "${line}" >> "${_ADLINK_SELF_TTY}" 2>/dev/null || true
+  else
+    printf '%s\n' "${line}" >&2
+  fi
+}
+
+_adlink_hms() {   # seconds -> "1h 03m 09s" / "3m 09s" / "9s"
+  local s="${1:-0}"
+  if   (( s >= 3600 )); then printf '%dh %02dm %02ds' $(( s/3600 )) $(( (s%3600)/60 )) $(( s%60 ))
+  elif (( s >= 60   )); then printf '%dm %02ds' $(( s/60 )) $(( s%60 ))
+  else printf '%ds' "$s"; fi
+}
+
+# Set the phase the heartbeat reports, e.g. test_heartbeat_phase "sweep 3/8".
+# Free-form and optional; the heartbeat still ticks without it.
+test_heartbeat_phase() {
+  [[ -n "${_ADLINK_HB_PHASE_FILE:-}" ]] || return 0
+  printf '%s\n' "${1:-}" > "${_ADLINK_HB_PHASE_FILE}" 2>/dev/null || true
+}
+
+# Start the ticker. Safe to call twice — the previous one is stopped first.
+# Usage: test_heartbeat_start <script-name> [interval_sec]
+test_heartbeat_start() {
+  local script="${1:?}"
+  local interval="${2:-${_heartbeat_interval_sec:-30}}"
+  [[ "${interval}" =~ ^[0-9]+$ ]] || interval=30
+  (( interval > 0 )) || return 0        # 0 disables the heartbeat
+
+  test_heartbeat_stop
+
+  local state_dir="${_log_dir:-/tmp}"
+  _ADLINK_HB_PHASE_FILE="${state_dir}/.heartbeat_phase.$$"
+  # A step already drawing its own live display (net_test's per-transfer bar)
+  # touches this so the heartbeat stays out of its way — two writers on one
+  # terminal produce garbage, and the bar is the better indicator while it runs.
+  _ADLINK_HB_BUSY_FILE="${state_dir}/.heartbeat_busy.$$"
+  export _ADLINK_HB_PHASE_FILE _ADLINK_HB_BUSY_FILE
+  : > "${_ADLINK_HB_PHASE_FILE}" 2>/dev/null || true
+  rm -f "${_ADLINK_HB_BUSY_FILE}" 2>/dev/null || true
+
+  local t0; t0="$(date +%s)"
+  # The ticker must die with the test it reports on. test_heartbeat_stop and the
+  # scripts' EXIT traps handle the normal paths, but a SIGKILL, or a failure in
+  # the few lines between starting the heartbeat and installing the trap, would
+  # otherwise leave an immortal loop writing to somebody's terminal. Watching the
+  # parent PID is a self-healing backstop; a wall-clock limit would not be, since
+  # a legitimate endurance run can last for days.
+  local watch_pid=$$
+  (
+    while :; do
+      sleep "${interval}"
+      kill -0 "${watch_pid}" 2>/dev/null || break   # test is gone; so are we
+      [[ -e "${_ADLINK_HB_BUSY_FILE}" ]] && continue
+      local _now _el _phase
+      _now="$(date +%s)"; _el=$(( _now - t0 ))
+      _phase="$(head -n1 "${_ADLINK_HB_PHASE_FILE}" 2>/dev/null || true)"
+      _adlink_console "[$(date '+%H:%M:%S')] ${script}: running — $(_adlink_hms "${_el}") elapsed${_phase:+  |  ${_phase}}"
+    done
+  ) &
+  _ADLINK_HB_PID=$!
+  export _ADLINK_HB_PID
+}
+
+# Stop the ticker and clean up its state. Idempotent; safe from an EXIT trap.
+test_heartbeat_stop() {
+  if [[ -n "${_ADLINK_HB_PID:-}" ]]; then
+    kill "${_ADLINK_HB_PID}" 2>/dev/null || true
+    wait "${_ADLINK_HB_PID}" 2>/dev/null || true
+    unset _ADLINK_HB_PID
+  fi
+  rm -f "${_ADLINK_HB_PHASE_FILE:-}" "${_ADLINK_HB_BUSY_FILE:-}" 2>/dev/null || true
 }
 
 _adlink_find_display() {
@@ -1295,7 +1732,7 @@ test_progress_set() {
   fi
 
   # 3) Broadcast to active terminals
-  echo "${msg}" | wall 2>/dev/null || true
+  _adlink_broadcast "${msg}"
 
   # 4) X-Window: try notify-send first, then zenity persistent window
   local dpy_info dpy xauth pct title body
@@ -1343,7 +1780,7 @@ test_progress_clear() {
   [[ -n "${_prev_pid}" ]] && kill "${_prev_pid}" 2>/dev/null || true
 
   sudo rm -f "${_ADLINK_STATUS_FILE}" "${_ADLINK_MOTD_SCRIPT}" "${_ADLINK_XWIN_PID_FILE}" 2>/dev/null || true
-  echo "${msg}" | wall 2>/dev/null || true
+  _adlink_broadcast "${msg}"
 
   # X-Window completion notification
   local dpy_info dpy xauth _xenv
@@ -1665,9 +2102,12 @@ generate_net_report() {
   rows_js="$(jq -c '
     [ .details.pairs[]
       | .name as $pair
+      | (.pair_max_mbps // null) as $pmax
       | if (.speeds | length) == 0 then
           { pair: $pair, spd: null, v4: null, v6: null,
             tf: null, tr: null, uf: null, ur: null,
+            pmax: $pmax, bd: null, retr: null, jit: null, loss: null, loss_cap: null,
+            errc: null, jumbo: null, thr: null, pct: null, reason: null,
             verdict: "NOT_TESTED" }
         else
           .speeds[]
@@ -1679,9 +2119,64 @@ generate_net_report() {
               tr:      .throughput.tcp_rev_mbps,
               uf:      .throughput.udp_fwd_mbps,
               ur:      .throughput.udp_rev_mbps,
+              pmax:    $pmax,
+              bd:      (.bidirectional.sum_mbps // null),
+              retr:    (((.quality.tcp_fwd_retr // null)|tostring) + "/" + ((.quality.tcp_rev_retr // null)|tostring)),
+              jit:     (((.quality.udp_fwd_jitter_ms // null)|tostring) + "/" + ((.quality.udp_rev_jitter_ms // null)|tostring)),
+              loss:    (((.quality.udp_fwd_lost_pct // null)|tostring) + "/" + ((.quality.udp_rev_lost_pct // null)|tostring)),
+              loss_cap: (.quality.udp_loss_max_pct // null),
+              errc:    (if .error_counters == null then null
+                        else ((.error_counters.even_rx_errors // 0) + (.error_counters.even_tx_errors // 0)
+                            + (.error_counters.odd_rx_errors  // 0) + (.error_counters.odd_tx_errors  // 0)) end),
+              jumbo:   (.jumbo.result // null),
+              thr:     (.tcp_pass_thr_mbps // null),
+              pct:     (.tcp_pass_pct // null),
+              reason:  (.reason // null),
               verdict: .verdict }
         end
     ]' "${resultjson}")"
+
+  # ---- NET009 method section (BUG0063) ----
+  # Rendered from result.json's .details.method, never hand-written, so the
+  # standard shown beside a verdict is the one that produced it.
+  local method_html=""
+  local _m_req _m_formula _m_mtu _m_frame _m_l3l4 _m_eff _m_pct _m_tiers
+  local _m_par _m_parfrom _m_parn _m_udpcap _m_udpgate _m_errgate
+  if [[ "$(jq -r '.details.method // empty' "${resultjson}")" != "" ]]; then
+    _m_req="$(jq -r '.details.method.requirement // "?"' "${resultjson}")"
+    _m_formula="$(jq -r '.details.method.tcp_threshold.formula // "?"' "${resultjson}")"
+    _m_mtu="$(jq -r '.details.method.tcp_threshold.mtu_bytes // "?"' "${resultjson}")"
+    _m_frame="$(jq -r '.details.method.tcp_threshold.frame_overhead_bytes // "?"' "${resultjson}")"
+    _m_l3l4="$(jq -r '.details.method.tcp_threshold.l3l4_overhead_bytes // "?"' "${resultjson}")"
+    _m_eff="$(jq -r '.details.method.tcp_threshold.goodput_efficiency // "?"' "${resultjson}")"
+    _m_pct="$(jq -r '.details.method.tcp_threshold.pass_pct // "?"' "${resultjson}")"
+    _m_tiers="$(jq -r '.details.method.tcp_threshold.pass_pct_tiers // ""' "${resultjson}")"
+    _m_par="$(jq -r '.details.method.iperf_streams.setting // "?"' "${resultjson}")"
+    _m_parfrom="$(jq -r '.details.method.iperf_streams.auto_from_mbps // "?"' "${resultjson}")"
+    _m_parn="$(jq -r '.details.method.iperf_streams.auto_streams // "?"' "${resultjson}")"
+    _m_udpcap="$(jq -r '.details.method.udp_loss.cap_pct // "?"' "${resultjson}")"
+    _m_udpgate="$(jq -r 'if .details.method.udp_loss.gates_verdict then "yes" else "no" end' "${resultjson}")"
+    _m_errgate="$(jq -r 'if .details.method.nic_error_counters.gates_verdict then "yes" else "no" end' "${resultjson}")"
+    method_html="$(cat <<MEOF
+<div class="sec"><h2>Method and thresholds (${_m_req})</h2>
+<p style="font-size:11px;color:#888;margin-bottom:.6rem">
+Recorded in <code>result.json</code> by the run that produced these verdicts, and rendered from it.
+A verdict is only auditable if the rule behind it travels with the numbers.</p>
+<table>
+<tbody>
+<tr><th style="width:26%">TCP pass rule</th><td><code>${_m_formula}</code></td></tr>
+<tr><th>Why not % of line rate</th><td>iperf3 reports TCP <b>payload</b>; the link speed is <b>wire rate</b>.
+Each frame also spends ${_m_frame} bytes on preamble+SFD, Ethernet header, FCS and the inter-frame gap,
+plus ${_m_l3l4} bytes of IP/TCP headers inside the MTU. At MTU ${_m_mtu} that caps goodput at
+<b>${_m_eff}</b> of line rate, so a threshold expressed against line rate above that figure is unreachable by any hardware.</td></tr>
+<tr><th>Pass percentage</th><td>${_m_pct}% of the achievable figure above$( [[ -n "${_m_tiers}" ]] && echo " &nbsp;·&nbsp; per-speed overrides in force: <code>${_m_tiers}</code>" || echo ", uniform at every link speed — the efficiency term depends only on MTU, not on speed" )</td></tr>
+<tr><th>iperf3 streams</th><td><code>${_m_par}</code>$( [[ "${_m_par}" == "auto" ]] && echo " &nbsp;·&nbsp; 1 below ${_m_parfrom} Mb/s, ${_m_parn} at or above" ) &nbsp;— a single stream is bounded by one CPU core and plateaus near 75-85 Gbit/s whatever the link is set to, so above that point it measures the host rather than the NIC</td></tr>
+<tr><th>UDP loss</th><td>cap ${_m_udpcap}% &nbsp;·&nbsp; gates the verdict: <b>${_m_udpgate}</b> &nbsp;— UDP is offered at full link rate with no flow control, so loss is an expected outcome of the method</td></tr>
+<tr><th>NIC error counters</th><td>gate the verdict: <b>${_m_errgate}</b></td></tr>
+</tbody></table></div>
+MEOF
+)"
+  fi
 
   # ---- HTML ----
   cat > "${out}" <<NREOF
@@ -1716,15 +2211,30 @@ td{padding:5px 8px;border-bottom:.5px solid #f0f0f0}tr:hover td{background:#fafa
 <div class="card"><div class="lbl">Verdict</div><div class="val v-$(echo "${overall_verdict}" | tr '[:upper:]' '[:lower:]')" style="font-size:15px;padding-top:4px">${overall_verdict}</div></div>
 </div>
 <div class="sec"><h2>Test results</h2>
+<p style="font-size:11px;color:#888;margin-bottom:.6rem">
+All throughput columns are Mbps (Mbit/s) as measured at the receiver.
+Max = the highest link speed BOTH NICs of the pair support (NET015), fixed for the pair;
+Speed = the link speed this row was actually configured to and measured at.
+Full-dup = simultaneous bidirectional TCP sum (NET017).
+UDP loss = datagrams lost as a percentage of those sent, fwd/rev (NET017). UDP is
+offered at full link rate with no flow control, so loss here is expected and is
+reported, not judged, unless _net_udp_loss_fail is enabled in config.sh.
+Quality = TCP retransmits / UDP jitter(ms), fwd/rev (NET017).
+Err = NIC rx+tx error counter delta during the run (NET016) — non-zero is highlighted.
+Jumbo = 9000-MTU DF ping at &ge;1000M (NET018). Thr = TCP PASS threshold actually applied (NET009).
+Hover the Verdict cell for the reason (NET008).</p>
 <table><thead><tr>
-<th>Pair</th><th>Speed(Mbps)</th><th>IPv4</th><th>IPv6</th>
-<th>TCP Fwd (Mbps)</th><th>TCP Rev (Mbps)</th><th>UDP Fwd (Mbps)</th><th>UDP Rev (Mbps)</th><th>Verdict</th>
+<th>Pair</th><th>Max (Mbps)</th><th>Speed (Mbps)</th><th>IPv4</th><th>IPv6</th>
+<th>TCP Fwd (Mbps)</th><th>TCP Rev (Mbps)</th><th>UDP Fwd (Mbps)</th><th>UDP Rev (Mbps)</th>
+<th>Full-dup (Mbps)</th><th>UDP loss (%)</th><th>Quality</th><th>Err</th><th>Jumbo</th><th>Thr</th><th>Verdict</th>
 </tr></thead><tbody id="tb"></tbody></table></div>
+${method_html}
 <script>
 const ROWS=${rows_js};
 const tb=document.getElementById('tb');
 const fmtMbps=v=>(v==null||isNaN(v))?'—':(+v).toFixed(0);
 const badge=v=>v&&v!=='N/A'?'<span class="b '+(v==='PASS'||v==='FAIL'?v:'na')+'">'+v+'</span>':'—';
+const qfmt=s=>(!s||s==='null/null')?'—':s.replace(/null/g,'—');
 ROWS.forEach(r=>{
   const tr=document.createElement('tr');
   const vLow=(r.verdict||'UNKNOWN').toLowerCase().replace(/_/g,'-');
@@ -1732,13 +2242,33 @@ ROWS.forEach(r=>{
   else if(r.verdict==='NOT_TESTED')tr.className='nt';
   const vClass='v-'+vLow;
   const spdCell=r.spd!=null?r.spd:'—';
-  tr.innerHTML='<td>'+r.pair+'</td><td>'+spdCell+'</td>'+
+  const maxCell=r.pmax!=null?r.pmax+'M':'—';
+  const errCell=(r.errc==null)?'—':(r.errc>0?'<span class="b FAIL">'+r.errc+'</span>':'0');
+  const jumboCell=r.jumbo?'<span class="b '+(r.jumbo==='PASS'?'PASS':(r.jumbo==='SKIP'?'na':'FAIL'))+'">'+r.jumbo+'</span>':'—';
+  const thrCell=(r.thr!=null)?fmtMbps(r.thr)+'M'+(r.pct!=null?' ('+r.pct+'%)':''):'—';
+  // UDP loss gets its own column: it was previously buried in the Quality cell
+  // with no unit, so a 41% loss read like a status code. Highlighted only when
+  // it exceeds the configured cap, since UDP at line rate loses by design.
+  const lossCell=(function(){
+    const s=qfmt(r.loss); if(s==='—')return '—';
+    const worst=Math.max.apply(null,String(r.loss).split('/').map(x=>parseFloat(x)).filter(x=>!isNaN(x)));
+    const cap=(r.loss_cap==null)?null:+r.loss_cap;
+    return (cap!=null&&isFinite(worst)&&worst>cap)?'<span class="b FAIL">'+s+'</span>':s;
+  })();
+  const reasonAttr=r.reason?' title="'+String(r.reason).replace(/"/g,'&quot;')+'"':'';
+  tr.innerHTML='<td>'+r.pair+'</td><td style="font-size:11px">'+maxCell+'</td><td>'+spdCell+'</td>'+
     '<td>'+badge(r.v4)+'</td><td>'+badge(r.v6)+'</td>'+
     '<td style="font-size:11px">'+fmtMbps(r.tf)+'</td>'+
     '<td style="font-size:11px">'+fmtMbps(r.tr)+'</td>'+
     '<td style="font-size:11px">'+fmtMbps(r.uf)+'</td>'+
     '<td style="font-size:11px">'+fmtMbps(r.ur)+'</td>'+
-    '<td class="'+vClass+'">'+(r.verdict||'UNKNOWN')+'</td>';
+    '<td style="font-size:11px">'+fmtMbps(r.bd)+'</td>'+
+    '<td style="font-size:11px">'+lossCell+'</td>'+
+    '<td style="font-size:10px">retr '+qfmt(r.retr)+'<br>jit '+qfmt(r.jit)+'</td>'+
+    '<td style="font-size:11px">'+errCell+'</td>'+
+    '<td style="font-size:11px">'+jumboCell+'</td>'+
+    '<td style="font-size:11px">'+thrCell+'</td>'+
+    '<td class="'+vClass+'"'+reasonAttr+'>'+(r.verdict||'UNKNOWN')+'</td>';
   tb.appendChild(tr);
 });
 </script></body></html>
@@ -1978,6 +2508,14 @@ emit_result_json() {
   fi
   _os_kernel="$(uname -r 2>/dev/null || echo unknown)"
 
+  # FWK037: system configuration inventory, so every test's result.json records
+  # which hardware produced it. Best-effort: fall back to an empty object.
+  local _sysinfo_json
+  _sysinfo_json="$(system_info_json 2>/dev/null || true)"
+  if ! echo "${_sysinfo_json}" | jq . >/dev/null 2>&1; then
+    _sysinfo_json='{}'
+  fi
+
   # Make sure output dir exists
   local _out_dir
   _out_dir="$(dirname "${_output}")"
@@ -1985,6 +2523,7 @@ emit_result_json() {
 
   # Build the JSON using jq
   jq -n \
+    --argjson sysinfo    "${_sysinfo_json}" \
     --arg     schema_v   "${_schema_version}" \
     --arg     t_name     "${_test_name}" \
     --arg     t_version  "${_test_version}" \
@@ -2033,6 +2572,7 @@ emit_result_json() {
           completed: $n
         }
       },
+      system_info: $sysinfo,
       verdict: $verdict,
       summary: $summary,
       details: $details
@@ -2040,4 +2580,267 @@ emit_result_json() {
 
   echo "[INFO] emit_result_json: wrote ${_output}"
   return 0
+}
+
+# ============================================================================
+# Memory inventory & usability verification (DET002 / BUG0039)
+# ============================================================================
+# A DIMM can be POPULATED but not USABLE: if the memory controller fails to
+# train it, SPD/DMI still reports the module (so `dmidecode` lists it) while the
+# OS never gets the memory. Observed on a real DUT: 6x32GB installed, dmidecode
+# shows 6 populated slots, but /proc/meminfo reports only ~128GB (and the BIOS
+# setup screen agrees). Windows shows the same thing natively as
+# "192 GB installed (128 GB usable)". Trusting the DMI view alone would call
+# that machine healthy, so we cross-check the two totals.
+
+# Sum of populated DIMM sizes from DMI/SPD, in bytes. Empty output if dmidecode
+# is unavailable/unreadable (caller must treat that as UNKNOWN, never as 0).
+mem_installed_bytes() {
+  command -v dmidecode >/dev/null 2>&1 || return 1
+  LANG=C dmidecode -t memory 2>/dev/null | awk '
+    /^[ \t]*Size:/ {
+      line=$0; sub(/^[ \t]*Size:[ \t]*/,"",line); sub(/\r$/,"",line)
+      if (line ~ /No Module Installed|Not Installed|Unknown/) next
+      n=line+0                      # leading number, e.g. "32 GB" -> 32
+      if (n <= 0) next
+      if      (line ~ /[Tt]B/) bytes = n * 1024 * 1024 * 1024 * 1024
+      else if (line ~ /[Gg]B/) bytes = n * 1024 * 1024 * 1024
+      else if (line ~ /[Mm]B/) bytes = n * 1024 * 1024
+      else if (line ~ /[Kk]B/) bytes = n * 1024
+      else                     bytes = n
+      total += bytes
+    }
+    END { if (total > 0) printf "%.0f", total }
+  '
+}
+
+# Number of populated DIMM slots per DMI. Empty if dmidecode is unavailable.
+mem_populated_count() {
+  command -v dmidecode >/dev/null 2>&1 || return 1
+  LANG=C dmidecode -t memory 2>/dev/null | awk '
+    /^[ \t]*Size:/ {
+      line=$0; sub(/^[ \t]*Size:[ \t]*/,"",line); sub(/\r$/,"",line)
+      if (line ~ /No Module Installed|Not Installed|Unknown/) next
+      if (line+0 > 0) c++
+    }
+    END { printf "%d", c+0 }
+  '
+}
+
+# Smallest populated DIMM size in bytes (used to size the FAIL threshold).
+mem_smallest_dimm_bytes() {
+  command -v dmidecode >/dev/null 2>&1 || return 1
+  LANG=C dmidecode -t memory 2>/dev/null | awk '
+    /^[ \t]*Size:/ {
+      line=$0; sub(/^[ \t]*Size:[ \t]*/,"",line); sub(/\r$/,"",line)
+      if (line ~ /No Module Installed|Not Installed|Unknown/) next
+      n=line+0; if (n <= 0) next
+      if      (line ~ /[Tt]B/) bytes = n * 1024 * 1024 * 1024 * 1024
+      else if (line ~ /[Gg]B/) bytes = n * 1024 * 1024 * 1024
+      else if (line ~ /[Mm]B/) bytes = n * 1024 * 1024
+      else if (line ~ /[Kk]B/) bytes = n * 1024
+      else                     bytes = n
+      if (min == 0 || bytes < min) min = bytes
+    }
+    END { if (min > 0) printf "%.0f", min }
+  '
+}
+
+# Memory the OS can actually use, in bytes (/proc/meminfo MemTotal is KiB).
+mem_usable_bytes() {
+  [[ -r /proc/meminfo ]] || return 1
+  awk '/^MemTotal:/ { printf "%.0f", $2 * 1024; exit }' /proc/meminfo
+}
+
+# Render bytes as a human GiB string (1 decimal place).
+mem_bytes_to_gib() {
+  awk -v b="${1:-0}" 'BEGIN { printf "%.1f", b / 1073741824 }'
+}
+
+# DET002 usability verdict.
+# Prints: RESULT|installed_bytes|usable_bytes|populated_count|gap_bytes|threshold_bytes|reason
+# RESULT is Pass | Fail | UNKNOWN. UNKNOWN when the DMI view is unavailable --
+# never a silent Pass.
+mem_usability_check() {
+  local installed usable count smallest gap threshold tol_pct tol_floor
+  installed="$(mem_installed_bytes 2>/dev/null || true)"
+  usable="$(mem_usable_bytes 2>/dev/null || true)"
+  count="$(mem_populated_count 2>/dev/null || true)"
+  smallest="$(mem_smallest_dimm_bytes 2>/dev/null || true)"
+
+  if [[ -z "${installed}" || -z "${usable}" ]]; then
+    printf 'UNKNOWN|%s|%s|%s|||dmidecode or /proc/meminfo unavailable — cannot verify DIMM usability (not a pass)\n' \
+      "${installed:-}" "${usable:-}" "${count:-}"
+    return 0
+  fi
+
+  gap=$(( installed - usable ))
+  (( gap < 0 )) && gap=0
+
+  # Threshold: normal firmware/kernel reservation must not trip this, but a
+  # whole missing DIMM must. tolerance = max(3% of installed, 2 GiB, half the
+  # smallest populated DIMM).
+  tol_pct=$(awk -v i="${installed}" 'BEGIN { printf "%.0f", i * 0.03 }')
+  tol_floor=$(( 2 * 1024 * 1024 * 1024 ))
+  threshold="${tol_pct}"
+  (( tol_floor > threshold )) && threshold="${tol_floor}"
+  if [[ -n "${smallest}" ]]; then
+    local half_dimm=$(( smallest / 2 ))
+    (( half_dimm > threshold )) && threshold="${half_dimm}"
+  fi
+
+  if (( gap > threshold )); then
+    printf 'Fail|%s|%s|%s|%s|%s|installed %s GiB across %s DIMM(s) but only %s GiB usable — %s GiB missing (> %s GiB tolerance): one or more populated DIMMs were not trained/enabled (defective DIMM, slot, or seating)\n' \
+      "${installed}" "${usable}" "${count}" "${gap}" "${threshold}" \
+      "$(mem_bytes_to_gib "${installed}")" "${count}" "$(mem_bytes_to_gib "${usable}")" \
+      "$(mem_bytes_to_gib "${gap}")" "$(mem_bytes_to_gib "${threshold}")"
+  else
+    printf 'Pass|%s|%s|%s|%s|%s|installed %s GiB across %s DIMM(s), %s GiB usable — %s GiB reserved, within %s GiB tolerance\n' \
+      "${installed}" "${usable}" "${count}" "${gap}" "${threshold}" \
+      "$(mem_bytes_to_gib "${installed}")" "${count}" "$(mem_bytes_to_gib "${usable}")" \
+      "$(mem_bytes_to_gib "${gap}")" "$(mem_bytes_to_gib "${threshold}")"
+  fi
+}
+
+# ============================================================================
+# System configuration inventory (FWK037)
+# ============================================================================
+# Best-effort snapshot of the DUT's hardware/firmware/OS configuration, so every
+# test's log and report is self-describing ("these results came from THIS CPU
+# with THIS much RAM"). Informational only -- it never changes a verdict, and a
+# missing tool degrades to "N/A" instead of failing the test.
+
+_si_val() { printf '%s' "${1:-N/A}"; }
+
+# Cache so repeated calls in one run are cheap (FWK037 implication 3).
+_SYSINFO_CACHE=""
+
+collect_system_info() {
+  if [[ -n "${_SYSINFO_CACHE}" && "${1:-}" != "--refresh" ]]; then
+    printf '%s' "${_SYSINFO_CACHE}"
+    return 0
+  fi
+
+  # Initialise every local: function.sh runs under `set -u`, where a declared but
+  # never-assigned local is an "unbound variable" fatal error when the tool that
+  # would have filled it (dmidecode, lscpu) is absent.
+  local host="" os="" kernel="" board="" product="" serial="" bios=""
+  local cpu="" sockets="" cores="" threads=""
+  local mem_inst="" mem_use="" mem_cnt="" mem_chk="" mem_res=""
+
+  host="$(hostname 2>/dev/null || true)"
+  kernel="$(uname -r 2>/dev/null || true)"
+  if [[ -r /etc/os-release ]]; then
+    os="$(. /etc/os-release 2>/dev/null; printf '%s' "${PRETTY_NAME:-${NAME:-}}")"
+  fi
+
+  if command -v dmidecode >/dev/null 2>&1; then
+    board="$(dmidecode -s baseboard-product-name 2>/dev/null | head -n1 || true)"
+    product="$(dmidecode -s system-product-name 2>/dev/null | head -n1 || true)"
+    serial="$(dmidecode -s system-serial-number 2>/dev/null | head -n1 || true)"
+    bios="$(dmidecode -s bios-version 2>/dev/null | head -n1 || true)"
+  fi
+
+  if command -v lscpu >/dev/null 2>&1; then
+    cpu="$(LANG=C lscpu | awk -F': +' '/^Model name/{print $2; exit}')"
+    sockets="$(LANG=C lscpu | awk -F': +' '/^Socket\(s\)/{print $2; exit}')"
+    cores="$(LANG=C lscpu | awk -F': +' '/^Core\(s\) per socket/{print $2; exit}')"
+    threads="$(LANG=C lscpu | awk -F': +' '/^CPU\(s\)/{print $2; exit}')"
+  fi
+
+  # Memory: report BOTH the installed (DMI) and usable (OS) totals, plus the
+  # DET002 usability verdict -- the discrepancy is the whole point.
+  mem_chk="$(mem_usability_check)"
+  mem_res="${mem_chk%%|*}"
+  mem_inst="$(printf '%s' "${mem_chk}" | cut -d'|' -f2)"
+  mem_use="$(printf '%s' "${mem_chk}" | cut -d'|' -f3)"
+  mem_cnt="$(printf '%s' "${mem_chk}" | cut -d'|' -f4)"
+
+  local mem_inst_h="N/A" mem_use_h="N/A"
+  [[ -n "${mem_inst}" ]] && mem_inst_h="$(mem_bytes_to_gib "${mem_inst}") GiB"
+  [[ -n "${mem_use}"  ]] && mem_use_h="$(mem_bytes_to_gib "${mem_use}") GiB"
+
+  _SYSINFO_CACHE="$(cat <<EOS
+========== System configuration (FWK037) ==========
+Hostname     : $(_si_val "${host}")
+OS           : $(_si_val "${os}")
+Kernel       : $(_si_val "${kernel}")
+Product      : $(_si_val "${product}")
+Baseboard    : $(_si_val "${board}")
+Serial       : $(_si_val "${serial}")
+BIOS         : $(_si_val "${bios}")
+CPU          : $(_si_val "${cpu}")
+CPU topology : sockets=$(_si_val "${sockets}") cores/socket=$(_si_val "${cores}") logical=$(_si_val "${threads}")
+Memory       : installed ${mem_inst_h} across $(_si_val "${mem_cnt}") DIMM(s), usable ${mem_use_h}  [${mem_res}]
+===================================================
+EOS
+)"
+  printf '%s' "${_SYSINFO_CACHE}"
+}
+
+# Same inventory as a JSON object for result.json (FWK028 canonical form).
+system_info_json() {
+  # All locals initialised — see collect_system_info (set -u safety).
+  local host="" os="" kernel="" board="" product="" serial="" bios=""
+  local cpu="" sockets="" cores="" threads=""
+  local mem_chk="" mem_res="" mem_inst="" mem_use="" mem_cnt="" mem_gap="" mem_reason=""
+
+  host="$(hostname 2>/dev/null || true)"
+  kernel="$(uname -r 2>/dev/null || true)"
+  [[ -r /etc/os-release ]] && os="$(. /etc/os-release 2>/dev/null; printf '%s' "${PRETTY_NAME:-${NAME:-}}")"
+  if command -v dmidecode >/dev/null 2>&1; then
+    board="$(dmidecode -s baseboard-product-name 2>/dev/null | head -n1 || true)"
+    product="$(dmidecode -s system-product-name 2>/dev/null | head -n1 || true)"
+    serial="$(dmidecode -s system-serial-number 2>/dev/null | head -n1 || true)"
+    bios="$(dmidecode -s bios-version 2>/dev/null | head -n1 || true)"
+  fi
+  if command -v lscpu >/dev/null 2>&1; then
+    cpu="$(LANG=C lscpu | awk -F': +' '/^Model name/{print $2; exit}')"
+    sockets="$(LANG=C lscpu | awk -F': +' '/^Socket\(s\)/{print $2; exit}')"
+    cores="$(LANG=C lscpu | awk -F': +' '/^Core\(s\) per socket/{print $2; exit}')"
+    threads="$(LANG=C lscpu | awk -F': +' '/^CPU\(s\)/{print $2; exit}')"
+  fi
+
+  mem_chk="$(mem_usability_check)"
+  mem_res="${mem_chk%%|*}"
+  mem_inst="$(printf '%s' "${mem_chk}" | cut -d'|' -f2)"
+  mem_use="$(printf '%s'  "${mem_chk}" | cut -d'|' -f3)"
+  mem_cnt="$(printf '%s'  "${mem_chk}" | cut -d'|' -f4)"
+  mem_gap="$(printf '%s'  "${mem_chk}" | cut -d'|' -f5)"
+  mem_reason="$(printf '%s' "${mem_chk}" | cut -d'|' -f7-)"
+
+  printf '{'
+  printf '"hostname":%s,'   "$(_si_json_str "${host}")"
+  printf '"os":%s,'         "$(_si_json_str "${os}")"
+  printf '"kernel":%s,'     "$(_si_json_str "${kernel}")"
+  printf '"product":%s,'    "$(_si_json_str "${product}")"
+  printf '"baseboard":%s,'  "$(_si_json_str "${board}")"
+  printf '"serial":%s,'     "$(_si_json_str "${serial}")"
+  printf '"bios_version":%s,' "$(_si_json_str "${bios}")"
+  printf '"cpu_model":%s,'  "$(_si_json_str "${cpu}")"
+  printf '"cpu_sockets":%s,' "$(_si_json_num "${sockets}")"
+  printf '"cpu_cores_per_socket":%s,' "$(_si_json_num "${cores}")"
+  printf '"cpu_logical":%s,' "$(_si_json_num "${threads}")"
+  printf '"memory":{'
+  printf '"installed_bytes":%s,' "$(_si_json_num "${mem_inst}")"
+  printf '"usable_bytes":%s,'    "$(_si_json_num "${mem_use}")"
+  printf '"dimm_populated_count":%s,' "$(_si_json_num "${mem_cnt}")"
+  printf '"gap_bytes":%s,'       "$(_si_json_num "${mem_gap}")"
+  printf '"result":%s,'          "$(_si_json_str "${mem_res}")"
+  printf '"reason":%s'           "$(_si_json_str "${mem_reason}")"
+  printf '}}'
+}
+
+# JSON scalar emitters: empty value -> null, so a missing field is explicit.
+_si_json_str() {
+  [[ -n "${1}" ]] && printf '"%s"' "$(_json_escape_si "${1}")" || printf 'null'
+}
+_si_json_num() {
+  [[ -n "${1}" && "${1}" =~ ^[0-9]+$ ]] && printf '%s' "${1}" || printf 'null'
+}
+
+_json_escape_si() {
+  local s="$1"
+  s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\n'/ }"; s="${s//$'\r'/}"
+  printf '%s' "${s}"
 }

@@ -1,32 +1,32 @@
 # Project Status
 
-_Generated 2026-06-08 02:06 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-08-27 08:08 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
-**Total:** 135
+**Total:** 150
 
 ### By priority
 
 | Priority | Count |
 | --- | --- |
-| Must | 118 |
-| Should | 15 |
+| Must | 126 |
+| Should | 22 |
 | — | 2 |
 
 ### By status
 
 | Status | Count |
 | --- | --- |
-| proposed | 107 |
-| implementing | 3 |
-| implemented | 25 |
+| proposed | 106 |
+| implementing | 10 |
+| implemented | 34 |
 
 ```mermaid
 pie showData title Requirements by status
-    "proposed" : 107
-    "implementing" : 3
-    "implemented" : 25
+    "proposed" : 106
+    "implementing" : 10
+    "implemented" : 34
 ```
 
 ### By section
@@ -34,15 +34,15 @@ pie showData title Requirements by status
 | Section | Total | Verified | Not done |
 | --- | --- | --- | --- |
 | CMP | 6 | 0 | 6 |
-| DET | 12 | 0 | 11 |
+| DET | 13 | 0 | 12 |
 | DOC | 4 | 0 | 4 |
 | DSK | 10 | 0 | 8 |
 | FUN | 7 | 0 | 6 |
-| FWK | 34 | 0 | 28 |
-| LOG | 24 | 0 | 24 |
-| NET | 13 | 0 | 13 |
-| PWR | 14 | 0 | 1 |
-| SET | 6 | 0 | 4 |
+| FWK | 38 | 0 | 30 |
+| LOG | 26 | 0 | 23 |
+| NET | 18 | 0 | 17 |
+| PWR | 16 | 0 | 1 |
+| SET | 7 | 0 | 4 |
 | SLP | 5 | 0 | 5 |
 
 ### Must-priority requirements not yet implemented
@@ -55,7 +55,7 @@ pie showData title Requirements by status
 | [CMP005](requirements/CMP005.md) | proposed | Graceful Handling of Unavailable Tools |
 | [CMP006](requirements/CMP006.md) | proposed | Bug OS Column Scope Convention |
 | [DET001](requirements/DET001.md) | proposed | CPU Model and Core Count |
-| [DET002](requirements/DET002.md) | proposed | RAM Capacity and DIMM Population |
+| [DET002](requirements/DET002.md) | implementing | RAM Capacity, DIMM Population & Usability Verification |
 | [DET003](requirements/DET003.md) | proposed | Network Interface Model and Count |
 | [DET004](requirements/DET004.md) | proposed | USB Device Model and Speed |
 | [DET005](requirements/DET005.md) | proposed | Storage Device Model and Capacity |
@@ -65,6 +65,7 @@ pie showData title Requirements by status
 | [DET009](requirements/DET009.md) | proposed | Golden Reference Comparison |
 | [DET010](requirements/DET010.md) | proposed | Configurable Golden Reference Path |
 | [DET011](requirements/DET011.md) | proposed | Diff Output in Test Log |
+| [DET013](requirements/DET013.md) | implementing | Snapshot Mode and Machine-Readable Per-Run Result |
 | [DOC003](requirements/DOC003.md) | proposed | Bug Status Vocabulary |
 | [DOC004](requirements/DOC004.md) | proposed | Test Verdict Vocabulary |
 | [DSK001](requirements/DSK001.md) | proposed | Storage Device Enumeration |
@@ -105,7 +106,7 @@ pie showData title Requirements by status
 | [FWK027](requirements/FWK027.md) | proposed | No Silent State Mutation in Helper Functions |
 | [FWK032](requirements/FWK032.md) | proposed | In-Test DUT User Notification |
 | [FWK033](requirements/FWK033.md) | proposed | Privilege Precondition Check |
-| [LOG001](requirements/LOG001.md) | proposed | Logs Directory Creation |
+| [FWK036](requirements/FWK036.md) | proposed | Cross-Language Feature Parity |
 | [LOG002](requirements/LOG002.md) | proposed | All Test Output in logs/ |
 | [LOG003](requirements/LOG003.md) | proposed | Log Filename Includes Test Name |
 | [LOG004](requirements/LOG004.md) | proposed | Log Filename Includes Loop Number |
@@ -127,7 +128,7 @@ pie showData title Requirements by status
 | [LOG022](requirements/LOG022.md) | proposed | ISO 8601 Timestamp Consistency |
 | [LOG023](requirements/LOG023.md) | proposed | Test Session Identity and Resume |
 | [NET001](requirements/NET001.md) | proposed | Enumerate enp and eno Interfaces |
-| [NET002](requirements/NET002.md) | proposed | Namespace-Based Loopback Testing |
+| [NET002](requirements/NET002.md) | proposed | Isolated Loopback Testing (Namespace / Weak Host Model) |
 | [NET003](requirements/NET003.md) | proposed | Clean Namespace State Before Testing |
 | [NET004](requirements/NET004.md) | proposed | Test at All Advertised Link Speeds |
 | [NET005](requirements/NET005.md) | proposed | ICMP Connectivity Verification |
@@ -136,6 +137,7 @@ pie showData title Requirements by status
 | [NET008](requirements/NET008.md) | proposed | Verdict Assignment per Test Item |
 | [NET011](requirements/NET011.md) | implementing | NIC Include/Exclude Lists |
 | [NET013](requirements/NET013.md) | proposed | iperf3 Log Filename Convention |
+| [NET016](requirements/NET016.md) | implementing | NIC Error / Discard Counter Verification |
 | [SET001](requirements/SET001.md) | proposed | Tunable Parameters in config Only |
 | [SET002](requirements/SET002.md) | proposed | Utility Functions in function Only |
 | [SET003](requirements/SET003.md) | proposed | config Contains No Executable Logic |
@@ -148,19 +150,23 @@ pie showData title Requirements by status
 
 ## Bugs
 
-**Total:** 27
+**Total:** 68
 
 ### By status
 
 | Status | Count |
 | --- | --- |
-| open | 15 |
+| open | 14 |
+| in-progress | 2 |
+| resolved | 40 |
 | closed | 10 |
 | invalid | 2 |
 
 ```mermaid
 pie showData title Bugs by status
-    "open" : 15
+    "open" : 14
+    "in-progress" : 2
+    "resolved" : 40
     "closed" : 10
     "invalid" : 2
 ```
@@ -169,9 +175,13 @@ pie showData title Bugs by status
 
 | OS | Count |
 | --- | --- |
-| Ubuntu 26.04 LTS | 14 |
-| Ubuntu 24.04 LTS | 10 |
-| Windows 11 | 3 |
+| Ubuntu 24.04 LTS | 42 |
+| Ubuntu 26.04 LTS | 25 |
+| Windows 11 | 13 |
+| Windows | 4 |
+| Windows 11 (zh-TW) | 2 |
+| Windows 11 (English / en-US) | 1 |
+| Windows 11 (Traditional Chinese / zh-TW) | 1 |
 
 ### Open bugs (oldest first)
 
@@ -189,9 +199,10 @@ pie showData title Bugs by status
 | [BUG0016](bugs/open/BUG0016-dimm8-row-formatting-differs-from-dimm1-7-in-detec.md) | 2026-05-05 | open | DIMM8 row formatting differs from DIMM1-7 in detect_ram output |
 | [BUG0020](bugs/open/BUG0020-sleep-test-not-yet-integrated-or-verified.md) | 2026-05-08 | open | sleep_test not yet integrated or verified |
 | [BUG0022](bugs/open/BUG0022-the-notification-is-misleading.md) | 2026-05-14 | open | The notification is misleading |
-| [BUG0023](bugs/open/BUG0023-two-log-dir-echo-statements-joined-on-one-line-in-.md) | 2026-05-14 | open | Two log_dir echo statements joined on one line in function.sh |
-| [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | 2026-06-05 | open | power_cycle.py msg.exe notification not shown on DUT during test |
-| [BUG0027](bugs/open/BUG0027-reboot-py-boot-time-sec-measurement-defect.md) | 2026-06-08 | open | `reboot.py` `boot_time_sec` does not measure the reboot round-trip |
+| [BUG0036](bugs/open/BUG0036-reboot-slow-boot-misjudged-dead.md) | 2026-06-30 | in-progress | `reboot.py` misjudges a slow-booting DUT as dead |
+| [BUG0046](bugs/open/BUG0046-calibrate-no-boot-power-down-race.md) | 2026-08-03 | open | isolated NO_BOOT during calibration; off-time is measured from network-offline, not confirmed power-off |
+| [BUG0057](bugs/open/BUG0057-report-labelled-with-stale-session-id.md) | 2026-08-11 | open | a re-run is labelled with the previous invocation's session id |
+| [BUG0066](bugs/open/BUG0066-force-off-is-open-loop.md) | 2026-08-17 | in-progress | the force-off is commanded, never confirmed |
 
 ## Traceability
 
@@ -200,38 +211,158 @@ pie showData title Bugs by status
 | Requirement | Bug | Bug status |
 | --- | --- | --- |
 | CMP005 | [BUG0011](bugs/closed/BUG0011-dev-detect-aborts-silently-when-an-upstream-detect.md) | closed |
+| DET002 | [BUG0039](bugs/closed/BUG0039-dimm-populated-but-not-usable-undetected.md) | resolved |
+| DET002 | [BUG0043](bugs/closed/BUG0043-function-py-unbound-module-logger.md) | resolved |
+| DET002 | [BUG0065](bugs/closed/BUG0065-dev-detect-harness-stale-after-det002.md) | resolved |
 | DET009 | [BUG0012](bugs/open/BUG0012-dev-detect-first-run-snapshot-vs-golden-template-n.md) | open |
+| DET012 | [BUG0038](bugs/closed/BUG0038-dev-detect-reruns-every-boot.md) | resolved |
+| DET013 | [BUG0038](bugs/closed/BUG0038-dev-detect-reruns-every-boot.md) | resolved |
+| DET013 | [BUG0065](bugs/closed/BUG0065-dev-detect-harness-stale-after-det002.md) | resolved |
 | FUN005 | [BUG0013](bugs/open/BUG0013-log-entries-do-not-include-log-level-prefix.md) | open |
+| FWK011 | [BUG0037](bugs/closed/BUG0037-net-test-local-unbound-var-kills-pair.md) | resolved |
+| FWK013 | [BUG0038](bugs/closed/BUG0038-dev-detect-reruns-every-boot.md) | resolved |
+| FWK013 | [BUG0041](bugs/closed/BUG0041-explicit-cycles-ignored-on-resume.md) | resolved |
+| FWK013 | [BUG0046](bugs/open/BUG0046-calibrate-no-boot-power-down-race.md) | open |
 | FWK025 | [BUG0014](bugs/closed/BUG0014-root-requirement-of-detection-scripts-not-formalis.md) | closed |
 | FWK026 | [BUG0002](bugs/closed/BUG0002-cannot-open-dev-detect-sh-html-report.md) | closed |
 | FWK026 | [BUG0014](bugs/closed/BUG0014-root-requirement-of-detection-scripts-not-formalis.md) | closed |
 | FWK027 | [BUG0019](bugs/closed/BUG0019-result-json-metadata-corruption-session-id-unknown.md) | closed |
+| FWK028 | [BUG0030](bugs/closed/BUG0030-os-detect-utf8-decode-crash.md) | resolved |
+| FWK028 | [BUG0031](bugs/closed/BUG0031-os-probe-runs-before-power-on.md) | resolved |
+| FWK028 | [BUG0035](bugs/closed/BUG0035-result-json-write-crash-loses-run.md) | resolved |
+| FWK028 | [BUG0045](bugs/closed/BUG0045-report-shows-timeout-as-boot-time.md) | resolved |
+| FWK028 | [BUG0048](bugs/closed/BUG0048-net-err-trap-false-positives.md) | resolved |
+| FWK028 | [BUG0055](bugs/closed/BUG0055-abort-note-duplicated-as-result-row.md) | resolved |
+| FWK028 | [BUG0059](bugs/closed/BUG0059-top-level-local-destroyed-the-report.md) | resolved |
+| FWK028 | [BUG0063](bugs/closed/BUG0063-method-not-recorded-in-artefacts.md) | resolved |
+| FWK028 | [BUG0065](bugs/closed/BUG0065-dev-detect-harness-stale-after-det002.md) | resolved |
+| FWK028 | [BUG0067](bugs/closed/BUG0067-poll-quantised-times.md) | resolved |
+| FWK028 | [BUG0068](bugs/closed/BUG0068-windows-shutdown-countdown-skews-figures.md) | resolved |
+| FWK028 | [BUG0066](bugs/open/BUG0066-force-off-is-open-loop.md) | in-progress |
+| FWK029 | [BUG0023](bugs/closed/BUG0023-log-dir-console-output.md) | resolved |
+| FWK029 | [BUG0047](bugs/closed/BUG0047-net019-unmatched-mac-entry-silent.md) | resolved |
+| FWK031 | [BUG0034](bugs/closed/BUG0034-reboot-os-probe-before-init-dut.md) | resolved |
+| FWK031 | [BUG0036](bugs/open/BUG0036-reboot-slow-boot-misjudged-dead.md) | in-progress |
+| FWK032 | [BUG0025](bugs/closed/BUG0025-power-cycle-msg-notification-not-shown.md) | resolved |
 | FWK032 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
+| FWK032 | [BUG0040](bugs/closed/BUG0040-notify-dut-negative-sleep-traceback.md) | resolved |
+| FWK032 | [BUG0049](bugs/closed/BUG0049-wall-broadcast-clobbers-progress-display.md) | resolved |
 | FWK034 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
+| FWK035 | [BUG0033](bugs/closed/BUG0033-ssh-changed-host-key-blocks-all-cycles.md) | resolved |
+| FWK035 | [BUG0034](bugs/closed/BUG0034-reboot-os-probe-before-init-dut.md) | resolved |
+| FWK036 | [BUG0064](bugs/closed/BUG0064-windows-startup-repair-traps-power-cycle.md) | resolved |
+| FWK036 | [BUG0068](bugs/closed/BUG0068-windows-shutdown-countdown-skews-figures.md) | resolved |
+| FWK037 | [BUG0039](bugs/closed/BUG0039-dimm-populated-but-not-usable-undetected.md) | resolved |
+| FWK037 | [BUG0043](bugs/closed/BUG0043-function-py-unbound-module-logger.md) | resolved |
+| FWK037 | [BUG0062](bugs/closed/BUG0062-link-detail-not-recorded.md) | resolved |
+| FWK038 | [BUG0050](bugs/closed/BUG0050-progress-bar-stops-before-step-does.md) | resolved |
+| FWK038 | [BUG0053](bugs/closed/BUG0053-progress-denominator-is-iperf-time-not-wall-clock.md) | resolved |
+| FWK038 | [BUG0058](bugs/closed/BUG0058-overrun-alarm-fires-on-normal-variation.md) | resolved |
+| LOG001 | [BUG0023](bugs/closed/BUG0023-log-dir-console-output.md) | resolved |
+| LOG001 | [BUG0042](bugs/closed/BUG0042-python-logs-follow-cwd.md) | resolved |
+| LOG001 | [BUG0057](bugs/open/BUG0057-report-labelled-with-stale-session-id.md) | open |
 | LOG008 | [BUG0004](bugs/open/BUG0004-fio-log-filenames-missing-timestamp-and-result.md) | open |
 | LOG012 | [BUG0024](bugs/closed/BUG0024-extract-bw-fails-on-slow-disks-no-data-0-0-mib-s-f.md) | closed |
 | LOG012 | [BUG0004](bugs/open/BUG0004-fio-log-filenames-missing-timestamp-and-result.md) | open |
+| LOG013 | [BUG0044](bugs/closed/BUG0044-calibrate-cycles-print-warmup-banner.md) | resolved |
+| LOG013 | [BUG0049](bugs/closed/BUG0049-wall-broadcast-clobbers-progress-display.md) | resolved |
 | LOG014 | [BUG0013](bugs/open/BUG0013-log-entries-do-not-include-log-level-prefix.md) | open |
 | LOG015 | [BUG0001](bugs/closed/BUG0001-no-total-test-time.md) | closed |
 | LOG015 | [BUG0009](bugs/closed/BUG0009-result-json-not-yet-implemented.md) | closed |
 | LOG015 | [BUG0019](bugs/closed/BUG0019-result-json-metadata-corruption-session-id-unknown.md) | closed |
 | LOG015 | [BUG0024](bugs/closed/BUG0024-extract-bw-fails-on-slow-disks-no-data-0-0-mib-s-f.md) | closed |
+| LOG015 | [BUG0043](bugs/closed/BUG0043-function-py-unbound-module-logger.md) | resolved |
+| LOG015 | [BUG0045](bugs/closed/BUG0045-report-shows-timeout-as-boot-time.md) | resolved |
+| LOG015 | [BUG0048](bugs/closed/BUG0048-net-err-trap-false-positives.md) | resolved |
+| LOG015 | [BUG0055](bugs/closed/BUG0055-abort-note-duplicated-as-result-row.md) | resolved |
+| LOG015 | [BUG0059](bugs/closed/BUG0059-top-level-local-destroyed-the-report.md) | resolved |
+| LOG015 | [BUG0062](bugs/closed/BUG0062-link-detail-not-recorded.md) | resolved |
+| LOG015 | [BUG0063](bugs/closed/BUG0063-method-not-recorded-in-artefacts.md) | resolved |
+| LOG015 | [BUG0057](bugs/open/BUG0057-report-labelled-with-stale-session-id.md) | open |
 | LOG018 | [BUG0001](bugs/closed/BUG0001-no-total-test-time.md) | closed |
 | LOG018 | [BUG0018](bugs/closed/BUG0018-html-report-total-test-time-computed-from-file-mti.md) | closed |
 | LOG018 | [BUG0010](bugs/invalid/BUG0010-html-reports-may-be-parsing-log-instead-of-reading.md) | invalid |
 | LOG020 | [BUG0019](bugs/closed/BUG0019-result-json-metadata-corruption-session-id-unknown.md) | closed |
 | LOG021 | [BUG0002](bugs/closed/BUG0002-cannot-open-dev-detect-sh-html-report.md) | closed |
 | LOG022 | [BUG0019](bugs/closed/BUG0019-result-json-metadata-corruption-session-id-unknown.md) | closed |
+| LOG023 | [BUG0035](bugs/closed/BUG0035-result-json-write-crash-loses-run.md) | resolved |
+| LOG023 | [BUG0041](bugs/closed/BUG0041-explicit-cycles-ignored-on-resume.md) | resolved |
+| LOG023 | [BUG0067](bugs/closed/BUG0067-poll-quantised-times.md) | resolved |
+| LOG023 | [BUG0057](bugs/open/BUG0057-report-labelled-with-stale-session-id.md) | open |
+| LOG023 | [BUG0066](bugs/open/BUG0066-force-off-is-open-loop.md) | in-progress |
+| LOG025 | [BUG0041](bugs/closed/BUG0041-explicit-cycles-ignored-on-resume.md) | resolved |
+| LOG025 | [BUG0042](bugs/closed/BUG0042-python-logs-follow-cwd.md) | resolved |
+| LOG026 | [BUG0042](bugs/closed/BUG0042-python-logs-follow-cwd.md) | resolved |
+| NET001 | [BUG0060](bugs/closed/BUG0060-first-ping-lost-to-address-resolution.md) | resolved |
+| NET002 | [BUG0060](bugs/closed/BUG0060-first-ping-lost-to-address-resolution.md) | resolved |
+| NET004 | [BUG0051](bugs/closed/BUG0051-ethtool-lane-count-parsed-as-speed.md) | resolved |
+| NET004 | [BUG0056](bugs/closed/BUG0056-no-link-state-check-after-speed-change.md) | resolved |
+| NET004 | [BUG0062](bugs/closed/BUG0062-link-detail-not-recorded.md) | resolved |
+| NET006 | [BUG0029](bugs/closed/BUG0029-net-test-iperf3-firewall-rule-needs-elevation.md) | resolved |
+| NET006 | [BUG0037](bugs/closed/BUG0037-net-test-local-unbound-var-kills-pair.md) | resolved |
+| NET007 | [BUG0053](bugs/closed/BUG0053-progress-denominator-is-iperf-time-not-wall-clock.md) | resolved |
+| NET007 | [BUG0058](bugs/closed/BUG0058-overrun-alarm-fires-on-normal-variation.md) | resolved |
+| NET007 | [BUG0061](bugs/closed/BUG0061-tcp-threshold-above-physical-ceiling.md) | resolved |
+| NET008 | [BUG0029](bugs/closed/BUG0029-net-test-iperf3-firewall-rule-needs-elevation.md) | resolved |
+| NET008 | [BUG0048](bugs/closed/BUG0048-net-err-trap-false-positives.md) | resolved |
+| NET008 | [BUG0054](bugs/closed/BUG0054-jumbo-ping-trips-err-trap.md) | resolved |
+| NET008 | [BUG0055](bugs/closed/BUG0055-abort-note-duplicated-as-result-row.md) | resolved |
+| NET008 | [BUG0056](bugs/closed/BUG0056-no-link-state-check-after-speed-change.md) | resolved |
+| NET008 | [BUG0060](bugs/closed/BUG0060-first-ping-lost-to-address-resolution.md) | resolved |
+| NET009 | [BUG0029](bugs/closed/BUG0029-net-test-iperf3-firewall-rule-needs-elevation.md) | resolved |
+| NET009 | [BUG0051](bugs/closed/BUG0051-ethtool-lane-count-parsed-as-speed.md) | resolved |
+| NET009 | [BUG0061](bugs/closed/BUG0061-tcp-threshold-above-physical-ceiling.md) | resolved |
+| NET009 | [BUG0063](bugs/closed/BUG0063-method-not-recorded-in-artefacts.md) | resolved |
 | NET011 | [BUG0015](bugs/open/BUG0015-net-test-sh-consumes-the-ssh-lifeline-nic.md) | open |
+| NET012 | [BUG0047](bugs/closed/BUG0047-net019-unmatched-mac-entry-silent.md) | resolved |
 | NET012 | [BUG0015](bugs/open/BUG0015-net-test-sh-consumes-the-ssh-lifeline-nic.md) | open |
-| PWR009 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
+| NET015 | [BUG0051](bugs/closed/BUG0051-ethtool-lane-count-parsed-as-speed.md) | resolved |
+| NET015 | [BUG0052](bugs/closed/BUG0052-pair-max-speed-always-zero.md) | resolved |
+| NET015 | [BUG0056](bugs/closed/BUG0056-no-link-state-check-after-speed-change.md) | resolved |
+| NET015 | [BUG0062](bugs/closed/BUG0062-link-detail-not-recorded.md) | resolved |
+| NET016 | [BUG0037](bugs/closed/BUG0037-net-test-local-unbound-var-kills-pair.md) | resolved |
+| NET017 | [BUG0048](bugs/closed/BUG0048-net-err-trap-false-positives.md) | resolved |
+| NET017 | [BUG0049](bugs/closed/BUG0049-wall-broadcast-clobbers-progress-display.md) | resolved |
+| NET017 | [BUG0050](bugs/closed/BUG0050-progress-bar-stops-before-step-does.md) | resolved |
+| NET018 | [BUG0054](bugs/closed/BUG0054-jumbo-ping-trips-err-trap.md) | resolved |
+| NET018 | [BUG0061](bugs/closed/BUG0061-tcp-threshold-above-physical-ceiling.md) | resolved |
+| NET019 | [BUG0047](bugs/closed/BUG0047-net019-unmatched-mac-entry-silent.md) | resolved |
+| PWR001 | [BUG0066](bugs/open/BUG0066-force-off-is-open-loop.md) | in-progress |
+| PWR003 | [BUG0066](bugs/open/BUG0066-force-off-is-open-loop.md) | in-progress |
+| PWR004 | [BUG0046](bugs/open/BUG0046-calibrate-no-boot-power-down-race.md) | open |
+| PWR004 | [BUG0066](bugs/open/BUG0066-force-off-is-open-loop.md) | in-progress |
+| PWR009 | [BUG0025](bugs/closed/BUG0025-power-cycle-msg-notification-not-shown.md) | resolved |
+| PWR009 | [BUG0033](bugs/closed/BUG0033-ssh-changed-host-key-blocks-all-cycles.md) | resolved |
+| PWR009 | [BUG0064](bugs/closed/BUG0064-windows-startup-repair-traps-power-cycle.md) | resolved |
+| PWR009 | [BUG0067](bugs/closed/BUG0067-poll-quantised-times.md) | resolved |
+| PWR009 | [BUG0068](bugs/closed/BUG0068-windows-shutdown-countdown-skews-figures.md) | resolved |
+| PWR009 | [BUG0066](bugs/open/BUG0066-force-off-is-open-loop.md) | in-progress |
+| PWR010 | [BUG0067](bugs/closed/BUG0067-poll-quantised-times.md) | resolved |
+| PWR010 | [BUG0068](bugs/closed/BUG0068-windows-shutdown-countdown-skews-figures.md) | resolved |
+| PWR011 | [BUG0025](bugs/closed/BUG0025-power-cycle-msg-notification-not-shown.md) | resolved |
 | PWR011 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
-| PWR011 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
-| PWR011 | [BUG0027](bugs/open/BUG0027-reboot-py-boot-time-sec-measurement-defect.md) | open |
+| PWR011 | [BUG0027](bugs/closed/BUG0027-reboot-py-boot-time-sec-measurement-defect.md) | resolved |
+| PWR012 | [BUG0025](bugs/closed/BUG0025-power-cycle-msg-notification-not-shown.md) | resolved |
 | PWR012 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
-| PWR012 | [BUG0025](bugs/open/BUG0025-power-cycle-msg-notification-not-shown.md) | open |
-| PWR012 | [BUG0027](bugs/open/BUG0027-reboot-py-boot-time-sec-measurement-defect.md) | open |
+| PWR012 | [BUG0027](bugs/closed/BUG0027-reboot-py-boot-time-sec-measurement-defect.md) | resolved |
+| PWR012 | [BUG0032](bugs/closed/BUG0032-grub-menu-can-block-unattended-reboot-tests.md) | resolved |
+| PWR012 | [BUG0033](bugs/closed/BUG0033-ssh-changed-host-key-blocks-all-cycles.md) | resolved |
+| PWR012 | [BUG0034](bugs/closed/BUG0034-reboot-os-probe-before-init-dut.md) | resolved |
+| PWR012 | [BUG0035](bugs/closed/BUG0035-result-json-write-crash-loses-run.md) | resolved |
+| PWR012 | [BUG0040](bugs/closed/BUG0040-notify-dut-negative-sleep-traceback.md) | resolved |
+| PWR012 | [BUG0041](bugs/closed/BUG0041-explicit-cycles-ignored-on-resume.md) | resolved |
+| PWR012 | [BUG0036](bugs/open/BUG0036-reboot-slow-boot-misjudged-dead.md) | in-progress |
+| PWR013 | [BUG0036](bugs/open/BUG0036-reboot-slow-boot-misjudged-dead.md) | in-progress |
+| PWR016 | [BUG0044](bugs/closed/BUG0044-calibrate-cycles-print-warmup-banner.md) | resolved |
+| PWR016 | [BUG0045](bugs/closed/BUG0045-report-shows-timeout-as-boot-time.md) | resolved |
+| PWR016 | [BUG0067](bugs/closed/BUG0067-poll-quantised-times.md) | resolved |
+| PWR016 | [BUG0046](bugs/open/BUG0046-calibrate-no-boot-power-down-race.md) | open |
+| SET005 | [BUG0064](bugs/closed/BUG0064-windows-startup-repair-traps-power-cycle.md) | resolved |
+| SET007 | [BUG0032](bugs/closed/BUG0032-grub-menu-can-block-unattended-reboot-tests.md) | resolved |
+| SET007 | [BUG0064](bugs/closed/BUG0064-windows-startup-repair-traps-power-cycle.md) | resolved |
 | SLP001 | [BUG0020](bugs/open/BUG0020-sleep-test-not-yet-integrated-or-verified.md) | open |
+| SLP002 | [BUG0028](bugs/closed/BUG0028-sleep-test-detect-crashes-on-localized-windows.md) | resolved |
+| SLP003 | [BUG0028](bugs/closed/BUG0028-sleep-test-detect-crashes-on-localized-windows.md) | resolved |
 | SLP004 | [BUG0020](bugs/open/BUG0020-sleep-test-not-yet-integrated-or-verified.md) | open |
 | SLP005 | [BUG0020](bugs/open/BUG0020-sleep-test-not-yet-integrated-or-verified.md) | open |
 
@@ -241,23 +372,13 @@ _(may indicate untested code paths — worth a review)_
 
 | ID | Status | Title |
 | --- | --- | --- |
-| [DET012](requirements/DET012.md) | implemented | Windows Hardware Baseline Verification |
 | [DSK009](requirements/DSK009.md) | implemented | fio Engine and Write-Consistency Flags Aligned with KDiskMark v3.2.0 |
 | [FUN007](requirements/FUN007.md) | implemented | Windows PowerShell Shared Function Library |
 | [FWK002](requirements/FWK002.md) | implemented | Cross-Language Naming Conventions |
-| [FWK028](requirements/FWK028.md) | implemented | Machine-Readable Canonical Form First |
-| [FWK029](requirements/FWK029.md) | implemented | Emergency Stop Safety Mechanism |
 | [FWK030](requirements/FWK030.md) | implemented | Two-Phase Consecutive-Failure Stop Policy |
-| [FWK031](requirements/FWK031.md) | implemented | DUT Self-Initialisation Before Test Execution |
-| [PWR001](requirements/PWR001.md) | implemented | AT and ATX PSU Type Selection |
 | [PWR002](requirements/PWR002.md) | implemented | GPIO Relay Abstraction |
-| [PWR003](requirements/PWR003.md) | implemented | Network-Based DUT Liveness Detection |
-| [PWR004](requirements/PWR004.md) | implemented | Per-Cycle Verdict Taxonomy |
 | [PWR005](requirements/PWR005.md) | implemented | Structured result.json Output (LOG015 Compliance) |
 | [PWR007](requirements/PWR007.md) | implemented | Safety Controls: Consecutive Fail Abort and Graceful Stop |
 | [PWR008](requirements/PWR008.md) | implemented | Power Cycle Test Warmup and Initial-State Normalization |
-| [PWR010](requirements/PWR010.md) | implemented | Cycle Phase Timing Model and Parameter Defaults |
-| [PWR013](requirements/PWR013.md) | implemented | Reboot Test Initial State Normalisation |
-| [SET005](requirements/SET005.md) | implemented | Windows DUT Pre-test Bootstrap Script |
 | [SET006](requirements/SET006.md) | implemented | Dual-Layer Configuration: config.py as Default Reference |
 

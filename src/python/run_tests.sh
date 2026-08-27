@@ -35,7 +35,9 @@ Phase selection:
   --reboot-cycles N        software reboot iterations (default: 0 = skip)
 
 Common options:
-  --out DIR                output root directory (default: logs)
+  --out DIR                output root directory
+                           (default: logs/ beside these scripts, not the
+                           directory you happen to run them from)
   --port N                 SSH/liveness TCP port (default: from config.py)
   --dut-os OS              auto|windows|linux     (default: auto)
   --boot-timeout N         max seconds to wait for DUT boot (default: 120)
@@ -45,6 +47,9 @@ Common options:
   --no-check               disable liveness checks
   --dry-run                simulate without touching GPIO or SSH
   --new-session            force new sessions; do not resume incomplete ones
+  --resume                 resume incomplete sessions regardless of age
+  --resume-max-age HOURS   optional auto-resume age bound, in hours
+                           (default: no expiry; 0 disables auto-resume)
 
 GPIO / power control (both phases):
   --type ATX|AT            PSU type (default: from config.py)
@@ -68,7 +73,7 @@ OPT_HOST=""
 OPT_SSH_USER=""
 OPT_POWER_CYCLES=0
 OPT_REBOOT_CYCLES=0
-OPT_OUT="logs"
+OPT_OUT="$SCRIPT_DIR/logs"
 OPT_PORT=""
 OPT_DUT_OS=""
 OPT_BOOT_TIMEOUT=""
@@ -81,6 +86,8 @@ OPT_MAX_CONSEC_FAILS=""
 OPT_NO_CHECK=0
 OPT_DRY_RUN=0
 OPT_NEW_SESSION=0
+OPT_RESUME=0
+OPT_RESUME_MAX_AGE=""
 OPT_INIT_WAIT=""
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
@@ -105,6 +112,8 @@ while [[ $# -gt 0 ]]; do
         --no-check)       OPT_NO_CHECK=1;           shift   ;;
         --dry-run)        OPT_DRY_RUN=1;            shift   ;;
         --new-session)    OPT_NEW_SESSION=1;         shift   ;;
+        --resume)         OPT_RESUME=1;              shift   ;;
+        --resume-max-age) OPT_RESUME_MAX_AGE="$2";  shift 2 ;;
         --help|-h)        usage; exit 0 ;;
         *) echo "ERROR: Unknown option: $1" >&2; exit 1 ;;
     esac
@@ -134,6 +143,8 @@ COMMON_ARGS=()
 [[ "$OPT_NO_CHECK"    -eq 1      ]] && COMMON_ARGS+=(--no-check)
 [[ "$OPT_DRY_RUN"     -eq 1      ]] && COMMON_ARGS+=(--dry-run)
 [[ "$OPT_NEW_SESSION" -eq 1      ]] && COMMON_ARGS+=(--new-session)
+[[ "$OPT_RESUME"      -eq 1      ]] && COMMON_ARGS+=(--resume)
+[[ -n "$OPT_RESUME_MAX_AGE"      ]] && COMMON_ARGS+=(--resume-max-age "$OPT_RESUME_MAX_AGE")
 
 # ── State tracking ────────────────────────────────────────────────────────────
 
