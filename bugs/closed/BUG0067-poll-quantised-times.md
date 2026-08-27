@@ -1,13 +1,13 @@
 ---
 id: BUG0067
-status: open
+status: resolved
 created: 2026-08-17
 os:
   - Windows
   - Ubuntu 24.04 LTS
   - Ubuntu 26.04 LTS
 related_requirements: [PWR010, PWR009, PWR016, LOG023, FWK028]
-related_bugs: [BUG0066, BUG0036]
+related_bugs: [BUG0066, BUG0068, BUG0036]
 ---
 
 # BUG0067 — boot and shutdown times are quantised, and "offline" is not "off"
@@ -49,24 +49,34 @@ BUG0063, where the rule that produced a verdict was not recorded with it.
 
 ## Fix
 
-Partial. The measurement is now *described* correctly; whether to make it
-*finer* is a decision about comparability, not a defect fix:
+**1. The probe, not just the interval.** Lowering the interval alone would have
+achieved little: `ping -c 2` spaces its echoes a second apart and waits `-W 2`
+per unanswered one, so the standard probe costs about 1 s against a live host
+and about 4 s against a dead one. With a 1 s interval the loop would still have
+resolved to roughly 5 s. The polling loops now use a single echo with a 1 s
+deadline (`PING_COUNT_POLL`, `PING_TIMEOUT_POLL_SEC`); the standard probe is
+unchanged everywhere else.
 
-- `LIVENESS_POLL_SEC` (5.0, unchanged) replaces the hard-coded interval in both
-  polling helpers, is recorded in `result.json` as
-  `config.liveness_poll_sec`, and the report renders the resolution beside the
-  statistics it applies to.
-- The shutdown statistics carry an explicit definition: time from the request
-  until the DUT left the network, with the unmeasurable tail named.
-- `wait_until_dead`'s docstring no longer lets a reader assume it measures
-  power-down.
+One dropped packet would then look like death and end the phase early, so
+`wait_until_dead` confirms with a second probe before believing it. A lone
+missed echo costs one extra probe; a real shutdown is confirmed immediately.
 
-### Open decision
+`wait_until_alive` also stopped pinging twice per iteration — it used to call
+`is_alive()` (ping + TCP) and then `ping()` again just to log which half had
+failed, doubling the loop's own contribution to every recorded boot time.
 
-Lowering `LIVENESS_POLL_SEC` to 1.0 would cut the error five-fold at negligible
-cost (one extra ping per second per waiting phase). It would also make new
-figures incomparable with every run recorded so far, in the same way the NET009
-threshold change did. Deferred to Max.
+**2. The interval.** `LIVENESS_POLL_SEC` is 1.0 (was 5.0). Decided by Max:
+accuracy over comparability with earlier runs. Figures taken at 1.0 s are not
+comparable with runs recorded at 5.0 s, and the recorded `liveness_poll_sec` is
+what tells the two apart.
+
+**3. The description.** `LIVENESS_POLL_SEC` is recorded in `result.json` as
+`config.liveness_poll_sec`; the report renders the resolution beside the
+statistics it applies to; the shutdown statistics carry an explicit definition
+of what they measure, with the unmeasurable tail named; and `wait_until_dead`'s
+docstring no longer lets a reader assume power-down.
+
+The Windows-only `/t 5` countdown that also sat inside these figures is BUG0068.
 
 Making the *second* problem measurable needs the power-state input described in
 BUG0066; no polling interval can fix it.
@@ -77,6 +87,10 @@ Pending. Once decided:
 
 1. `result.json` carries `config.liveness_poll_sec` and the report states it
    beside both statistics blocks.
-2. With the interval at 1.0 s, the shutdown-time spread across a run should
-   widen visibly compared with the 5.0 s run — if it does not, the DUT really is
-   that consistent and the earlier figures happened to be honest.
+2. On the bench: with the interval at 1.0 s and the single-echo probe, the
+   shutdown-time spread across a run should widen visibly compared with the
+   5.0 s run — if it does not, the DUT really is that consistent and the earlier
+   figures happened to be honest.
+3. `shutdown_method` should stay `ssh` on passing cycles; a shift to `atx` would
+   mean the cheaper probe or the immediate shutdown command (BUG0068) changed
+   the timing enough to lose the transport race.

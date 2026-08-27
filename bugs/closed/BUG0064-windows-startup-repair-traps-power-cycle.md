@@ -5,7 +5,7 @@ created: 2026-08-17
 os:
   - Windows
 related_requirements: [SET005, SET007, PWR009, FWK036]
-related_bugs: [BUG0032, BUG0036, BUG0046]
+related_bugs: [BUG0032, BUG0036, BUG0046, BUG0066]
 ---
 
 # BUG0064 — Windows Startup Repair traps a power-cycle run
@@ -31,47 +31,34 @@ this screen was displayed.
 The report attributed all 39 to a failed power-on and told the operator to check
 the relay and the power-button press, which is the wrong place to look.
 
-### The force-off did work
+### Did the force-off work?
 
-Worth stating explicitly, because the run's own data settles it:
+Not in the tail, and the log could not have told us. Every `NO_BOOT` cycle took
+210 s to the second — but that is the script's own schedule (boot timeout 135 s
+plus the force-off and off-time budget) and it holds whether or not any of those
+actions reached the DUT, because relay control is open-loop (BUG0066). What the
+log does establish is narrower: cycles 2, 12, 34, 40, 44 and 65 passed
+immediately after a `NO_BOOT`, and a pass requires powering on from off, so the
+relay path worked at those six moments.
 
-- Every `NO_BOOT` cycle in the run took **210 s**, to the second, across all 27
-  of the consecutive ones — the boot timeout (135 s) plus the force-off and
-  off-time budget. The loop was executing the force-off path each time.
-- More conclusively, cycles 2, 12, 34, 40, 44 and 65 **passed** immediately
-  after a `NO_BOOT`. A pass requires the DUT to power on from off, so the
-  force-off that preceded it must have cut power.
+**Bench evidence settles the rest.** An earlier version of this bug argued that the
+≥4 s power-button override is PCH hardware and therefore works at the Recovery
+screen, so a 5 s hold must have been effective and the intermittency had to be
+the loop. The operator then watched cycles 97–100 stay on the Recovery screen
+throughout, and tested by hand: **a 10 s press at that screen powers the DUT off
+immediately.** So the override does work there — 5 s through the relay did not.
 
-The ≥4 s power-button override is implemented in the PCH and is independent of
-what the OS is doing, so it works at the Startup Repair screen as well as
-anywhere else. `ATX_LONG_PRESS_SEC` stays at 5.0. What looks like a force-off
-that did nothing is the DUT re-entering Startup Repair on the *next* power-on —
-and, at the end of the run, the DUT simply being left at that screen with no
-further cycles to power it off.
+Two things follow. The platform is fine and the hold time was wrong:
+`ATX_LONG_PRESS_SEC` is now 10.0, the value observed to work, escalating to 15 s
+on a repeat (BUG0066). And what looked like force-off "working" earlier in the
+run was something else: `setup_dut.ps1` sets the power button action to Shut
+down, so at the Windows desktop *any* press starts a graceful shutdown and the
+machine is gone long before the override matters. The override was only ever
+exercised at the Recovery screen — the one place it was never given long enough.
 
-## Root cause
-
-Windows maintains a **consecutive unsuccessful-boot counter**. A boot that does
-not reach the "boot succeeded" marker increments it; after **two** consecutive
-failures the boot manager stops booting the OS and displays Automatic Repair
-instead. A hard power-off applied while Windows is still booting or shutting
-down is exactly such a failure.
-
-A power-cycle test does that by design. `ATX_LONG_PRESS_SEC = 5.0` force-off is
-how the framework establishes a known state after a `NO_BOOT`, so:
-
-```
-NO_BOOT  ->  force-off during boot  ->  counter += 1
-             (twice)                ->  next boot = Startup Repair
-Startup Repair  ->  no network      ->  NO_BOOT  ->  force-off  ->  ...
-```
-
-**The failure is self-reinforcing.** Once the DUT reaches Startup Repair, every
-subsequent cycle re-arms the condition that put it there, which is why the tail
-of the run is unbroken rather than intermittent. The early sporadic failures
-(cycles 1, 11, 33) had some other trigger — a genuinely slow boot exceeding
-`BOOT_TIMEOUT_SEC`, cf. BUG0036 — but each one seeded the counter, and the
-seeding is cumulative until a clean boot resets it.
+Whether 5 s failed because the platform needs longer than the spec minimum, or
+because the relay path delivers less than it is told to, is still open. A run at
+10 s that still gets stuck would implicate the relay path.
 
 The counter is incremented per boot attempt and cleared only when Windows
 completes startup — practically, when the desktop is reached. A cycle that ends
@@ -80,14 +67,10 @@ never trips this; only interrupted boots accumulate, and they accumulate across
 cycles. Being force-offed *at* the Startup Repair screen does not clear it
 either, because the OS never started.
 
-Two secondary observations, both explained by the same loop:
+Two secondary observations:
 
-- **"Sometimes 5 s seems not to be enough."** The ≥4 s power-button override is
-  implemented in the chipset (PCH), not in Windows, and cuts power regardless of
-  what the OS is doing — including at the Startup Repair screen. A press that
-  works at cycle 30 and appears not to work at cycle 80 is far better explained
-  by the DUT re-entering Startup Repair immediately after the force-off than by
-  the press duration changing. `ATX_LONG_PRESS_SEC` is left at 5.0.
+- **"Sometimes 5 s seems not to be enough."** Correct, and it is the reason the
+  tail never broke: see above. `ATX_LONG_PRESS_SEC` is 10.0.
 - **"Does Startup Repair have its own watchdog?"** No. It waits for an operator
   indefinitely; when it does appear to move on by itself it is because a repair
   attempt finished and rebooted, not because a timer expired. An unattended

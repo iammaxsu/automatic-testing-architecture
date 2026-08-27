@@ -64,11 +64,21 @@ prevent.
 2. `_force_off()` returns the hold it commanded and the cycle record carries it
    as `force_off_sec` — what was asked for, explicitly not what happened.
 3. Escalation: a force-off that follows a cycle which already failed to boot is
-   held for `ATX_FORCE_OFF_ESCALATE_SEC` (default 10 s, `--force-off-escalate`,
-   0 disables) instead of the usual 5 s. This costs 5 s only when something is
-   already wrong, and turns the next run into evidence — if 10 s recovers a DUT
-   that 5 s did not, hold time was the cause; if it does not, hold time is
-   excluded and the platform's power-button override is the place to look.
+   held for `ATX_FORCE_OFF_ESCALATE_SEC` (`--force-off-escalate`, 0 disables)
+   instead of the normal hold. This costs a few seconds only when something is
+   already wrong.
+
+**The hold time itself was wrong.** The bench test this bug asked for came back:
+a 10 s press by hand powers the DUT off at the Windows Recovery screen, where 27
+consecutive 5 s relay force-offs had done nothing. `ATX_LONG_PRESS_SEC` is now
+10.0 — the value observed to work rather than the 4 s the ATX spec permits — and
+the escalation is 15.0. That leaves one question the next run answers: a DUT
+still stuck after a 15 s hold implicates the relay path (wiring, contact, GPIO
+drive, effective hold at the pin) rather than the duration.
+
+This does not close the bug. A working hold time is not a verified force-off;
+the framework still cannot see the DUT's power state, and the next stuck run
+would again be indistinguishable from a working one in the log.
 
 ### What would actually close it
 

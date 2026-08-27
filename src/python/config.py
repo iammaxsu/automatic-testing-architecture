@@ -50,7 +50,12 @@ RELAY_ACTIVE_LOW = True     # True for most RPi relay modules (LOW = relay ON)
 
 # ---------- ATX press durations ----------
 ATX_SHORT_PRESS_SEC = 0.5   # Power on, or request soft shutdown (single button tap)
-ATX_LONG_PRESS_SEC  = 5.0   # Force power off, ignores OS state (>=4 s per ATX spec)
+# Force power off. The ATX spec puts the hardware override at >=4 s, and 5.0 was
+# chosen from that. Bench evidence (BUG0064) says 5.0 is not enough in practice:
+# a DUT stopped at the Windows Recovery screen ignored 27 consecutive relay
+# force-offs at 5.0 s, and a 10 s press by hand powered it off immediately. Use
+# the value observed to work, not the one the spec permits.
+ATX_LONG_PRESS_SEC  = 10.0
 
 # CLI: --force-off-escalate    Hold time used for the force-off that follows a
 # cycle which already failed to boot. 0 disables escalation (always use
@@ -59,12 +64,12 @@ ATX_LONG_PRESS_SEC  = 5.0   # Force power off, ignores OS state (>=4 s per ATX s
 # BUG0066: relay control is open-loop — the framework can command a force-off
 # but has no way to observe whether the DUT actually powered down, so a run
 # where every force-off silently did nothing looks identical in the log to one
-# where every force-off worked. A longer hold on the retry costs 5 s in the only
-# situation where something is already wrong, and makes the next run evidence:
-# if 10 s recovers a DUT that 5 s did not, press duration was the cause; if it
-# does not, press duration is excluded and the platform's power-button override
-# (BIOS / BMC-mediated front panel) is the place to look.
-ATX_FORCE_OFF_ESCALATE_SEC = 10.0
+# where every force-off worked. Escalating the retry costs a few seconds in the
+# only situation where something is already wrong, and makes the next run
+# evidence: with the normal hold now at the by-hand-proven 10 s, a DUT that is
+# still stuck after a 15 s hold implicates the relay path (wiring, contact, GPIO
+# drive, effective hold at the pin) rather than the hold time.
+ATX_FORCE_OFF_ESCALATE_SEC = 15.0
 
 # ---------- Test parameters ----------
 CYCLES        = 1000        # CLI: --cycles   Total counted cycles to run
@@ -91,6 +96,17 @@ DUT_HOST              = ""  # CLI: --host   IP/hostname; "" disables liveness ch
 DUT_PORT              = 22  # CLI: --port   TCP port to probe (22 = SSH)
 PING_COUNT            = 2   # ping -c N (ICMP echo count per probe)
 PING_TIMEOUT_SEC      = 2   # ping -W N (per-echo timeout)
+
+# Probe used INSIDE the boot / shutdown polling loops, where the probe's own
+# duration is part of the measurement. `ping -c 2` spaces its echoes a second
+# apart and waits -W per unanswered one, so the standard probe costs ~1 s
+# against a live host and ~4 s against a dead one — dwarfing a 1 s poll interval
+# and setting the real resolution of every recorded time (BUG0067). A single
+# echo with a 1 s deadline keeps the loop's resolution close to the interval it
+# advertises. The cost is that one dropped packet looks like death, so
+# wait_until_dead confirms with a second probe before it believes it.
+PING_COUNT_POLL       = 1
+PING_TIMEOUT_POLL_SEC = 1
 TCP_TIMEOUT_SEC       = 3   # TCP connect timeout for the SSH-port probe
 BOOT_TIMEOUT_SEC      = 120 # CLI: --boot-timeout   Used as the boot ceiling in the
                             #   main counted test. If calibration is enabled
@@ -114,7 +130,11 @@ HEALTH_CHECK_INTERVAL = 30  # Seconds between liveness probes during ON_TIME (ph
 # tight statistics (a 90.1 s median beside a 90.2 s p95) because the numbers are
 # quantised, not because the DUT is that consistent. Recorded per run in
 # result.json so a report states the resolution of its own figures (BUG0067).
-LIVENESS_POLL_SEC     = 5.0
+#
+# 1.0 s costs one extra ping per second while a phase is waiting and cuts the
+# error five-fold. Figures taken at 1.0 s are NOT comparable with runs recorded
+# at 5.0 s; the recorded liveness_poll_sec is what tells the two apart.
+LIVENESS_POLL_SEC     = 1.0
 
 # ---------- Calibration ----------
 # Before the counted test, power_cycle.py runs CALIBRATE_CYCLES short cycles
@@ -211,8 +231,20 @@ _OS_REBOOT_CMD = {
     "windows": "shutdown /r /t 0",     # immediate restart via Windows shutdown utility
     "linux":   "sudo reboot",           # requires NOPASSWD for /sbin/reboot in sudoers
 }
+# Both entries shut down immediately, so shutdown_time_sec measures the DUT and
+# not a delay the framework asked for. Windows previously used "/t 5", which put
+# a 5-second countdown inside every Windows figure and none inside a Linux one,
+# making the two OSes' shutdown statistics silently incomparable (BUG0068).
+# Neither command forces applications closed (no "/f"): a DUT that genuinely
+# hangs on shutdown must still be caught as HANG_SHUTDOWN, not papered over.
+# Bounded window used to check whether the DUT went down anyway after the SSH
+# shutdown command reported an error. An immediate shutdown races its own
+# transport, so a dropped session is not proof the command was refused
+# (BUG0068). Spent only on the error path.
+SSH_CONFIRM_DEATH_SEC = 20
+
 _OS_SHUTDOWN_CMD = {
-    "windows": "shutdown /s /t 5",     # graceful shutdown, 5-s countdown
+    "windows": "shutdown /s /t 0",      # immediate; matches _OS_REBOOT_CMD's /t 0
     "linux":   "sudo shutdown -h now",  # requires NOPASSWD for /sbin/shutdown in sudoers
 }
 
