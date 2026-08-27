@@ -664,6 +664,10 @@ def _new_result(args: argparse.Namespace, session_id: str, m: int,
             "boot_timeout_sec":      args.boot_timeout,
             "boot_ceiling_sec":      args.boot_ceiling,
             "dead_timeout_sec":      config.DEAD_TIMEOUT_SEC,
+            # The probe interval is the resolution of every boot_time_sec and
+            # shutdown_time_sec below, so it travels with them (BUG0067).
+            "liveness_poll_sec":     config.LIVENESS_POLL_SEC,
+            "force_off_escalate_sec": args.force_off_escalate,
             "warmup_cycles":         args.warmup,
             "calibrate_cycles":      args.calibrate_cycles,
             "ssh_user":              args.ssh_user or None,

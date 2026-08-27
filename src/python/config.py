@@ -106,6 +106,16 @@ DEAD_TIMEOUT_SEC      = 30  # Phase 3 UPPER LIMIT: max wait for DUT to go offlin
                             #   a shutdown request; exceeding it -> force-off + HANG_SHUTDOWN
 HEALTH_CHECK_INTERVAL = 30  # Seconds between liveness probes during ON_TIME (phase 2)
 
+# Seconds between probes while waiting for the DUT to come alive (phase 1) or go
+# offline (phase 3). This is the RESOLUTION of every boot_time_sec and
+# shutdown_time_sec in the artefacts: the state change is only noticed at the
+# next probe, so a measurement carries up to this much positive error, and real
+# differences smaller than it are invisible. A run at 5.0 s produces suspiciously
+# tight statistics (a 90.1 s median beside a 90.2 s p95) because the numbers are
+# quantised, not because the DUT is that consistent. Recorded per run in
+# result.json so a report states the resolution of its own figures (BUG0067).
+LIVENESS_POLL_SEC     = 5.0
+
 # ---------- Calibration ----------
 # Before the counted test, power_cycle.py runs CALIBRATE_CYCLES short cycles
 # (power on → wait alive → immediate shutdown) to measure the DUT's actual boot

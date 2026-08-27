@@ -14,6 +14,8 @@ import time
 import logging
 from typing import Tuple
 
+import config
+
 log = logging.getLogger(__name__)
 
 
@@ -91,7 +93,7 @@ class LivenessChecker:
     # ------------------------------------------------------------------
 
     def wait_until_alive(
-        self, timeout_sec: float, poll_interval: float = 5.0
+        self, timeout_sec: float, poll_interval: float = None
     ) -> Tuple[bool, float]:
         """Poll until DUT is fully alive or timeout expires.
 
@@ -104,6 +106,7 @@ class LivenessChecker:
         is ambiguous on purpose: no power-on and a DUT stopped at a boot menu or
         recovery screen are indistinguishable from the network (BUG0064).
         """
+        poll_interval = config.LIVENESS_POLL_SEC if poll_interval is None else poll_interval
         deadline = time.monotonic() + timeout_sec
         self.ping_seen_during_wait = False
         log.info("Waiting for DUT %s (max %ds) …", self.host, timeout_sec)
@@ -126,12 +129,21 @@ class LivenessChecker:
         return False, timeout_sec
 
     def wait_until_dead(
-        self, timeout_sec: float, poll_interval: float = 5.0
+        self, timeout_sec: float, poll_interval: float = None
     ) -> Tuple[bool, float]:
         """Poll until DUT stops responding to ping or timeout expires.
 
         Returns (success, elapsed_seconds).
+
+        The elapsed time is "how long until the DUT left the network", which is
+        NOT "how long until the DUT lost power" (BUG0067). The network stack
+        goes down early in an OS shutdown; the machine keeps working for some
+        seconds afterwards, and that tail is invisible from here — it is what
+        OFF_TIME_SEC exists to absorb. The figure also carries up to one
+        poll_interval of positive error, because the change is only seen at the
+        next probe.
         """
+        poll_interval = config.LIVENESS_POLL_SEC if poll_interval is None else poll_interval
         deadline = time.monotonic() + timeout_sec
         log.info("Waiting for DUT %s to go offline (max %ds) …", self.host, timeout_sec)
 

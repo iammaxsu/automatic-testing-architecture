@@ -1,6 +1,6 @@
 # Project Status
 
-_Generated 2026-08-17 08:55 · regenerate with `python scripts/stats.py > STATUS.md`_
+_Generated 2026-08-27 02:48 · regenerate with `python scripts/stats.py > STATUS.md`_
 
 ## Requirements
 
@@ -150,13 +150,13 @@ pie showData title Requirements by status
 
 ## Bugs
 
-**Total:** 66
+**Total:** 67
 
 ### By status
 
 | Status | Count |
 | --- | --- |
-| open | 14 |
+| open | 15 |
 | in-progress | 2 |
 | resolved | 38 |
 | closed | 10 |
@@ -164,7 +164,7 @@ pie showData title Requirements by status
 
 ```mermaid
 pie showData title Bugs by status
-    "open" : 14
+    "open" : 15
     "in-progress" : 2
     "resolved" : 38
     "closed" : 10
@@ -175,11 +175,11 @@ pie showData title Bugs by status
 
 | OS | Count |
 | --- | --- |
-| Ubuntu 24.04 LTS | 40 |
-| Ubuntu 26.04 LTS | 23 |
+| Ubuntu 24.04 LTS | 41 |
+| Ubuntu 26.04 LTS | 24 |
 | Windows 11 | 13 |
+| Windows | 3 |
 | Windows 11 (zh-TW) | 2 |
-| Windows | 2 |
 | Windows 11 (English / en-US) | 1 |
 | Windows 11 (Traditional Chinese / zh-TW) | 1 |
 
@@ -203,6 +203,7 @@ pie showData title Bugs by status
 | [BUG0046](bugs/open/BUG0046-calibrate-no-boot-power-down-race.md) | 2026-08-03 | open | isolated NO_BOOT during calibration; off-time is measured from network-offline, not confirmed power-off |
 | [BUG0057](bugs/open/BUG0057-report-labelled-with-stale-session-id.md) | 2026-08-11 | open | a re-run is labelled with the previous invocation's session id |
 | [BUG0066](bugs/open/BUG0066-force-off-is-open-loop.md) | 2026-08-17 | in-progress | the force-off is commanded, never confirmed |
+| [BUG0067](bugs/open/BUG0067-poll-quantised-times.md) | 2026-08-17 | open | boot and shutdown times are quantised, and "offline" is not "off" |
 
 ## Traceability
 
@@ -237,6 +238,7 @@ pie showData title Bugs by status
 | FWK028 | [BUG0063](bugs/closed/BUG0063-method-not-recorded-in-artefacts.md) | resolved |
 | FWK028 | [BUG0065](bugs/closed/BUG0065-dev-detect-harness-stale-after-det002.md) | resolved |
 | FWK028 | [BUG0066](bugs/open/BUG0066-force-off-is-open-loop.md) | in-progress |
+| FWK028 | [BUG0067](bugs/open/BUG0067-poll-quantised-times.md) | open |
 | FWK029 | [BUG0023](bugs/closed/BUG0023-log-dir-console-output.md) | resolved |
 | FWK029 | [BUG0047](bugs/closed/BUG0047-net019-unmatched-mac-entry-silent.md) | resolved |
 | FWK031 | [BUG0034](bugs/closed/BUG0034-reboot-os-probe-before-init-dut.md) | resolved |
@@ -286,6 +288,7 @@ pie showData title Bugs by status
 | LOG023 | [BUG0041](bugs/closed/BUG0041-explicit-cycles-ignored-on-resume.md) | resolved |
 | LOG023 | [BUG0057](bugs/open/BUG0057-report-labelled-with-stale-session-id.md) | open |
 | LOG023 | [BUG0066](bugs/open/BUG0066-force-off-is-open-loop.md) | in-progress |
+| LOG023 | [BUG0067](bugs/open/BUG0067-poll-quantised-times.md) | open |
 | LOG025 | [BUG0041](bugs/closed/BUG0041-explicit-cycles-ignored-on-resume.md) | resolved |
 | LOG025 | [BUG0042](bugs/closed/BUG0042-python-logs-follow-cwd.md) | resolved |
 | LOG026 | [BUG0042](bugs/closed/BUG0042-python-logs-follow-cwd.md) | resolved |
@@ -331,6 +334,8 @@ pie showData title Bugs by status
 | PWR009 | [BUG0033](bugs/closed/BUG0033-ssh-changed-host-key-blocks-all-cycles.md) | resolved |
 | PWR009 | [BUG0064](bugs/closed/BUG0064-windows-startup-repair-traps-power-cycle.md) | resolved |
 | PWR009 | [BUG0066](bugs/open/BUG0066-force-off-is-open-loop.md) | in-progress |
+| PWR009 | [BUG0067](bugs/open/BUG0067-poll-quantised-times.md) | open |
+| PWR010 | [BUG0067](bugs/open/BUG0067-poll-quantised-times.md) | open |
 | PWR011 | [BUG0025](bugs/closed/BUG0025-power-cycle-msg-notification-not-shown.md) | resolved |
 | PWR011 | [BUG0026](bugs/closed/BUG0026-dut-reboot-task-fires-during-python-tests.md) | closed |
 | PWR011 | [BUG0027](bugs/closed/BUG0027-reboot-py-boot-time-sec-measurement-defect.md) | resolved |
@@ -348,6 +353,7 @@ pie showData title Bugs by status
 | PWR016 | [BUG0044](bugs/closed/BUG0044-calibrate-cycles-print-warmup-banner.md) | resolved |
 | PWR016 | [BUG0045](bugs/closed/BUG0045-report-shows-timeout-as-boot-time.md) | resolved |
 | PWR016 | [BUG0046](bugs/open/BUG0046-calibrate-no-boot-power-down-race.md) | open |
+| PWR016 | [BUG0067](bugs/open/BUG0067-poll-quantised-times.md) | open |
 | SET005 | [BUG0064](bugs/closed/BUG0064-windows-startup-repair-traps-power-cycle.md) | resolved |
 | SET007 | [BUG0032](bugs/closed/BUG0032-grub-menu-can-block-unattended-reboot-tests.md) | resolved |
 | SET007 | [BUG0064](bugs/closed/BUG0064-windows-startup-repair-traps-power-cycle.md) | resolved |
@@ -371,6 +377,5 @@ _(may indicate untested code paths — worth a review)_
 | [PWR005](requirements/PWR005.md) | implemented | Structured result.json Output (LOG015 Compliance) |
 | [PWR007](requirements/PWR007.md) | implemented | Safety Controls: Consecutive Fail Abort and Graceful Stop |
 | [PWR008](requirements/PWR008.md) | implemented | Power Cycle Test Warmup and Initial-State Normalization |
-| [PWR010](requirements/PWR010.md) | implemented | Cycle Phase Timing Model and Parameter Defaults |
 | [SET006](requirements/SET006.md) | implemented | Dual-Layer Configuration: config.py as Default Reference |
 

@@ -531,10 +531,22 @@ def _render(result: dict) -> str:
             return "-"
         return f"{sd_stats[key]:.1f}{unit}"
 
+    # BUG0067: a time measured by polling is quantised to the poll interval, and
+    # "offline" is the network's death, not the DUT's power-down. Both belong
+    # beside the figures, not in the reader's head.
+    _poll = cfg.get("liveness_poll_sec")
+    _poll_note = (f'Probed every {_poll:g} s, so each figure carries up to '
+                  f'{_poll:g} s of positive error and differences smaller than '
+                  f'that are not visible. ' if _poll else '')
+
     shutdown_stats_section = ""
     if has_shutdown:
         shutdown_stats_section = f"""
 <div class="section-title">Shutdown-time statistics (all cycles with confirmed shutdown)</div>
+<div class="subtitle">Time from the shutdown request until the DUT left the network.
+{_poll_note}The DUT keeps working for some seconds after its network stack goes
+down; that tail is not measurable from the control node and is what the off-time
+wait absorbs (BUG0067).</div>
 <div class="cards">
   <div class="card"><div class="label">Min</div><div class="value">{sdstat("min")}</div></div>
   <div class="card"><div class="label">Median</div><div class="value">{sdstat("median")}</div></div>
@@ -774,6 +786,8 @@ def _render(result: dict) -> str:
 
 <!-- Boot-time statistics cards -->
 <div class="section-title">Boot-time statistics (passing cycles with recorded boot time)</div>
+<div class="subtitle">Time from power-on until the DUT answered both ping and SSH.
+{_poll_note}</div>
 <div class="cards">
   <div class="card"><div class="label">Min</div><div class="value">{stat("min")}</div></div>
   <div class="card"><div class="label">Median</div><div class="value">{stat("median")}</div></div>
